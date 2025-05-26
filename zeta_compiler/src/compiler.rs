@@ -79,7 +79,6 @@ impl StmtCompiler {
                 builder.switch_to_block(cond_block);
                 let cond_val = self.compile_expr(builder, &while_stmt.condition, module)?;
                 builder.ins().brif(cond_val, body_block, &[], exit_block, &[]);
-                builder.seal_block(cond_block);
 
                 // === Body block ===
                 builder.switch_to_block(body_block);
