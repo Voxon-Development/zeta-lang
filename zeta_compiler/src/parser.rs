@@ -416,7 +416,7 @@ fn parse_expr(pair: Pair<Rule>) -> Expr {
             if let Some(op_pair) = inner.next() {
                 let op = op_pair.as_str().to_string();
                 let rhs = parse_expr(inner.next().unwrap());
-                Expr::Assignment(Box::new(lhs), op, Box::new(rhs))
+                Expr::Assignment { lhs: Box::new(lhs), op, rhs: Box::new(rhs) }
             } else {
                 lhs
             }
@@ -444,11 +444,36 @@ fn parse_expr(pair: Pair<Rule>) -> Expr {
         | Rule::bit_xor
         | Rule::bit_and
         | Rule::equality
-        | Rule::comparison
         | Rule::shift
         | Rule::unary => {
             // descend to the actual operand
             parse_expr(pair.into_inner().next().unwrap())
+        }
+
+        Rule::comparison => {
+            let mut inner = pair.into_inner();
+            let mut lhs = parse_expr(inner.next().unwrap());
+
+            while let Some(op_pair) = inner.next() {
+                let rhs = parse_expr(inner.next().unwrap());
+                let op = match op_pair.as_str() {
+                    "!=" => ComparisonOp::NotEqual,
+                    "==" => ComparisonOp::Equal,
+                    "<" => ComparisonOp::LessThan,
+                    "<=" => ComparisonOp::LessThanOrEqual,
+                    ">" => ComparisonOp::GreaterThan,
+                    ">=" => ComparisonOp::GreaterThanOrEqual,
+                    _ => unreachable!(),
+                };
+
+                lhs = Expr::Comparison {
+                    lhs: Box::new(lhs),
+                    op,
+                    rhs: Box::new(rhs),
+                };
+            }
+
+            lhs
         }
 
         Rule::parenthesized_expr => {
