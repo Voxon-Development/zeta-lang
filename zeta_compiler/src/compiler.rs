@@ -87,6 +87,7 @@ impl StmtCompiler {
                     self.compile_stmt(builder, stmt, module)?;
                 }
                 builder.ins().jump(cond_block, &[]);
+                builder.seal_block(cond_block);
                 builder.seal_block(body_block);
 
                 // === Exit block ===
