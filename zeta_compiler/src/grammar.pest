@@ -73,8 +73,12 @@ bit_or = { bit_xor ~ ("|" ~ bit_xor)* }
 bit_xor = { bit_and ~ ("^" ~ bit_and)* }
 bit_and = { equality ~ ("&" ~ equality)* }
 equality = { comparison ~ (("==" | "!=") ~ comparison)* }
-comparison = { shift ~ (("<" | ">" | "<=" | ">=") ~ shift)* }
+
+comparison = { shift ~ (comparison_operators ~ shift)* }
 shift = { term ~ (("<<" | ">>") ~ term)* }
+
+comparison_operators = { "<" | ">" | "<=" | ">=" | "!=" | "==" }
+
 term = { factor ~ (operator_add_sub ~ factor)* }
 factor = { unary ~ (operator_mul_div ~ unary)* }
 unary = { ("!" | "-" | "+")* ~ primary }

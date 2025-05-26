@@ -7,7 +7,6 @@ use crate::compiler::Codegen;
 
 mod parser;
 mod ast;
-mod opcodes;
 mod compiler;
 
 /*fn main() {

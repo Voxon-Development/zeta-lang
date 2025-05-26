@@ -74,6 +74,16 @@ pub enum Op {
     ModAssign,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ComparisonOp {
+    Equal,
+    NotEqual,
+    LessThan,
+    LessThanOrEqual,
+    GreaterThan,
+    GreaterThanOrEqual
+}
+
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatchStmt {
@@ -158,6 +168,11 @@ pub enum Expr {
     String(String),
     Ident(String),
     Boolean(bool),
+    Comparison {
+        lhs: Box<Expr>,
+        op: ComparisonOp,
+        rhs: Box<Expr>,
+    },
     Binary {
         left: Box<Expr>,
         op: Op,
@@ -167,7 +182,11 @@ pub enum Expr {
         callee: Box<Expr>,
         arguments: Vec<Expr>,
     },
-    Assignment(Box<Expr>, String, Box<Expr>),
+    Assignment {
+        lhs: Box<Expr>, 
+        op: String, 
+        rhs: Box<Expr>
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
