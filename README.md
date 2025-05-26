@@ -23,10 +23,10 @@ Current stuff to be done:
 - [x] Functions (Return values too)
 - [x] Type inference
 - [ ] Extensive FFI and Importing (Dependent on OOP)
-- [ ] SDK (Dependent on Extensive FFI and Importing, and While/for statements)
+- [ ] SDK (Dependent on Extensive FFI and Importing)
 - [ ] Optimizations for generated IR
 - [x] If statements
 - [x] While statements
-- [ ] For statements
+- [x] For statements
 - [x] Match statements
 - [ ] Arrays
