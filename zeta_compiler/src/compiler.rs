@@ -319,7 +319,6 @@ impl Codegen {
 
     fn compile_class(&mut self, class: &ClassDecl, module: &mut JITModule) -> CompiledClass {
         let mut methods = Vec::new();
-        let mut constructor = None;
 
         for stmt in class.body.clone().into_iter() {
             match stmt {
