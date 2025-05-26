@@ -63,6 +63,68 @@ impl StmtCompiler {
 
                 self.did_return = true;
             }
+
+            Stmt::Match(match_stmt) => {
+                let matched_val = self.compile_expr(builder, &match_stmt.expr, module)?;
+                let matched_ty = builder.func.dfg.value_type(matched_val);
+
+                let exit_block = builder.create_block();
+                let mut arm_blocks = Vec::new();
+                let mut next_test_blocks = Vec::new();
+
+                for _ in &match_stmt.arms {
+                    arm_blocks.push(builder.create_block());
+                    next_test_blocks.push(builder.create_block());
+                }
+
+                // Final fallthrough if no match: just jump to exit for now
+                next_test_blocks.push(exit_block);
+
+                // === Pattern matching branches ===
+                for (i, arm) in match_stmt.arms.iter().enumerate() {
+                    let cond = match &arm.pattern {
+                        Pattern::Number(n) => {
+                            let const_val = builder.ins().iconst(matched_ty, *n);
+                            builder.ins().icmp(IntCC::Equal, matched_val, const_val)
+                        }
+                        Pattern::Wildcard => builder.ins().iconst(types::I8, 1),
+                        Pattern::Ident(name) => {
+                            let var = Variable::new(self.variables.len());
+                            builder.declare_var(var, matched_ty);
+                            builder.def_var(var, matched_val);
+                            self.variables.insert(name.clone(), var);
+                            builder.ins().iconst(types::I8, 1)
+                        }
+                        _ => unimplemented!("Unsupported pattern variant"),
+                    };
+
+                    builder.ins().brif(
+                        cond,
+                        arm_blocks[i],
+                        &[],
+                        next_test_blocks[i + 1],
+                        &[],
+                    );
+                    builder.seal_block(builder.current_block().unwrap());
+                    builder.switch_to_block(next_test_blocks[i + 1]);
+                }
+
+                // === Arm blocks ===
+                for (i, arm) in match_stmt.arms.iter().enumerate() {
+                    builder.switch_to_block(arm_blocks[i]);
+
+                    for stmt in &arm.block.block {
+                        self.compile_stmt(builder, stmt, module)?;
+                    }
+
+                    builder.ins().jump(exit_block, &[]);
+                    builder.seal_block(arm_blocks[i]);
+                }
+
+                builder.switch_to_block(exit_block);
+                builder.seal_block(exit_block);
+            }
+
             Stmt::While(while_stmt) => {
                 let cond_block = builder.create_block();
                 let body_block = builder.create_block();
@@ -70,10 +132,7 @@ impl StmtCompiler {
 
                 // Push loop context
                 self.loop_stack.push((cond_block, exit_block));
-
-                // Jump to condition
                 builder.ins().jump(cond_block, &[]);
-                builder.seal_block(builder.current_block().unwrap());
 
                 // === Condition check ===
                 builder.switch_to_block(cond_block);
@@ -97,45 +156,60 @@ impl StmtCompiler {
                 self.loop_stack.pop();
             }
 
-            Stmt::Match(match_stmt) => {
-                let scrutinee_val = self.compile_expr(builder, &match_stmt.expr, module)?;
-                let scrutinee_ty = builder.func.dfg.value_type(scrutinee_val);
+            Stmt::For(for_stmt) => {
+                // === Initialization ===
+                if let Some(let_stmt) = &for_stmt.let_stmt {
+                    self.compile_stmt(builder, &Stmt::Let(let_stmt.clone()), module)?;
+                }
 
-                let mut arm_blocks = Vec::new();
+                let cond_block = builder.create_block();
+                let body_block = builder.create_block();
+                let incr_block = builder.create_block();
                 let exit_block = builder.create_block();
 
-                // Pre-declare blocks for all arms
-                for _ in &match_stmt.arms {
-                    arm_blocks.push(builder.create_block());
-                }
+                // Push loop context for break/continue
+                self.loop_stack.push((incr_block, exit_block));
 
-                // Compare patterns and branch
-                for (i, arm) in match_stmt.arms.iter().enumerate() {
-                    if let Pattern::Literal(ref lit_expr) = arm.pattern {
-                        let expected_val = self.compile_expr(builder, lit_expr, module)?;
-                        let is_match = builder.ins().icmp(IntCC::Equal, scrutinee_val, expected_val);
-                        builder.ins().brif(is_match, arm_blocks[i], &[], /* else */ exit_block, &[]);
-                    } else if let Pattern::Wildcard = arm.pattern {
-                        // Wildcard arm - unconditional jump
-                        builder.ins().jump(arm_blocks[i], &[]);
-                    } else {
-                        panic!("Unsupported pattern in match arm");
-                    }
-                }
+                // === Jump to condition ===
+                //let current_block = builder.current_block().unwrap();
+                builder.ins().jump(cond_block, &[]);
+                //builder.seal_block(current_block); // Seal previous block before branching out
 
-                // Emit code for each arm
-                for (i, arm) in match_stmt.arms.iter().enumerate() {
-                    builder.switch_to_block(arm_blocks[i]);
-                    for stmt in &arm.block.block {
-                        self.compile_stmt(builder, stmt, module)?;
-                    }
-                    builder.ins().jump(exit_block, &[]);
-                    builder.seal_block(arm_blocks[i]);
-                }
+                // === Condition check ===
+                builder.switch_to_block(cond_block);
+                let has_cond = if let Some(cond_expr) = &for_stmt.condition {
+                    let cond_val = self.compile_expr(builder, cond_expr, module)?;
+                    builder.ins().brif(cond_val, body_block, &[], exit_block, &[]);
+                    true
+                } else {
+                    // No condition: infinite loop
+                    builder.ins().jump(body_block, &[]);
+                    false
+                };
+                // Only seal condition block after all jumps to it have been emitted
 
-                // Final merge block
+                // === Body ===
+                builder.switch_to_block(body_block);
+                for stmt in &for_stmt.block.block {
+                    self.compile_stmt(builder, stmt, module)?;
+                }
+                builder.ins().jump(incr_block, &[]);
+                builder.seal_block(body_block); // Seal body after jump to incr
+
+                // === Increment ===
+                builder.switch_to_block(incr_block);
+                if let Some(incr_expr) = &for_stmt.increment {
+                    self.compile_expr(builder, incr_expr, module)?;
+                }
+                builder.ins().jump(cond_block, &[]);
+                builder.seal_block(cond_block);
+                builder.seal_block(incr_block); // All predecessors (body) are done
+
+                // === Exit block ===
                 builder.switch_to_block(exit_block);
                 builder.seal_block(exit_block);
+
+                self.loop_stack.pop();
             }
 
 
@@ -230,6 +304,21 @@ impl StmtCompiler {
     pub fn compile_expr(&mut self, builder: &mut FunctionBuilder, expr: &Expr, module: &mut JITModule) -> anyhow::Result<Value> {
         match expr {
             Expr::Number(n) => Ok(builder.ins().iconst(types::I64, *n)),
+            
+            Expr::Comparison { lhs, op, rhs } => {
+                let lhs_val = self.compile_expr(builder, lhs, module)?;
+                let rhs_val = self.compile_expr(builder, rhs, module)?;
+                
+                match op {
+                    ComparisonOp::Equal => Ok(builder.ins().icmp(IntCC::Equal, lhs_val, rhs_val)),
+                    ComparisonOp::NotEqual => Ok(builder.ins().icmp(IntCC::NotEqual, lhs_val, rhs_val)),
+                    ComparisonOp::LessThan => Ok(builder.ins().icmp(IntCC::SignedLessThan, lhs_val, rhs_val)),
+                    ComparisonOp::LessThanOrEqual => Ok(builder.ins().icmp(IntCC::SignedLessThanOrEqual, lhs_val, rhs_val)),
+                    ComparisonOp::GreaterThan => Ok(builder.ins().icmp(IntCC::SignedGreaterThan, lhs_val, rhs_val)),
+                    ComparisonOp::GreaterThanOrEqual => Ok(builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lhs_val, rhs_val)),
+                }
+            }
+            
             Expr::Binary { left, op, right } => {
                 // Attempt constant folding first
                 if let (Expr::Number(lhs), Expr::Number(rhs)) = (&**left, &**right) {
@@ -336,6 +425,45 @@ impl StmtCompiler {
                 let int_val = if *val { 1 } else { 0 };
                 Ok(builder.ins().iconst(types::I8, int_val))
             }
+
+            Expr::Assignment { lhs, op, rhs } => {
+                // Only support variable assignments for now
+                let var_name = match &**lhs {
+                    Expr::Ident(name) => name,
+                    _ => anyhow::bail!("Only simple variable identifiers can be assigned to"),
+                };
+
+                let var = *self.variables.get(var_name)
+                    .ok_or_else(|| anyhow::anyhow!("Variable not found"))?;
+
+                let rhs_val = self.compile_expr(builder, rhs, module)?;
+
+                // Handle compound assignments
+                let final_val = match op.as_str() {
+                    "=" => rhs_val,
+                    "+=" => {
+                        let current_val = builder.use_var(var);
+                        builder.ins().iadd(current_val, rhs_val)
+                    }
+                    "-=" => {
+                        let current_val = builder.use_var(var);
+                        builder.ins().isub(current_val, rhs_val)
+                    }
+                    "*=" => {
+                        let current_val = builder.use_var(var);
+                        builder.ins().imul(current_val, rhs_val)
+                    }
+                    "/=" => {
+                        let current_val = builder.use_var(var);
+                        builder.ins().sdiv(current_val, rhs_val)
+                    }
+                    _ => anyhow::bail!("Unsupported assignment operator: {}", op),
+                };
+
+                builder.def_var(var, final_val);
+                Ok(final_val)
+            }
+
 
             _ => anyhow::bail!("Unsupported expression"),
         }

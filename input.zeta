@@ -1,8 +1,5 @@
 main() {
-    let firstNumber: i32 = add(1, 2)
-    println_int(firstNumber)
-}
-
-add(a: i32, b: i32): i32 {
-    return a + b
+    for (let mut i: i32 = 0; i < 10; i += 1) {
+        println_int(i)
+    }
 }
