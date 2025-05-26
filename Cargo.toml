@@ -1,0 +1,14 @@
+[package]
+name = "untitled"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+members = [
+    "virtual_machine",
+    "zeta_compiler"
+]
+
+[dependencies]
+#once_cell = "1.21.3"
+#zeta_compiler = { path = "./zeta_compiler" }

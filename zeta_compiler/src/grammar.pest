@@ -1,0 +1,113 @@
+WHITESPACE   = _{ " " | "\t" | "\r" | "\n" }
+COMMENT      = _{ "#" ~ (!"\n" ~ ANY)* }
+
+program      =  { SOI ~ stmt* ~ EOI }
+
+stmt         = _{ import_stmt | let_stmt | return_stmt | if_stmt | while_stmt | for_stmt | match_stmt | unsafe_block | fun_decl | class_decl | expr_stmt }
+
+import_stmt  = { "import" ~ string }
+let_stmt     = { "let" ~ mut_keyword? ~ ident ~ type_annotation? ~ "=" ~ expr  }
+return_stmt  = { "return" ~ expr? }
+if_stmt      = { "if" ~ expr ~ block ~ (("else" ~ (block | if_stmt))?) }
+while_stmt   = { "while" ~ expr ~ block }
+for_stmt = { "for" ~ "(" ~ let_stmt? ~ ";" ~ expr? ~ ";" ~ expr? ~ ")" ~ block }
+
+stmt_ending = _{ "\n" | WHITESPACE* }
+
+
+match_stmt   = { "match" ~ expr ~ "{" ~ match_arm* ~ "}" }
+unsafe_block = { "unsafe" ~ block }
+expr_stmt    = { expr }
+
+
+
+fun_decl = {
+    visibility_modifier? ~ unsafe_modifier? ~ ident ~ param_list ~ type_annotation? ~ block
+}
+
+visibility_modifier = { "public" | "private" | "protected" }
+unsafe_modifier = { "unsafe" }
+
+
+class_decl   = { visibility? ~ "class" ~ ident ~ param_list? ~ block }
+
+param_list   = { "(" ~ (param ~ ("," ~ param)*)? ~ ")" }
+param        = { ident ~ type_annotation? }
+type_annotation = { ":" ~ type }
+
+block        = { "{" ~ stmt* ~ "}" }
+
+match_arm    = { pattern ~ "=>" ~ block }
+
+pattern      = _{ ident | number | string | tuple_pattern | wildcard_pattern }
+tuple_pattern = { "(" ~ (pattern ~ ("," ~ pattern)*)? ~ ")" }
+wildcard_pattern = { "_" }
+
+visibility   = _{ public_keyword | private_keyword | protected_keyword }
+public_keyword    = { "public" }
+private_keyword   = { "private" }
+protected_keyword = { "protected" }
+
+mut_keyword  = { "mut" }
+
+keyword = _{ "true" | "false" | "if" | "else" | "while" | "return" | "let" | "for" }
+
+ident = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+number = @{ "-"? ~ ASCII_DIGIT+ }
+string = @{ "\"" ~ string_inner* ~ "\"" }
+string_inner = _{ "\\\"" | "\\\\" | (!"\"" ~ ANY) }
+
+
+expr = { assignment }
+
+assignment = { lhs ~ assign_op ~ expr | logic_or }
+
+
+lhs = { ident }
+
+boolean = { "true" | "false" }
+
+logic_or = { logic_and ~ ("||" ~ logic_and)* }
+logic_and = { bit_or ~ ("&&" ~ bit_or)* }
+bit_or = { bit_xor ~ ("|" ~ bit_xor)* }
+bit_xor = { bit_and ~ ("^" ~ bit_and)* }
+bit_and = { equality ~ ("&" ~ equality)* }
+equality = { comparison ~ (("==" | "!=") ~ comparison)* }
+comparison = { shift ~ (("<" | ">" | "<=" | ">=") ~ shift)* }
+shift = { term ~ (("<<" | ">>") ~ term)* }
+term = { factor ~ (operator_add_sub ~ factor)* }
+factor = { unary ~ (operator_mul_div ~ unary)* }
+unary = { ("!" | "-" | "+")* ~ primary }
+primary = { ident ~ call_args? | boolean | number | string | parenthesized_expr }
+
+call_args = { "(" ~ (expr ~ ("," ~ expr)*)? ~ ")" }
+
+compound_assign_op = {
+    "+=" | "-=" | "*=" | "/=" | "%=" |
+    ">>=" | "<<=" | "&=" | "|=" | "^="
+}
+
+assign_expr = {
+    ident ~ (assign_op | compound_assign_op) ~ expr
+}
+
+type = {
+    ident | "i32" | "u32" | "f64" | "uf64" | "i64" | "u64" | "i128" | "u128" | "u8" | "i8" | "i16" | "u16" | "boolean" | "str"
+}
+
+parenthesized_expr = { "(" ~ expr ~ ")" }
+operator_add_sub = { "+" | "-" }
+operator_mul_div = { "*" | "/" | "%" }
+operator_pow = { "^" }
+operator_bit_or = { "|" }
+operator_bit_and = { "&" }
+operator_shift = { ">>" | "<<" | ">>>" | "<<<" }
+
+assign_op = { "=" | compound_assign_op }
+
+comparison_op = { "==" | "!=" | "<=" | ">=" | "<" | ">" }
+
+comparison_expr = {
+    expr ~ comparison_op ~ expr
+}
+
