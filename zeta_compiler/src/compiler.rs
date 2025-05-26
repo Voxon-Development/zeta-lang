@@ -97,6 +97,48 @@ impl StmtCompiler {
                 self.loop_stack.pop();
             }
 
+            Stmt::Match(match_stmt) => {
+                let scrutinee_val = self.compile_expr(builder, &match_stmt.expr, module)?;
+                let scrutinee_ty = builder.func.dfg.value_type(scrutinee_val);
+
+                let mut arm_blocks = Vec::new();
+                let exit_block = builder.create_block();
+
+                // Pre-declare blocks for all arms
+                for _ in &match_stmt.arms {
+                    arm_blocks.push(builder.create_block());
+                }
+
+                // Compare patterns and branch
+                for (i, arm) in match_stmt.arms.iter().enumerate() {
+                    if let Pattern::Literal(ref lit_expr) = arm.pattern {
+                        let expected_val = self.compile_expr(builder, lit_expr, module)?;
+                        let is_match = builder.ins().icmp(IntCC::Equal, scrutinee_val, expected_val);
+                        builder.ins().brif(is_match, arm_blocks[i], &[], /* else */ exit_block, &[]);
+                    } else if let Pattern::Wildcard = arm.pattern {
+                        // Wildcard arm - unconditional jump
+                        builder.ins().jump(arm_blocks[i], &[]);
+                    } else {
+                        panic!("Unsupported pattern in match arm");
+                    }
+                }
+
+                // Emit code for each arm
+                for (i, arm) in match_stmt.arms.iter().enumerate() {
+                    builder.switch_to_block(arm_blocks[i]);
+                    for stmt in &arm.block.block {
+                        self.compile_stmt(builder, stmt, module)?;
+                    }
+                    builder.ins().jump(exit_block, &[]);
+                    builder.seal_block(arm_blocks[i]);
+                }
+
+                // Final merge block
+                builder.switch_to_block(exit_block);
+                builder.seal_block(exit_block);
+            }
+
+
             Stmt::Break => {
                 if let Some((_, break_block)) = self.loop_stack.last() {
                     builder.ins().jump(*break_block, &[]);
