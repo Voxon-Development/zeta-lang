@@ -33,13 +33,18 @@ class_decl   = { visibility? ~ "class" ~ ident ~ param_list? ~ block }
 
 param_list   = { "(" ~ (param ~ ("," ~ param)*)? ~ ")" }
 param        = { ident ~ type_annotation? }
-type_annotation = { ":" ~ type }
+type_annotation = { ":" ~ var_type }
 
 block        = { "{" ~ stmt* ~ "}" }
 
 match_arm    = { pattern ~ "=>" ~ block }
 
 pattern      = _{ ident | number | string | tuple_pattern | wildcard_pattern }
+
+class_initialization = { ident ~ "{" ~ (expr_list)? ~ "}" }
+
+expr_list = { expr ~ ("," ~ expr)* }
+
 tuple_pattern = { "(" ~ (pattern ~ ("," ~ pattern)*)? ~ ")" }
 wildcard_pattern = { "_" }
 
@@ -58,7 +63,7 @@ string = @{ "\"" ~ string_inner* ~ "\"" }
 string_inner = _{ "\\\"" | "\\\\" | (!"\"" ~ ANY) }
 
 
-expr = { assignment }
+expr = _{ class_initialization | assignment }
 
 assignment = { lhs ~ assign_op ~ expr | logic_or }
 
@@ -82,7 +87,11 @@ comparison_operators = { "<" | ">" | "<=" | ">=" | "!=" | "==" }
 term = { factor ~ (operator_add_sub ~ factor)* }
 factor = { unary ~ (operator_mul_div ~ unary)* }
 unary = { ("!" | "-" | "+")* ~ primary }
-primary = { ident ~ call_args? | boolean | number | string | parenthesized_expr }
+
+primary = { atom ~ ( ( "." ~ ident ) | call_args )* }
+
+atom = _{ parenthesized_expr | ident | number | string | class_initialization | boolean }
+
 
 call_args = { "(" ~ (expr ~ ("," ~ expr)*)? ~ ")" }
 
@@ -95,7 +104,7 @@ assign_expr = {
     ident ~ (assign_op | compound_assign_op) ~ expr
 }
 
-type = {
+var_type = {
     ident | "i32" | "u32" | "f64" | "uf64" | "i64" | "u64" | "i128" | "u128" | "u8" | "i8" | "i16" | "u16" | "boolean" | "str"
 }
 

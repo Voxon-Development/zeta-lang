@@ -7,8 +7,16 @@ use cranelift::codegen::{ir, Context};
 use std::collections::HashMap;
 use crate::ast;
 
+use std;
+use std::sync::Mutex;
+use lazy_static::lazy_static;
+
 type VariableMap = HashMap<String, Variable>;
 type FunctionIds = HashMap<String, FuncId>;
+
+lazy_static! {
+    static ref CLASSES: Mutex<HashMap<String, CompiledClass>> = Mutex::new(HashMap::new());
+}
 
 pub struct Codegen {
     builder_context: FunctionBuilderContext,
@@ -23,6 +31,7 @@ pub struct StmtCompiler {
     func_ids: FunctionIds,
     string_counter: usize,
     loop_stack: Vec<(ir::Block, ir::Block)>,
+    pub variable_types: HashMap<String, String>,
     did_return: bool
 }
 
@@ -33,19 +42,61 @@ impl StmtCompiler {
             func_ids,
             string_counter: 0,
             loop_stack: Vec::new(),
-            did_return: false,
+            variable_types: HashMap::new(),
+            did_return: false
         }
     }
 
-    pub fn compile_stmt(&mut self, builder: &mut FunctionBuilder<'_>, stmt: &Stmt, module: &mut JITModule) -> anyhow::Result<()> {
+    pub fn compile_stmt(
+        &mut self, 
+        builder: &mut FunctionBuilder<'_>, 
+        stmt: &Stmt, 
+        module: &mut JITModule
+    ) -> anyhow::Result<()> {
         match stmt {
             Stmt::ExprStmt(expr_stmt) => {
-                let _ = self.compile_expr(builder, &expr_stmt.expr, module)?;
+                self.compile_expr(builder, &expr_stmt.expr, module)?;
             }
+
             Stmt::Let(let_stmt) => {
                 let value = self.compile_expr(builder, &let_stmt.value, module)?;
                 let variable = Variable::new(self.variables.len());
-                builder.declare_var(variable, parse_type(let_stmt.type_annotation.clone().unwrap()));
+
+                // Track the class type
+                if let Some(ty) = &let_stmt.type_annotation {
+                    if let ast::Type::Class(name) = ty {
+                        self.variable_types.insert(let_stmt.ident.clone(), name.clone());
+                    }
+                } else {
+                    match &*let_stmt.value {
+                        Expr::Call { callee, .. } => {
+                            if let Expr::Ident(class_name) = &**callee {
+                                self.variable_types.insert(let_stmt.ident.clone(), class_name.clone());
+                            }
+                        }
+
+                        Expr::ClassInit { callee, .. } => {
+                            match &**callee {
+                                Expr::Ident(string) => {
+                                    if let Some(class_ty) = self.variable_types.get(string) {
+                                        self.variable_types.insert(let_stmt.ident.clone(), class_ty.clone());
+                                    }
+                                }
+                                
+                                _ => {}
+                            }
+                        }
+
+                        a => {
+                            // TODO
+                            println!("{:?}", a);
+                        }
+                    }
+                }
+
+                builder.declare_var(variable, let_stmt.type_annotation.clone()
+                    .map(parse_type)
+                    .unwrap_or_else(|| builder.func.dfg.value_type(value)));
                 builder.def_var(variable, value);
                 self.variables.insert(let_stmt.ident.clone(), variable);
             }
@@ -171,9 +222,7 @@ impl StmtCompiler {
                 self.loop_stack.push((incr_block, exit_block));
 
                 // === Jump to condition ===
-                //let current_block = builder.current_block().unwrap();
                 builder.ins().jump(cond_block, &[]);
-                //builder.seal_block(current_block); // Seal previous block before branching out
 
                 // === Condition check ===
                 builder.switch_to_block(cond_block);
@@ -301,14 +350,15 @@ impl StmtCompiler {
     }
 
 
+    //noinspection RsUnwrap
     pub fn compile_expr(&mut self, builder: &mut FunctionBuilder, expr: &Expr, module: &mut JITModule) -> anyhow::Result<Value> {
         match expr {
             Expr::Number(n) => Ok(builder.ins().iconst(types::I64, *n)),
-            
+
             Expr::Comparison { lhs, op, rhs } => {
                 let lhs_val = self.compile_expr(builder, lhs, module)?;
                 let rhs_val = self.compile_expr(builder, rhs, module)?;
-                
+
                 match op {
                     ComparisonOp::Equal => Ok(builder.ins().icmp(IntCC::Equal, lhs_val, rhs_val)),
                     ComparisonOp::NotEqual => Ok(builder.ins().icmp(IntCC::NotEqual, lhs_val, rhs_val)),
@@ -318,7 +368,7 @@ impl StmtCompiler {
                     ComparisonOp::GreaterThanOrEqual => Ok(builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lhs_val, rhs_val)),
                 }
             }
-            
+
             Expr::Binary { left, op, right } => {
                 // Attempt constant folding first
                 if let (Expr::Number(lhs), Expr::Number(rhs)) = (&**left, &**right) {
@@ -372,25 +422,50 @@ impl StmtCompiler {
                 // Define data by passing raw bytes
                 module.define_data(data_id, &desc).expect("TODO: panic message");
 
-
-                // Create a data reference inside the current function
                 let local_id = module.declare_data_in_func(data_id, &mut builder.func);
 
-                // Get a pointer to the data object
                 let ptr = builder.ins().symbol_value(types::I64, local_id);
 
                 Ok(ptr)
             },
 
-            Expr::Call { callee, arguments } => {
-                let func_name = match &**callee {
+            Expr::ClassInit { callee, arguments } => {
+                let class_name = match &**callee {
                     Expr::Ident(name) => name,
-                    _ => anyhow::bail!("Only direct function identifiers can be called"),
+                    _ => anyhow::bail!("Expected identifier in class init"),
                 };
 
-                let func_id = *self.func_ids.get(func_name)
-                    .ok_or_else(|| anyhow::anyhow!("Function `{}` not found", func_name))?;
+                let classes = CLASSES.lock().unwrap();
+                let compiled_class = classes.get(class_name).ok_or_else(|| anyhow::anyhow!("Class `{}` not found", class_name))?;
 
+                let param_names = compiled_class.field_layout.param_names.clone(); // e.g., ["x", "y"]
+
+                if arguments.len() != param_names.len() {
+                    anyhow::bail!("Expected {} arguments for class `{}`, got {}", param_names.len(), class_name, arguments.len());
+                }
+
+                let stack_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    compiled_class.field_layout.total_size,
+                ));
+                let base_ptr = builder.ins().stack_addr(types::I64, stack_slot, 0);
+
+                for (param_name, arg_expr) in param_names.iter().zip(arguments.iter()) {
+                    let offset = *compiled_class.field_layout.offsets.get(param_name)
+                        .ok_or_else(|| anyhow::anyhow!("Missing offset for field `{}`", param_name))? as i32;
+                    let arg_val = self.compile_expr(builder, arg_expr, module)?;
+
+                    builder.ins().store(MemFlags::new(), arg_val, base_ptr, offset);
+                }
+
+                Ok(base_ptr)
+            }
+
+            Expr::Call { callee, arguments } => {
+                let func_name = self.get_name(builder, module, callee);
+
+                let func_id = *self.func_ids.get(&func_name)
+                    .ok_or_else(|| anyhow::anyhow!("Function `{}` not found", func_name))?;
 
                 let func_ref = module.declare_func_in_func(func_id, &mut builder.func);
                 let mut arg_vals = Vec::new();
@@ -402,12 +477,8 @@ impl StmtCompiler {
                 let call = builder.ins().call(func_ref, &arg_vals);
                 let results = builder.inst_results(call);
 
-
-
                 if results.is_empty() {
-                    // If the call has no return value, return a fake value or bail depending on context
-                    // In a real compiler, you'd track type info and ensure this matches expected usage
-                    Ok(builder.ins().iconst(types::I8, 0)) // or: bail!("Expected return value from function")
+                    Ok(builder.ins().iconst(types::I8, 0))
                 } else {
                     Ok(results[0])
                 }
@@ -468,8 +539,39 @@ impl StmtCompiler {
             _ => anyhow::bail!("Unsupported expression"),
         }
     }
+
+    fn get_name(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        module: &mut JITModule,
+        callee: &Box<Expr>,
+    ) -> String {
+        match &**callee {
+            // Direct identifier call like `foo()`
+            Expr::Ident(name) => name.clone(),
+
+            // Object method call like `obj.method()`
+            Expr::Get { object, field } => {
+                // Expect object to be an identifier like `obj`
+                if let Expr::Ident(object_name) = &**object {
+                    // Look up type of the object in the symbol table
+                    let class_name = self.variable_types.get(object_name).unwrap_or_else(|| {
+                        panic!("Unknown type for object '{}'", object_name);
+                    });
+
+                    format!("{}_{}", class_name, field)
+                } else {
+                    panic!("Only simple identifiers are supported for method access (e.g., `obj.method`)");
+                }
+            }
+
+            _ => panic!("Only direct identifiers or field accesses are valid for function calls"),
+        }
+    }
+
 }
 
+#[derive(Clone)]
 struct CompiledClass {
     name: String,
     field_layout: FieldLayout,
@@ -487,13 +589,21 @@ impl Codegen {
         }
     }
 
-    fn compile_class(&mut self, class: &ClassDecl, module: &mut JITModule) -> CompiledClass {
+    fn compile_class(&mut self, class: &ClassDecl, module: &mut JITModule) -> anyhow::Result<CompiledClass> {
         let mut methods = Vec::new();
 
         for stmt in class.body.clone().into_iter() {
             match stmt {
                 Stmt::FuncDecl(f) => {
-                    methods.push(f.clone());
+                    methods.push(FuncDecl {
+                        visibility: f.visibility,
+                        is_async: f.is_async,
+                        is_unsafe: f.is_unsafe,
+                        name: class.name.clone() + "_" + &f.name,
+                        params: f.params,
+                        return_type: f.return_type,
+                        body: f.body,
+                    });
                 }
                 _ => unimplemented!()
             }
@@ -501,14 +611,29 @@ impl Codegen {
 
         let field_layout = compute_field_offsets(&class.params);
 
-        self.declare_funcs(methods.as_slice(), module).expect("Expected to be able to declare functions");
-        self.define_funcs(methods.as_slice(), module).expect("Expected to be able to define functions");
+        self.declare_funcs(methods.as_slice(), module)?;
+        self.define_funcs(methods.as_slice(), module)?;
 
-        CompiledClass {
+        let compiled_class = CompiledClass {
             name: class.name.clone(),
             field_layout,
             methods: methods.clone()
+        };
+
+        let mut classes = CLASSES.lock().unwrap();
+
+        classes.insert(class.name.clone(), compiled_class.clone());
+        classes.iter().for_each(|(f, _)| println!("{:?}", f));
+
+
+        Ok(compiled_class)
+    }
+
+    pub fn declare_classes(&mut self, class_decls: &[ClassDecl], module: &mut JITModule) -> anyhow::Result<()> {
+        for class_decl in class_decls {
+            self.compile_class(class_decl, module)?;
         }
+        Ok(())
     }
 
     pub fn declare_funcs(&mut self, funcs: &[FuncDecl], module: &mut JITModule) -> anyhow::Result<()> {
@@ -536,7 +661,7 @@ impl Codegen {
             let func_id = *self
                 .func_ids
                 .get(&func.name)
-                .ok_or_else(|| anyhow::anyhow!("Function `{}` not declared", func.name))?;
+                .ok_or_else(|| anyhow::anyhow!("Function {} not declared", func.name))?;
 
             let mut sig = module.make_signature();
             for param in &func.params {
@@ -584,7 +709,7 @@ impl Codegen {
 
                 self.stmt_compiler.did_return = false;
             }
-            
+
             println!("Function '{}' registered with return type {:?}", self.ctx.func.name, self.ctx.func.signature.returns);
 
             module.define_function(func_id, &mut self.ctx)?;
@@ -609,41 +734,43 @@ pub fn parse_type(variable_type: ast::Type) -> types::Type {
         ast::Type::UF32 => types::F32,
         ast::Type::Void => types::I8,
         ast::Type::Boolean => types::I8,
+        ast::Type::Class(_) => types::I64,
         _ => panic!("Unexpected type in parse_type: {:?}", variable_type),
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct FieldLayout {
-    pub offsets: HashMap<String, usize>,
-    pub total_size: usize,
+    pub offsets: HashMap<String, u32>, // field name → offset
+    pub param_names: Vec<String>,      // ordered list of field names
+    pub total_size: u32,
 }
 
-fn compute_field_offsets(params: &Option<Vec<Param>>) -> FieldLayout {
+pub fn compute_field_offsets(params: &Option<Vec<Param>>) -> FieldLayout {
     let mut offsets = HashMap::new();
-    let mut offset = 0;
+    let mut param_names = Vec::new();
+    let mut offset = 0u32;
 
-    if let Some(fields) = params {
-        for param in fields {
-            // Assume 8-byte alignment for simplicity (like a pointer)
-            let size = type_size(&param.type_annotation.clone().unwrap()); // You define this
-            offset = align_to(offset, size);
+    if let Some(params) = params {
+        for param in params {
             offsets.insert(param.name.clone(), offset);
-            offset += size;
+            param_names.push(param.name.clone());
+            offset += 8; // assuming all fields are i64
         }
     }
 
     FieldLayout {
         offsets,
+        param_names,
         total_size: offset,
     }
 }
 
-fn align_to(offset: usize, align: usize) -> usize {
+fn align_to(offset: u32, align: u32) -> u32 {
     (offset + align - 1) & !(align - 1)
 }
 
-fn type_size(ty: &ast::Type) -> usize {
+fn type_size(ty: &ast::Type) -> u32 {
     match ty {
         ast::Type::I64 | ast::Type::F64 => 8,
         ast::Type::I32 | ast::Type::F32 | ast::Type::U32 => 4,

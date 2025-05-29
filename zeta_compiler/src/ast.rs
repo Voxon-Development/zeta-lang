@@ -173,6 +173,10 @@ pub enum Expr {
         op: ComparisonOp,
         rhs: Box<Expr>,
     },
+    ClassInit {
+        callee: Box<Expr>,
+        arguments: Vec<Expr>,
+    },
     Binary {
         left: Box<Expr>,
         op: Op,
@@ -181,6 +185,10 @@ pub enum Expr {
     Call {
         callee: Box<Expr>,
         arguments: Vec<Expr>,
+    },
+    Get {
+        object: Box<Expr>,
+        field: String
     },
     Assignment {
         lhs: Box<Expr>, 

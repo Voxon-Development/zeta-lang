@@ -14,7 +14,6 @@ use crate::compiler::parse_type;
 #[grammar = "grammar.pest"]
 pub struct ZetaParser;
 
-
 pub fn parse_program(input: &str) -> Result<Vec<Stmt>, pest::error::Error<Rule>> {
     let mut pairs = ZetaParser::parse(Rule::program, input)?;
     /*for pair in pairs.clone() {
@@ -136,7 +135,7 @@ fn parse_class_decl(pair: &Pair<Rule>) -> Stmt {
                 .collect::<Vec<_>>();
             Some(params)
         } else {
-            inner.next(); // consume optional parens if empty
+            // Don't consume if it's not a param_list!
             None
         }
     } else {
@@ -481,11 +480,27 @@ fn parse_expr(pair: Pair<Rule>) -> Expr {
             parse_expr(inner)
         }
 
+        Rule::class_initialization => {
+            let mut inner = pair.into_inner();
+            let class_name = parse_expr(inner.next().unwrap());
+
+            let arguments = if let Some(arg_group) = inner.next() {
+                arg_group.into_inner().map(parse_expr).collect()
+            } else {
+                vec![]
+            };
+
+            Expr::ClassInit {
+                callee: Box::new(class_name),
+                arguments,
+            }
+        }
+
         Rule::primary => {
-            let mut inner = pair.clone().into_inner();
+            let mut inner = pair.into_inner();
             let mut expr = parse_expr(inner.next().unwrap());
 
-            while let Some(next) = inner.next() {
+            for next in inner {
                 match next.as_rule() {
                     Rule::call_args => {
                         let args = next
@@ -498,13 +513,19 @@ fn parse_expr(pair: Pair<Rule>) -> Expr {
                             arguments: args,
                         };
                     }
-                    _ => expr = parse_expr(pair.clone().into_inner().next().unwrap())
+                    Rule::ident => {
+                        // This is the `.field` part
+                        expr = Expr::Get {
+                            object: Box::new(expr),
+                            field: next.as_str().to_string(),
+                        };
+                    }
+                    _ => unreachable!("Unexpected rule in primary tail: {:?}", next.as_rule())
                 }
             }
 
             expr
         }
-
 
         _ => panic!("Unexpected expression rule: {:?}", pair.as_rule()),
     }

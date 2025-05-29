@@ -2,7 +2,7 @@ use cranelift::prelude::{types, AbiParam};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module};
 use pest::error::LineColLocation::{Pos, Span};
-use crate::ast::{FuncDecl, Stmt};
+use crate::ast::{ClassDecl, FuncDecl, Stmt};
 use crate::compiler::Codegen;
 
 mod parser;
@@ -44,6 +44,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let contents_of_file = std::fs::read_to_string("input.zeta")?;
 
     let stmts = parser::parse_program(contents_of_file.as_str())?; // Returns Vec<Stmt>
+    
+    let classes: Vec<ClassDecl> = stmts.iter()
+        .filter(|stmt| if let Stmt::ClassDecl(c) = stmt { true } else { false })
+        .map(|stmt| match stmt {
+            Stmt::ClassDecl(c) => c.clone(),
+            _ => panic!("Expected ClassDecl"),
+        })
+        .collect();
 
     for stmt in &stmts {
         println!("{:?}", stmt);
@@ -63,13 +71,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut sig = module.make_signature();
     sig.params.push(AbiParam::new(types::I64)); // string pointer
+
+    let mut another_sig = module.make_signature();
+    another_sig.params.push(AbiParam::new(types::I32)); // string pointer
     // Return type if needed: sig.returns.push(...)
 
     let func_id = module.declare_function("println_str", Linkage::Import, &sig)?;
     codegen.func_ids.insert("println_str".to_string(), func_id);
 
-    let func_id_2 = module.declare_function("println_int", Linkage::Import, &sig)?;
+    let func_id_2 = module.declare_function("println_int", Linkage::Import, &another_sig)?;
     codegen.func_ids.insert("println_int".to_string(), func_id_2);
+    
+    codegen.declare_classes(classes.as_slice(), &mut module)?;
 
     // --- First Pass: Declare all function signatures ---
     codegen.declare_funcs(&funcs, &mut module)?;
