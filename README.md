@@ -19,7 +19,7 @@ main() {
 Visibility modifiers are optional.
 
 Current stuff to be done:
-- [ ] OOP
+- [x] OOP
 - [x] Functions (Return values too)
 - [x] Type inference
 - [ ] Extensive FFI and Importing (Dependent on OOP)
