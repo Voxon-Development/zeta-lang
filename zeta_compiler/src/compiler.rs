@@ -3,12 +3,15 @@ use cranelift::prelude::*;
 use cranelift_jit::JITModule;
 use cranelift_module::{DataDescription, FuncId, Linkage, Module};
 
-use cranelift::codegen::{ir, Context};
-use std::collections::HashMap;
+use cranelift::codegen::{ir, CodegenError, Context};
+use std::collections::{HashMap, HashSet};
 use crate::ast;
 
 use std;
 use std::sync::Mutex;
+use anyhow::Error;
+use cranelift::codegen::ir::stackslot::StackSize;
+use cranelift::codegen::verifier::VerifierError;
 use lazy_static::lazy_static;
 
 type VariableMap = HashMap<String, Variable>;
@@ -25,14 +28,17 @@ pub struct Codegen {
     pub func_ids: FunctionIds,
 }
 
-
+#[derive(Clone)]
 pub struct StmtCompiler {
     variables: VariableMap,
     func_ids: FunctionIds,
     string_counter: usize,
     loop_stack: Vec<(ir::Block, ir::Block)>,
     pub variable_types: HashMap<String, String>,
-    did_return: bool
+    did_return: bool,
+    class_fields: HashSet<String>,
+    in_class_scope: bool,
+    field_offsets: HashMap<String, i32>
 }
 
 impl StmtCompiler {
@@ -43,8 +49,15 @@ impl StmtCompiler {
             string_counter: 0,
             loop_stack: Vec::new(),
             variable_types: HashMap::new(),
-            did_return: false
+            did_return: false,
+            class_fields: HashSet::new(),
+            in_class_scope: false,
+            field_offsets: HashMap::new()
         }
+    }
+
+    fn lookup_local_variable(&self, name: &str) -> Option<Variable> {
+        self.variables.get(name).cloned()
     }
 
     pub fn compile_stmt(
@@ -64,6 +77,7 @@ impl StmtCompiler {
 
                 // Track the class type
                 if let Some(ty) = &let_stmt.type_annotation {
+
                     if let ast::Type::Class(name) = ty {
                         self.variable_types.insert(let_stmt.ident.clone(), name.clone());
                     }
@@ -82,21 +96,19 @@ impl StmtCompiler {
                                         self.variable_types.insert(let_stmt.ident.clone(), class_ty.clone());
                                     }
                                 }
-                                
+
                                 _ => {}
                             }
                         }
 
-                        a => {
-                            // TODO
-                            println!("{:?}", a);
-                        }
+                        a => {}
                     }
                 }
 
                 builder.declare_var(variable, let_stmt.type_annotation.clone()
                     .map(parse_type)
                     .unwrap_or_else(|| builder.func.dfg.value_type(value)));
+
                 builder.def_var(variable, value);
                 self.variables.insert(let_stmt.ident.clone(), variable);
             }
@@ -370,24 +382,6 @@ impl StmtCompiler {
             }
 
             Expr::Binary { left, op, right } => {
-                // Attempt constant folding first
-                if let (Expr::Number(lhs), Expr::Number(rhs)) = (&**left, &**right) {
-                    let folded = match op {
-                        Op::Add => Some(lhs + rhs),
-                        Op::Sub => Some(lhs - rhs),
-                        Op::Mul => Some(lhs * rhs),
-                        Op::Div => {
-                            if *rhs == 0 { return anyhow::Result::Err(anyhow::anyhow!("Division while RHS is 0")) }
-                            Some(lhs / rhs)
-                        },
-                        _ => None,
-                    };
-
-                    if let Some(value) = folded {
-                        return Ok(builder.ins().iconst(types::I64, value));
-                    }
-                }
-
                 // Otherwise, compile normally
                 let left_val = self.compile_expr(builder, left, module)?;
                 let right_val = self.compile_expr(builder, right, module)?;
@@ -429,6 +423,30 @@ impl StmtCompiler {
                 Ok(ptr)
             },
 
+            Expr::Get { object, field } => {
+                // Handle `self.field`
+                if let Expr::Ident(obj_name) = &**object {
+                    if obj_name == "self" && self.in_class_scope {
+                        let self_var = self.variables.get("self")
+                            .ok_or_else(|| anyhow::anyhow!("`self` not found in class scope"))?;
+
+                        let base_ptr = builder.use_var(*self_var);
+                        let offset = *self.field_offsets.get(field)
+                            .ok_or_else(|| anyhow::anyhow!("Field `{}` not found", field))?;
+
+                        // Always loading as I64 for now
+                        let val = builder.ins().load(types::I64, MemFlags::new(), base_ptr, offset);
+                        return Ok(val);
+                    }
+                }
+
+                if let Expr::Get { object, field } = &**object {
+                    return self.compile_expr(builder, object, module);
+                }
+
+                anyhow::bail!("Unsupported field access")
+            },
+
             Expr::ClassInit { callee, arguments } => {
                 let class_name = match &**callee {
                     Expr::Ident(name) => name,
@@ -446,13 +464,18 @@ impl StmtCompiler {
 
                 let stack_slot = builder.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot,
-                    compiled_class.field_layout.total_size,
+                    compiled_class.field_layout.total_size as StackSize,
                 ));
                 let base_ptr = builder.ins().stack_addr(types::I64, stack_slot, 0);
 
                 for (param_name, arg_expr) in param_names.iter().zip(arguments.iter()) {
-                    let offset = *compiled_class.field_layout.offsets.get(param_name)
-                        .ok_or_else(|| anyhow::anyhow!("Missing offset for field `{}`", param_name))? as i32;
+                    let offset = match compiled_class.field_layout.offsets.get(param_name) {
+                        Some(off) => *off,
+                        None => {
+                            anyhow::bail!("Missing offset for field `{param_name}`");
+                        }
+                    };
+
                     let arg_val = self.compile_expr(builder, arg_expr, module)?;
 
                     builder.ins().store(MemFlags::new(), arg_val, base_ptr, offset);
@@ -462,33 +485,83 @@ impl StmtCompiler {
             }
 
             Expr::Call { callee, arguments } => {
-                let func_name = self.get_name(builder, module, callee);
+                match &**callee {
+                    Expr::Get { object, field } => {
+                        // object.field(args...) → method call → inject `self`
+                        let self_val = self.compile_expr(builder, object, module)?;
+                        let func_name = self.get_name(builder, module, callee);
 
-                let func_id = *self.func_ids.get(&func_name)
-                    .ok_or_else(|| anyhow::anyhow!("Function `{}` not found", func_name))?;
+                        let func_id = *self.func_ids.get(&func_name)
+                            .ok_or_else(|| anyhow::anyhow!("Function `{}` not found", func_name))?;
 
-                let func_ref = module.declare_func_in_func(func_id, &mut builder.func);
-                let mut arg_vals = Vec::new();
-                for arg in arguments {
-                    let val = self.compile_expr(builder, arg, module)?;
-                    arg_vals.push(val);
-                }
+                        let mut all_args = vec![self_val];
+                        for arg in arguments {
+                            all_args.push(self.compile_expr(builder, arg, module)?);
+                        }
 
-                let call = builder.ins().call(func_ref, &arg_vals);
-                let results = builder.inst_results(call);
+                        let object_name = if let Expr::Ident(object_name) = &**object {
+                            object_name
+                        } else {
+                            panic!("Expected Modifier.");
+                        };
 
-                if results.is_empty() {
-                    Ok(builder.ins().iconst(types::I8, 0))
-                } else {
-                    Ok(results[0])
+                        let class_name = self.variable_types.get(object_name).unwrap_or_else(|| {
+                            panic!("Unknown type for object '{}'", object_name);
+                        });
+
+                        let method_name = format!("{}_{}", class_name, field);
+                        let func_ref = module.declare_func_in_func(func_id, builder.func);
+
+                        let call = builder.ins().call(func_ref, &all_args);
+                        let results = builder.inst_results(call);
+
+                        if results.is_empty() {
+                            Ok(builder.ins().iconst(types::I8, 0))
+                        } else {
+                            Ok(results[0])
+                        }
+                    }
+                    _ => {
+                        let func_name = self.get_name(builder, module, callee);
+
+                        let func_id = *self.func_ids.get(&func_name)
+                            .ok_or_else(|| anyhow::anyhow!("Function `{}` not found", func_name))?;
+
+                        let func_ref = module.declare_func_in_func(func_id, &mut builder.func);
+                        let mut arg_vals = Vec::new();
+                        for arg in arguments {
+                            let val = self.compile_expr(builder, arg, module)?;
+                            arg_vals.push(val);
+                        }
+
+                        let call = builder.ins().call(func_ref, &arg_vals);
+                        let results = builder.inst_results(call);
+
+                        if results.is_empty() {
+                            Ok(builder.ins().iconst(types::I8, 0))
+                        } else {
+                            Ok(results[0])
+                        }
+                    }
                 }
             }
 
             Expr::Ident(name) => {
-                if let Some(var) = self.variables.get(name) {
-                    Ok(builder.use_var(*var))
+                if let Some(var) = self.lookup_local_variable(name) {
+                    Ok(builder.use_var(var))
+                } else if self.in_class_scope {
+                    if self.class_fields.contains(name) {
+                        // Convert `x` to `Get { object: Ident("self"), field: "x" }`
+                        let get_expr = Expr::Get {
+                            object: Box::new(Expr::Ident("self".to_string())),
+                            field: name.clone(),
+                        };
+                        self.compile_expr(builder, &get_expr, module)
+                    } else {
+                        Err(Error::from(CodegenError::CodeTooLarge))
+                    }
                 } else {
-                    anyhow::bail!("Variable `{}` not found", name)
+                    Err(Error::from(CodegenError::CodeTooLarge))
                 }
             }
 
@@ -498,41 +571,68 @@ impl StmtCompiler {
             }
 
             Expr::Assignment { lhs, op, rhs } => {
-                // Only support variable assignments for now
                 let var_name = match &**lhs {
                     Expr::Ident(name) => name,
                     _ => anyhow::bail!("Only simple variable identifiers can be assigned to"),
                 };
 
-                let var = *self.variables.get(var_name)
-                    .ok_or_else(|| anyhow::anyhow!("Variable not found"))?;
+                if let Some(&var) = self.variables.get(var_name) {
+                    let rhs_val = self.compile_expr(builder, rhs, module)?;
 
-                let rhs_val = self.compile_expr(builder, rhs, module)?;
+                    // Handle compound assignments
+                    let final_val = match op.as_str() {
+                        "=" => rhs_val,
+                        "+=" => {
+                            let current_val = builder.use_var(var);
+                            builder.ins().iadd(current_val, rhs_val)
+                        }
+                        "-=" => {
+                            let current_val = builder.use_var(var);
+                            builder.ins().isub(current_val, rhs_val)
+                        }
+                        "*=" => {
+                            let current_val = builder.use_var(var);
+                            builder.ins().imul(current_val, rhs_val)
+                        }
+                        "/=" => {
+                            let current_val = builder.use_var(var);
+                            builder.ins().sdiv(current_val, rhs_val)
+                        }
+                        _ => anyhow::bail!("Unsupported assignment operator: {}", op),
+                    };
 
-                // Handle compound assignments
-                let final_val = match op.as_str() {
-                    "=" => rhs_val,
-                    "+=" => {
-                        let current_val = builder.use_var(var);
-                        builder.ins().iadd(current_val, rhs_val)
-                    }
-                    "-=" => {
-                        let current_val = builder.use_var(var);
-                        builder.ins().isub(current_val, rhs_val)
-                    }
-                    "*=" => {
-                        let current_val = builder.use_var(var);
-                        builder.ins().imul(current_val, rhs_val)
-                    }
-                    "/=" => {
-                        let current_val = builder.use_var(var);
-                        builder.ins().sdiv(current_val, rhs_val)
-                    }
-                    _ => anyhow::bail!("Unsupported assignment operator: {}", op),
-                };
+                    builder.def_var(var, final_val);
+                    return Ok(final_val)
+                }
 
-                builder.def_var(var, final_val);
-                Ok(final_val)
+
+                if let Some(offset) = self.field_offsets.get(var_name) {
+                    // Field of the current class instance (`self`)
+                    let self_val = self.variables.get("self")
+                        .ok_or_else(|| anyhow::anyhow!("No `self` variable in current context"))?;
+
+                    let base_ptr = builder.use_var(*self_val); // pointer to struct
+                    let field_addr = builder.ins().iadd_imm(base_ptr, *offset as i64);
+                    let rhs_val = self.compile_expr(builder, rhs, module)?;
+
+                    let var_type = builder.func.dfg.value_type(rhs_val);
+                    let current_val = builder.ins().load(var_type, MemFlags::new(), field_addr, 0);
+
+                    let final_val = match op.as_str() {
+                        "=" => rhs_val,
+                        "+=" => builder.ins().iadd(current_val, rhs_val),
+                        "-=" => builder.ins().isub(current_val, rhs_val),
+                        "*=" => builder.ins().imul(current_val, rhs_val),
+                        "/=" => builder.ins().sdiv(current_val, rhs_val),
+                        _ => anyhow::bail!("Unsupported assignment operator: {}", op),
+                    };
+
+                    builder.ins().store(MemFlags::new(), final_val, field_addr, 0);
+                    Ok(final_val)
+                } else {
+                    panic!("Variable `{}` not found", var_name);
+                }
+
             }
 
 
@@ -590,12 +690,34 @@ impl Codegen {
     }
 
     fn compile_class(&mut self, class: &ClassDecl, module: &mut JITModule) -> anyhow::Result<CompiledClass> {
-        let mut methods = Vec::new();
+        self.stmt_compiler.class_fields = HashSet::from_iter(class.clone().params.unwrap_or(Vec::new()).iter().map(|p| p.name.clone()));
+        self.stmt_compiler.in_class_scope = true;
+
+        let field_layout: FieldLayout = compute_field_offsets(&class.params);
+
+        if let Some(params) = class.params.clone() {
+            for param in params {
+                match param.type_annotation {
+                    Some(ast::Type::Class(class_name)) => {
+                        self.stmt_compiler.variable_types.insert(param.name.clone(), class_name);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        self.stmt_compiler.field_offsets = field_layout.offsets.clone();
+
+        let mut compiled_class = CompiledClass {
+            name: class.name.clone(),
+            field_layout,
+            methods: Vec::new()
+        };
 
         for stmt in class.body.clone().into_iter() {
             match stmt {
                 Stmt::FuncDecl(f) => {
-                    methods.push(FuncDecl {
+                    compiled_class.methods.push(FuncDecl {
                         visibility: f.visibility,
                         is_async: f.is_async,
                         is_unsafe: f.is_unsafe,
@@ -609,22 +731,16 @@ impl Codegen {
             }
         }
 
-        let field_layout = compute_field_offsets(&class.params);
-
-        self.declare_funcs(methods.as_slice(), module)?;
-        self.define_funcs(methods.as_slice(), module)?;
-
-        let compiled_class = CompiledClass {
-            name: class.name.clone(),
-            field_layout,
-            methods: methods.clone()
-        };
+        self.declare_funcs(compiled_class.methods.as_slice(), module)?;
+        self.define_funcs(compiled_class.methods.as_slice(), module)?;
 
         let mut classes = CLASSES.lock().unwrap();
 
         classes.insert(class.name.clone(), compiled_class.clone());
-        classes.iter().for_each(|(f, _)| println!("{:?}", f));
 
+
+        self.stmt_compiler.class_fields.clear();
+        self.stmt_compiler.in_class_scope = false;
 
         Ok(compiled_class)
     }
@@ -638,9 +754,22 @@ impl Codegen {
 
     pub fn declare_funcs(&mut self, funcs: &[FuncDecl], module: &mut JITModule) -> anyhow::Result<()> {
         for func in funcs {
+
             let mut sig: Signature = module.make_signature();
-            for param in &func.params {
-                sig.params.push(AbiParam::new(parse_type(param.type_annotation.clone().unwrap())));
+
+            // Check if it's an instance method (first param is `self`)
+            let is_method = matches!(func.params.first(), Some(p) if p.name == "self");
+
+            // Add Cranelift parameters
+            let index = if is_method { 1 } else { 0 };
+
+            for (i, param) in func.params.iter().enumerate() {
+                let ty = if is_method && i == 0 {
+                    types::I64 // assume self is a pointer
+                } else {
+                    parse_type(param.type_annotation.clone().unwrap())
+                };
+                sig.params.push(AbiParam::new(ty));
             }
 
             if let Some(ret_ty) = &func.return_type {
@@ -651,10 +780,12 @@ impl Codegen {
             self.func_ids.insert(func.name.clone(), func_id);
         }
 
-        self.stmt_compiler = StmtCompiler::new(self.func_ids.clone());
+        // Instead of recreating StmtCompiler, just update its func_ids:
+        self.stmt_compiler.func_ids = self.func_ids.clone();
 
         Ok(())
     }
+
 
     pub fn define_funcs(&mut self, funcs: &[FuncDecl], module: &mut JITModule) -> anyhow::Result<()> {
         for func in funcs {
@@ -664,13 +795,21 @@ impl Codegen {
                 .ok_or_else(|| anyhow::anyhow!("Function {} not declared", func.name))?;
 
             let mut sig = module.make_signature();
-            for param in &func.params {
-                println!("Return type: {:?}", param);
-                sig.params.push(AbiParam::new(parse_type(param.type_annotation.clone().unwrap())));
+
+            // Check if it's an instance method (first param is `self`)
+            // Always push all params (including self) into the function signature
+            for (i, param) in func.params.iter().enumerate() {
+                let ty = if i == 0 && param.name == "self" {
+                    types::I64
+                } else {
+                    parse_type(param.type_annotation.clone().unwrap())
+                };
+
+                sig.params.push(AbiParam::new(ty));
             }
 
+
             if let Some(ret_ty) = &func.return_type {
-                println!("Return type: {:?}", ret_ty);
                 sig.returns.push(AbiParam::new(parse_type(ret_ty.clone())));
             }
 
@@ -683,17 +822,44 @@ impl Codegen {
                 builder.switch_to_block(block);
                 builder.seal_block(block);
 
+                self.stmt_compiler.variables.clear();
+
+                let is_method = func.params.len() > 0 && func.params.first().unwrap().name == "self";
+                self.stmt_compiler.in_class_scope = is_method;
+
+                // Bind all parameters (including self if present)
                 for (i, param) in func.params.iter().enumerate() {
+                    let ty = if is_method && i == 0 {
+                        types::I64 // assume self is a pointer
+                    } else {
+                        parse_type(param.type_annotation.clone().unwrap())
+                    };
+
                     let var = Variable::new(i);
+                    builder.declare_var(var, ty);
 
-                    println!("Param: {:?}", param);
+                    let block_params = builder.block_params(block);
+                    assert_eq!(
+                        block_params.len(),
+                        func.params.len(),
+                        "Mismatched parameter count: expected {}, got {}",
+                        func.params.len(),
+                        block_params.len()
+                    );
 
-                    let param_type = parse_type(param.type_annotation.clone().unwrap());
-                    builder.declare_var(var, param_type);
+                    let val = block_params[i]; // error happens here
 
-                    let val = builder.block_params(block)[i];
                     builder.def_var(var, val);
                     self.stmt_compiler.variables.insert(param.name.clone(), var);
+
+                    if let Some(type_annotation) = param.type_annotation.clone() {
+                        match type_annotation {
+                            ast::Type::Class(class_name) => {
+                                self.stmt_compiler.variable_types.insert(param.name.clone(), class_name);
+                            }
+                            _ => {}
+                        }
+                    }
                 }
 
                 for stmt in &func.body.block {
@@ -703,16 +869,13 @@ impl Codegen {
                 if !self.stmt_compiler.did_return {
                     builder.ins().return_(&[]);
                 }
+
                 builder.finalize();
-
-                println!("Function '{}' registered with return type {:?}", func.name, func.return_type);
-
                 self.stmt_compiler.did_return = false;
             }
 
-            println!("Function '{}' registered with return type {:?}", self.ctx.func.name, self.ctx.func.signature.returns);
-
             module.define_function(func_id, &mut self.ctx)?;
+
             module.clear_context(&mut self.ctx);
         }
 
@@ -741,15 +904,15 @@ pub fn parse_type(variable_type: ast::Type) -> types::Type {
 
 #[derive(Debug, Clone)]
 pub struct FieldLayout {
-    pub offsets: HashMap<String, u32>, // field name → offset
+    pub offsets: HashMap<String, i32>, // field name → offset
     pub param_names: Vec<String>,      // ordered list of field names
-    pub total_size: u32,
+    pub total_size: i32,
 }
 
 pub fn compute_field_offsets(params: &Option<Vec<Param>>) -> FieldLayout {
     let mut offsets = HashMap::new();
     let mut param_names = Vec::new();
-    let mut offset = 0u32;
+    let mut offset: i32 = 0;
 
     if let Some(params) = params {
         for param in params {
@@ -766,11 +929,11 @@ pub fn compute_field_offsets(params: &Option<Vec<Param>>) -> FieldLayout {
     }
 }
 
-fn align_to(offset: u32, align: u32) -> u32 {
+fn align_to(offset: i32, align: i32) -> i32 {
     (offset + align - 1) & !(align - 1)
 }
 
-fn type_size(ty: &ast::Type) -> u32 {
+fn type_size(ty: &ast::Type) -> i32 {
     match ty {
         ast::Type::I64 | ast::Type::F64 => 8,
         ast::Type::I32 | ast::Type::F32 | ast::Type::U32 => 4,

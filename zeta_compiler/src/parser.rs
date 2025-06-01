@@ -3,6 +3,8 @@ use pest_derive::Parser;
 use pest::iterators::{Pair, Pairs};
 use pest::Parser;
 
+use pest::pratt_parser::PrattParser;
+
 use crate::ast::ElseBranch::If;
 use crate::ast::Op;
 use crate::ast::Stmt::ExprStmt;
@@ -82,6 +84,9 @@ fn parse_for_stmt(pair: &Pair<Rule>) -> Stmt {
 
     // condition: optional
     let condition_pair = inner.next().unwrap();
+    println!("{:?}", condition_pair.as_rule());
+    println!("{:?}", condition_pair.as_str());
+
     let condition = if condition_pair.as_rule() == Rule::expr {
         Some(Box::new(parse_expr(condition_pair)))
     } else {
@@ -172,13 +177,11 @@ fn parse_fun_decl(pair: &Pair<Rule>) -> Stmt {
         match peek.as_rule() {
             Rule::unsafe_modifier => {
                 is_unsafe = true;
-                println!("unsafe true");
                 inner.next();
             },
             Rule:: visibility_modifier => {
                 if visibility.is_none() {
                     visibility = Some(inner.next().unwrap().as_str().to_string());
-                    println!("{:?}", visibility);
                 } else {
                     inner.next(); // skip extra
                 }

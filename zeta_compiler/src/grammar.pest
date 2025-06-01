@@ -14,6 +14,8 @@ for_stmt = { "for" ~ "(" ~ let_stmt? ~ ";" ~ expr? ~ ";" ~ expr? ~ ")" ~ block }
 
 stmt_ending = _{ "\n" | WHITESPACE* }
 
+array = { "[]" }
+array_init = { var_type ~ "[" ~ number ~ "]" }
 
 match_stmt   = { "match" ~ expr ~ "{" ~ match_arm* ~ "}" }
 unsafe_block = { "unsafe" ~ block }
@@ -63,7 +65,7 @@ string = @{ "\"" ~ string_inner* ~ "\"" }
 string_inner = _{ "\\\"" | "\\\\" | (!"\"" ~ ANY) }
 
 
-expr = _{ class_initialization | assignment }
+expr = { class_initialization | array_init | assignment }
 
 assignment = { lhs ~ assign_op ~ expr | logic_or }
 

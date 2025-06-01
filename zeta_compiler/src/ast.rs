@@ -41,8 +41,7 @@ pub struct IfStmt {
     pub else_branch: Option<Box<ElseBranch>>,
 }
 
-#[derive(Debug, Clone)]
-#[derive(PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ElseBranch {
     If(Box<IfStmt>),
     Else(Block),
@@ -176,6 +175,10 @@ pub enum Expr {
     ClassInit {
         callee: Box<Expr>,
         arguments: Vec<Expr>,
+    },
+    FieldAccess {
+        object: Box<Expr>,
+        field: String
     },
     Binary {
         left: Box<Expr>,
