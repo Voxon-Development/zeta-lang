@@ -11,7 +11,6 @@ use std;
 use std::sync::Mutex;
 use anyhow::Error;
 use cranelift::codegen::ir::stackslot::StackSize;
-use cranelift::codegen::verifier::VerifierError;
 use lazy_static::lazy_static;
 
 type VariableMap = HashMap<String, Variable>;
@@ -77,7 +76,6 @@ impl StmtCompiler {
 
                 // Track the class type
                 if let Some(ty) = &let_stmt.type_annotation {
-
                     if let ast::Type::Class(name) = ty {
                         self.variable_types.insert(let_stmt.ident.clone(), name.clone());
                     }
@@ -101,7 +99,7 @@ impl StmtCompiler {
                             }
                         }
 
-                        a => {}
+                        _ => {}
                     }
                 }
 
@@ -140,7 +138,7 @@ impl StmtCompiler {
                     next_test_blocks.push(builder.create_block());
                 }
 
-                // Final fallthrough if no match: just jump to exit for now
+                // Final fallthrough if no match: jump to exit for now
                 next_test_blocks.push(exit_block);
 
                 // === Pattern matching branches ===
@@ -238,14 +236,12 @@ impl StmtCompiler {
 
                 // === Condition check ===
                 builder.switch_to_block(cond_block);
-                let has_cond = if let Some(cond_expr) = &for_stmt.condition {
+                 if let Some(cond_expr) = &for_stmt.condition {
                     let cond_val = self.compile_expr(builder, cond_expr, module)?;
                     builder.ins().brif(cond_val, body_block, &[], exit_block, &[]);
-                    true
                 } else {
                     // No condition: infinite loop
                     builder.ins().jump(body_block, &[]);
-                    false
                 };
                 // Only seal condition block after all jumps to it have been emitted
 
@@ -336,7 +332,6 @@ impl StmtCompiler {
 
         // Compile the condition
         let cond_val = self.compile_expr(builder, &if_stmt.condition, module)?;
-        // check if it's a false statement, and if it is, skip the if block or inline the else block
 
         builder.ins().brif(cond_val, then_block, &[], else_block, &[]);
 
@@ -382,7 +377,6 @@ impl StmtCompiler {
             }
 
             Expr::Binary { left, op, right } => {
-                // Otherwise, compile normally
                 let left_val = self.compile_expr(builder, left, module)?;
                 let right_val = self.compile_expr(builder, right, module)?;
 
@@ -414,7 +408,7 @@ impl StmtCompiler {
                 desc.define(string_bytes.into_boxed_slice());
 
                 // Define data by passing raw bytes
-                module.define_data(data_id, &desc).expect("TODO: panic message");
+                module.define_data(data_id, &desc).expect(format!("Expected to define a string with id: {}", data_id).as_str());
 
                 let local_id = module.declare_data_in_func(data_id, &mut builder.func);
 
@@ -424,7 +418,7 @@ impl StmtCompiler {
             },
 
             Expr::Get { object, field } => {
-                // Handle `self.field`
+                // Handle `self._field`
                 if let Expr::Ident(obj_name) = &**object {
                     if obj_name == "self" && self.in_class_scope {
                         let self_var = self.variables.get("self")
@@ -440,11 +434,11 @@ impl StmtCompiler {
                     }
                 }
 
-                if let Expr::Get { object, field } = &**object {
+                if let Expr::Get { object, field: _field } = &**object {
                     return self.compile_expr(builder, object, module);
                 }
 
-                anyhow::bail!("Unsupported field access")
+                anyhow::bail!("Unsupported _field access")
             },
 
             Expr::ClassInit { callee, arguments } => {
@@ -486,10 +480,10 @@ impl StmtCompiler {
 
             Expr::Call { callee, arguments } => {
                 match &**callee {
-                    Expr::Get { object, field } => {
-                        // object.field(args...) → method call → inject `self`
+                    Expr::Get { object, field: _field } => {
+                        // object._field(args...) → method call → inject `self`
                         let self_val = self.compile_expr(builder, object, module)?;
-                        let func_name = self.get_name(builder, module, callee);
+                        let func_name = self.get_name(callee);
 
                         let func_id = *self.func_ids.get(&func_name)
                             .ok_or_else(|| anyhow::anyhow!("Function `{}` not found", func_name))?;
@@ -499,17 +493,6 @@ impl StmtCompiler {
                             all_args.push(self.compile_expr(builder, arg, module)?);
                         }
 
-                        let object_name = if let Expr::Ident(object_name) = &**object {
-                            object_name
-                        } else {
-                            panic!("Expected Modifier.");
-                        };
-
-                        let class_name = self.variable_types.get(object_name).unwrap_or_else(|| {
-                            panic!("Unknown type for object '{}'", object_name);
-                        });
-
-                        let method_name = format!("{}_{}", class_name, field);
                         let func_ref = module.declare_func_in_func(func_id, builder.func);
 
                         let call = builder.ins().call(func_ref, &all_args);
@@ -522,7 +505,7 @@ impl StmtCompiler {
                         }
                     }
                     _ => {
-                        let func_name = self.get_name(builder, module, callee);
+                        let func_name = self.get_name(callee);
 
                         let func_id = *self.func_ids.get(&func_name)
                             .ok_or_else(|| anyhow::anyhow!("Function `{}` not found", func_name))?;
@@ -642,8 +625,6 @@ impl StmtCompiler {
 
     fn get_name(
         &mut self,
-        builder: &mut FunctionBuilder,
-        module: &mut JITModule,
         callee: &Box<Expr>,
     ) -> String {
         match &**callee {
@@ -652,9 +633,8 @@ impl StmtCompiler {
 
             // Object method call like `obj.method()`
             Expr::Get { object, field } => {
-                // Expect object to be an identifier like `obj`
                 if let Expr::Ident(object_name) = &**object {
-                    // Look up type of the object in the symbol table
+                    // Look up a type of the object in the symbol table
                     let class_name = self.variable_types.get(object_name).unwrap_or_else(|| {
                         panic!("Unknown type for object '{}'", object_name);
                     });
@@ -673,7 +653,6 @@ impl StmtCompiler {
 
 #[derive(Clone)]
 struct CompiledClass {
-    name: String,
     field_layout: FieldLayout,
     methods: Vec<FuncDecl>
 }
@@ -684,11 +663,12 @@ impl Codegen {
         Self {
             builder_context: FunctionBuilderContext::new(),
             ctx: Context::new(),
-            stmt_compiler: StmtCompiler::new(map), // Temporary placeholder
+            stmt_compiler: StmtCompiler::new(map),
             func_ids: HashMap::new(),
         }
     }
 
+    //noinspection RsUnwrap
     fn compile_class(&mut self, class: &ClassDecl, module: &mut JITModule) -> anyhow::Result<CompiledClass> {
         self.stmt_compiler.class_fields = HashSet::from_iter(class.clone().params.unwrap_or(Vec::new()).iter().map(|p| p.name.clone()));
         self.stmt_compiler.in_class_scope = true;
@@ -709,7 +689,6 @@ impl Codegen {
         self.stmt_compiler.field_offsets = field_layout.offsets.clone();
 
         let mut compiled_class = CompiledClass {
-            name: class.name.clone(),
             field_layout,
             methods: Vec::new()
         };
@@ -760,9 +739,6 @@ impl Codegen {
             // Check if it's an instance method (first param is `self`)
             let is_method = matches!(func.params.first(), Some(p) if p.name == "self");
 
-            // Add Cranelift parameters
-            let index = if is_method { 1 } else { 0 };
-
             for (i, param) in func.params.iter().enumerate() {
                 let ty = if is_method && i == 0 {
                     types::I64 // assume self is a pointer
@@ -780,7 +756,6 @@ impl Codegen {
             self.func_ids.insert(func.name.clone(), func_id);
         }
 
-        // Instead of recreating StmtCompiler, just update its func_ids:
         self.stmt_compiler.func_ids = self.func_ids.clone();
 
         Ok(())
@@ -847,7 +822,7 @@ impl Codegen {
                         block_params.len()
                     );
 
-                    let val = block_params[i]; // error happens here
+                    let val = block_params[i];
 
                     builder.def_var(var, val);
                     self.stmt_compiler.variables.insert(param.name.clone(), var);
@@ -918,7 +893,7 @@ pub fn compute_field_offsets(params: &Option<Vec<Param>>) -> FieldLayout {
         for param in params {
             offsets.insert(param.name.clone(), offset);
             param_names.push(param.name.clone());
-            offset += 8; // assuming all fields are i64
+            offset += 8; // TODO: not all offsets are 8 bytes
         }
     }
 
@@ -926,19 +901,5 @@ pub fn compute_field_offsets(params: &Option<Vec<Param>>) -> FieldLayout {
         offsets,
         param_names,
         total_size: offset,
-    }
-}
-
-fn align_to(offset: i32, align: i32) -> i32 {
-    (offset + align - 1) & !(align - 1)
-}
-
-fn type_size(ty: &ast::Type) -> i32 {
-    match ty {
-        ast::Type::I64 | ast::Type::F64 => 8,
-        ast::Type::I32 | ast::Type::F32 | ast::Type::U32 => 4,
-        ast::Type::I16 | ast::Type::U16 => 2,
-        ast::Type::Boolean | ast::Type::I8 | ast::Type::U8 | ast::Type::Void => 1,
-        _ => 8, // fallback for pointer-sized values
     }
 }
