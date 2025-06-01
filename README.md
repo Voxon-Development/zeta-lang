@@ -19,11 +19,11 @@ main() {
 Visibility modifiers are optional.
 
 Current stuff to be done:
-- [x] OOP
+- [x] OOP (Currently limited)
 - [x] Functions (Return values too)
 - [x] Type inference
 - [ ] Extensive FFI and Importing (Dependent on OOP)
-- [ ] SDK (Dependent on Extensive FFI and Importing)
+- [ ] SDK (Dependent on Extensive FFI and Importing and Arrays)
 - [ ] Optimizations for generated IR
 - [x] If statements
 - [x] While statements
