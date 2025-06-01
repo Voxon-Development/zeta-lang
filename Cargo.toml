@@ -10,5 +10,6 @@ members = [
 ]
 
 [dependencies]
+bumpalo = "3.17.0"
 #once_cell = "1.21.3"
 #zeta_compiler = { path = "./zeta_compiler" }
