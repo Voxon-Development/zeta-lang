@@ -22,12 +22,13 @@ Current stuff to be done:
 - [x] OOP (Fully customizable)
 - [x] Functions (Return values too)
 - [x] Type inference
-- [ ] Extensive FFI and Importing
+- [ ] Extensive FFI and Importing (Being implemented)
 - [ ] SDK (Dependent on Extensive FFI and Importing, memory management, and Arrays)
 - [ ] Optimizations for generated IR
 - [x] If statements
 - [x] While statements
 - [x] For statements
 - [x] Match statements
-- [ ] Arrays
-- [ ] Memory management (not a garbage collector)
+- [ ] Arrays (Being implemented)
+- [ ] Memory management (not a garbage collector, mostly dependent on pointers)
+- [ ] Pointers
