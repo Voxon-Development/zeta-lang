@@ -1,9 +1,19 @@
 WHITESPACE   = _{ " " | "\t" | "\r" | "\n" }
-COMMENT      = _{ "#" ~ (!"\n" ~ ANY)* }
+COMMENT      = _{ "//" ~ (!"\n" ~ ANY)* }
 
 program      =  { SOI ~ stmt* ~ EOI }
 
-stmt         = _{ import_stmt | let_stmt | return_stmt | if_stmt | while_stmt | for_stmt | match_stmt | unsafe_block | fun_decl | class_decl | expr_stmt }
+stmt = _{ block_stmt | simple_stmt }
+
+block_stmt = _{ if_stmt | while_stmt | for_stmt | match_stmt | fun_decl | class_decl | unsafe_block }
+
+simple_stmt = _{ (import_stmt | let_stmt | return_stmt | expr_stmt | break_stmt | continue_stmt) ~ stmt_terminator }
+
+stmt_terminator = _{ ";" | WHITESPACE* ~ "\n"+ ~ WHITESPACE* }
+
+
+break_stmt   = { "break" }
+continue_stmt = { "continue" }
 
 import_stmt  = { "import" ~ string }
 let_stmt     = { "let" ~ mut_keyword? ~ ident ~ type_annotation? ~ "=" ~ expr  }
@@ -15,13 +25,11 @@ for_stmt = { "for" ~ "(" ~ let_stmt? ~ ";" ~ expr? ~ ";" ~ expr? ~ ")" ~ block }
 stmt_ending = _{ "\n" | WHITESPACE* }
 
 array = { "[]" }
-array_init = { var_type ~ "[" ~ number ~ "]" }
+array_init = { var_type ~ ".new" ~ "[" ~ number ~ "]" }
 
 match_stmt   = { "match" ~ expr ~ "{" ~ match_arm* ~ "}" }
 unsafe_block = { "unsafe" ~ block }
 expr_stmt    = { expr }
-
-
 
 fun_decl = {
     visibility_modifier? ~ unsafe_modifier? ~ ident ~ param_list ~ type_annotation? ~ block
@@ -69,8 +77,7 @@ expr = { class_initialization | array_init | assignment }
 
 assignment = { lhs ~ assign_op ~ expr | logic_or }
 
-
-lhs = { ident }
+lhs = { ident ~ (indexing)* }
 
 boolean = { "true" | "false" }
 
@@ -90,9 +97,12 @@ term = { factor ~ (operator_add_sub ~ factor)* }
 factor = { unary ~ (operator_mul_div ~ unary)* }
 unary = { ("!" | "-" | "+")* ~ primary }
 
-primary = { atom ~ ( ( "." ~ ident ) | call_args )* }
+primary = { atom ~ ( ( "." ~ ident ) | call_args | indexing)* }
+indexing = { "[" ~ expr ~ "]" }
 
-atom = _{ parenthesized_expr | ident | number | string | class_initialization | boolean }
+array_literal = { "[" ~ (expr ~ ("," ~ expr)*)? ~ "]" }
+
+atom = _{ parenthesized_expr | ident | number | string | class_initialization | boolean | array_literal }
 
 
 call_args = { "(" ~ (expr ~ ("," ~ expr)*)? ~ ")" }
@@ -106,9 +116,9 @@ assign_expr = {
     ident ~ (assign_op | compound_assign_op) ~ expr
 }
 
-var_type = {
-    ident | "i32" | "u32" | "f64" | "uf64" | "i64" | "u64" | "i128" | "u128" | "u8" | "i8" | "i16" | "u16" | "boolean" | "str"
-}
+var_type = { basic_type ~ array_suffix* }
+array_suffix = { "[" ~ (number)? ~ "]" }
+basic_type = { ident | "i32" | "u32" | "f64" | "uf64" | "i64" | "u64" | "i128" | "u128" | "u8" | "i8" | "i16" | "u16" | "boolean" | "str" }
 
 parenthesized_expr = { "(" ~ expr ~ ")" }
 operator_add_sub = { "+" | "-" }

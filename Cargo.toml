@@ -3,13 +3,17 @@ name = "untitled"
 version = "0.1.0"
 edition = "2024"
 
+# -O3 for release
+[profile.release]
+opt-level = 3
+
 [workspace]
 members = [
-    "virtual_machine",
-    "zeta_compiler"
+    "zvm",
+    "zetac"
 ]
 
 [dependencies]
 bumpalo = "3.17.0"
 #once_cell = "1.21.3"
-#zeta_compiler = { path = "./zeta_compiler" }
+#zetac = { path = "./zetac" }

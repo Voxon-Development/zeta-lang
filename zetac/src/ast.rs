@@ -162,6 +162,17 @@ pub enum MutKeyword {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
+    Array {
+        elements: Box<Expr>
+    },
+    ArrayIndex {
+        array: Box<Expr>,
+        index: Box<Expr>
+    },
+    ArrayInit {
+        array_type: Type,
+        num_of_elements: u32
+    },
     Number(i64),
     Decimal(f64),
     String(String),
@@ -198,6 +209,9 @@ pub enum Expr {
         op: String, 
         rhs: Box<Expr>
     },
+    ExprList {
+        exprs: Vec<Expr>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -219,5 +233,6 @@ pub enum Type {
     U128,
     UF64,
     Void,
+    Array(Box<Type>, Option<u64>),
     Class(String),
 }

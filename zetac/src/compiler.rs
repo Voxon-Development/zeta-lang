@@ -1,6 +1,5 @@
 use crate::ast::*;
 use cranelift::prelude::*;
-use cranelift_jit::JITModule;
 use cranelift_module::{DataDescription, FuncId, Linkage, Module};
 
 use cranelift::codegen::{ir, CodegenError, Context};
@@ -10,6 +9,7 @@ use crate::ast;
 use std;
 use std::sync::Mutex;
 use anyhow::Error;
+use cranelift::codegen::ir::StackSlot;
 use cranelift::codegen::ir::stackslot::StackSize;
 use lazy_static::lazy_static;
 
@@ -63,7 +63,7 @@ impl StmtCompiler {
         &mut self, 
         builder: &mut FunctionBuilder<'_>, 
         stmt: &Stmt, 
-        module: &mut JITModule
+        module: &mut dyn Module
     ) -> anyhow::Result<()> {
         match stmt {
             Stmt::ExprStmt(expr_stmt) => {
@@ -304,7 +304,7 @@ impl StmtCompiler {
         Ok(())
     }
 
-    fn parse_else_block_to_ir(&mut self, builder: &mut FunctionBuilder, module: &mut JITModule, if_stmt: &&IfStmt) -> anyhow::Result<()> {
+    fn parse_else_block_to_ir(&mut self, builder: &mut FunctionBuilder, module: &mut dyn Module, if_stmt: &&IfStmt) -> anyhow::Result<()> {
         if let Some(else_branch) = &if_stmt.else_branch {
             match &**else_branch {
                 ElseBranch::Else(else_block_stmts) => {
@@ -324,7 +324,7 @@ impl StmtCompiler {
         &mut self,
         builder: &mut FunctionBuilder,
         if_stmt: &IfStmt,
-        module: &mut JITModule,
+        module: &mut dyn Module,
     ) -> anyhow::Result<()> {
         let then_block = builder.create_block();
         let else_block = builder.create_block();
@@ -358,7 +358,7 @@ impl StmtCompiler {
 
 
     //noinspection RsUnwrap
-    pub fn compile_expr(&mut self, builder: &mut FunctionBuilder, expr: &Expr, module: &mut JITModule) -> anyhow::Result<Value> {
+    pub fn compile_expr(&mut self, builder: &mut FunctionBuilder, expr: &Expr, module: &mut dyn Module) -> anyhow::Result<Value> {
         match expr {
             Expr::Number(n) => Ok(builder.ins().iconst(types::I64, *n)),
 
@@ -374,6 +374,77 @@ impl StmtCompiler {
                     ComparisonOp::GreaterThan => Ok(builder.ins().icmp(IntCC::SignedGreaterThan, lhs_val, rhs_val)),
                     ComparisonOp::GreaterThanOrEqual => Ok(builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lhs_val, rhs_val)),
                 }
+            }
+
+            Expr::Array { elements } => {
+                let expr_list = match &**elements {
+                    Expr::ExprList { exprs} => exprs,
+                    _ => panic!("Expected ExprList"),
+                };
+
+                let length: i64 = expr_list.len() as i64;
+                let size = (length + 1) * 8;
+
+                let array_slot: StackSlot = builder.create_sized_stack_slot(
+                    StackSlotData::new(StackSlotKind::ExplicitSlot, size as u32, 16)
+                );
+
+                let array_ptr = builder.ins().stack_addr(types::I64, array_slot, 0);
+
+                // Store length at offset 0
+                let length_val = builder.ins().iconst(types::I64, length);
+                builder.ins().store(MemFlags::new(), length_val, array_ptr, 0);
+
+                for (i, expr) in expr_list.iter().enumerate() {
+                    let value = self.compile_expr(builder, expr, module).unwrap();
+                    let offset = ((i + 1) * 8) as i32;
+                    builder.ins().store(MemFlags::new(), value, array_ptr, offset);
+                }
+
+                Ok(array_ptr)
+            }
+
+            Expr::ArrayInit { array_type, num_of_elements } => {
+                let element_size = type_size(array_type);
+                let total_elements = *num_of_elements + 1;
+                let size_in_bytes = total_elements * (element_size as u32);
+
+                let alignment = std::cmp::max(element_size, 8);
+                let array_slot = builder.create_sized_stack_slot(
+                    StackSlotData::new(StackSlotKind::ExplicitSlot, size_in_bytes, alignment)
+                );
+
+
+                let array_ptr = builder.ins().stack_addr(types::I64, array_slot, 0);
+
+                // Store length at offset 0
+                let len_val = builder.ins().iconst(types::I64, *num_of_elements as i64);
+                builder.ins().store(MemFlags::new(), len_val, array_ptr, 0);
+
+                Ok(array_ptr)
+            }
+
+            Expr::ArrayIndex { array, index } => {
+                let array_ptr = self.compile_expr(builder, &*array, module).expect("Unable to get array pointer");
+                let index_val = self.compile_expr(builder, &*index, module).expect("Unable to get array index");
+
+                // getting an element from an array
+                let length = builder.ins().load(types::I64, MemFlags::new(), array_ptr, 0);
+
+                let in_bounds = builder.ins().icmp(IntCC::UnsignedLessThan, index_val, length);
+                let trap_if_oob = builder.ins().bnot(in_bounds); // Negate the condition
+                builder.ins().trapnz(trap_if_oob, TrapCode::user(1).unwrap());
+
+                // Compute element address
+                let one = builder.ins().iconst(types::I64, 1);
+                let real_index = builder.ins().iadd(index_val, one);
+
+                // integer multiplication
+                let byte_offset = builder.ins().imul_imm(real_index, 8); // Assuming i64
+                let addr = builder.ins().iadd(array_ptr, byte_offset);
+
+                let value = builder.ins().load(types::I64, MemFlags::new(), addr, 0);
+                Ok(value)
             }
 
             Expr::Binary { left, op, right } => {
@@ -459,6 +530,7 @@ impl StmtCompiler {
                 let stack_slot = builder.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot,
                     compiled_class.field_layout.total_size as StackSize,
+                    16
                 ));
                 let base_ptr = builder.ins().stack_addr(types::I64, stack_slot, 0);
 
@@ -560,7 +632,7 @@ impl StmtCompiler {
                 };
 
                 if let Some(&var) = self.variables.get(var_name) {
-                    let rhs_val = self.compile_expr(builder, rhs, module)?;
+                    let rhs_val: Value = self.compile_expr(builder, rhs, module)?;
 
                     // Handle compound assignments
                     let final_val = match op.as_str() {
@@ -669,7 +741,7 @@ impl Codegen {
     }
 
     //noinspection RsUnwrap
-    fn compile_class(&mut self, class: &ClassDecl, module: &mut JITModule) -> anyhow::Result<CompiledClass> {
+    fn compile_class(&mut self, class: &ClassDecl, module: &mut dyn Module) -> anyhow::Result<CompiledClass> {
         self.stmt_compiler.class_fields = HashSet::from_iter(class.clone().params.unwrap_or(Vec::new()).iter().map(|p| p.name.clone()));
         self.stmt_compiler.in_class_scope = true;
 
@@ -724,14 +796,14 @@ impl Codegen {
         Ok(compiled_class)
     }
 
-    pub fn declare_classes(&mut self, class_decls: &[ClassDecl], module: &mut JITModule) -> anyhow::Result<()> {
+    pub fn declare_classes(&mut self, class_decls: &[ClassDecl], module: &mut dyn Module) -> anyhow::Result<()> {
         for class_decl in class_decls {
             self.compile_class(class_decl, module)?;
         }
         Ok(())
     }
 
-    pub fn declare_funcs(&mut self, funcs: &[FuncDecl], module: &mut JITModule) -> anyhow::Result<()> {
+    pub fn declare_funcs(&mut self, funcs: &[FuncDecl], module: &mut dyn Module) -> anyhow::Result<()> {
         for func in funcs {
 
             let mut sig: Signature = module.make_signature();
@@ -761,8 +833,35 @@ impl Codegen {
         Ok(())
     }
 
+    pub fn declare_funcs_with_ret_type(&mut self, funcs: &[FuncDecl], ret_type: types::Type, module: &mut dyn Module) -> anyhow::Result<()> {
+        for func in funcs {
 
-    pub fn define_funcs(&mut self, funcs: &[FuncDecl], module: &mut JITModule) -> anyhow::Result<()> {
+            let mut sig: Signature = module.make_signature();
+
+            // Check if it's an instance method (first param is `self`)
+            let is_method = matches!(func.params.first(), Some(p) if p.name == "self");
+
+            for (i, param) in func.params.iter().enumerate() {
+                let ty = if is_method && i == 0 {
+                    types::I64 // assume self is a pointer
+                } else {
+                    parse_type(param.type_annotation.clone().unwrap())
+                };
+                sig.params.push(AbiParam::new(ty));
+            }
+
+            sig.returns.push(AbiParam::new(ret_type));
+
+            let func_id = module.declare_function(&func.name, Linkage::Export, &sig)?;
+            self.func_ids.insert(func.name.clone(), func_id);
+        }
+
+        self.stmt_compiler.func_ids = self.func_ids.clone();
+
+        Ok(())
+    }
+
+    pub fn define_funcs(&mut self, funcs: &[FuncDecl], module: &mut dyn Module) -> anyhow::Result<()> {
         for func in funcs {
             let func_id = *self
                 .func_ids
@@ -872,7 +971,11 @@ pub fn parse_type(variable_type: ast::Type) -> types::Type {
         ast::Type::UF32 => types::F32,
         ast::Type::Void => types::I8,
         ast::Type::Boolean => types::I8,
+
+        // Pointers
         ast::Type::Class(_) => types::I64,
+        ast::Type::String => types::I64,
+        ast::Type::Array(_, _) => types::I64,
         _ => panic!("Unexpected type in parse_type: {:?}", variable_type),
     }
 }
@@ -901,5 +1004,26 @@ pub fn compute_field_offsets(params: &Option<Vec<Param>>) -> FieldLayout {
         offsets,
         param_names,
         total_size: offset,
+    }
+}
+
+#[inline]
+fn type_size(ty: &ast::Type) -> u8 {
+    match ty {
+        ast::Type::F64 => 8,
+        ast::Type::F32 => 4,
+        ast::Type::I32 => 4,
+        ast::Type::I64 => 8,
+        ast::Type::U32 => 4,
+        ast::Type::UF64 => 8,
+        ast::Type::I128 => 16,
+        ast::Type::U128 => 16,
+        ast::Type::U64 => 8,
+        ast::Type::UF32 => 4,
+        ast::Type::Void => 1,
+        ast::Type::Boolean => 1,
+        ast::Type::Class(_) => 8,
+        ast::Type::Array(_, _) => 8,
+        _ => panic!("Unexpected type in type_size: {:?}", ty),
     }
 }

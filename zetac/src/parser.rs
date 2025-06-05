@@ -48,11 +48,21 @@ fn parse_stmt(stmts: &mut Vec<Stmt>, pair: Pair<Rule>) -> bool {
         Rule::fun_decl => stmts.push(parse_fun_decl(&pair)),
         Rule::class_decl => stmts.push(parse_class_decl(&pair)),
         Rule::expr_stmt => stmts.push(parse_expr_stmt(&pair)),
+        Rule::break_stmt => stmts.push(parse_break_stmt(&pair)),
+        Rule::continue_stmt => stmts.push(parse_continue_stmt(&pair)),
 
         Rule::EOI => return true,
         other => panic!("Unexpected rule in program: {:?}", other),
     }
     false
+}
+
+fn parse_break_stmt(pair: &Pair<Rule>) -> Stmt {
+    Stmt::Break
+}
+
+fn parse_continue_stmt(pair: &Pair<Rule>) -> Stmt {
+    Stmt::Continue
 }
 
 fn parse_while_stmt(pair: &Pair<Rule>) -> Stmt {
@@ -84,8 +94,6 @@ fn parse_for_stmt(pair: &Pair<Rule>) -> Stmt {
 
     // condition: optional
     let condition_pair = inner.next().unwrap();
-    println!("{:?}", condition_pair.as_rule());
-    println!("{:?}", condition_pair.as_str());
 
     let condition = if condition_pair.as_rule() == Rule::expr {
         Some(Box::new(parse_expr(condition_pair)))
@@ -199,10 +207,7 @@ fn parse_fun_decl(pair: &Pair<Rule>) -> Stmt {
         }
     }
 
-    let return_type = match inner.peek().filter(|p| p.as_rule() == Rule::type_annotation) {
-        Some(_) => Some(parse_to_type(inner.next().unwrap().as_str().split_whitespace().last().unwrap())),
-        None => None,
-    };
+    let return_type = get_value_type(&mut inner);
 
     let body = parse_block(inner.next().unwrap());
 
@@ -217,15 +222,19 @@ fn parse_fun_decl(pair: &Pair<Rule>) -> Stmt {
     })
 }
 
+fn get_value_type(inner: &mut Pairs<Rule>) -> Option<Type> {
+    match inner.peek().map(|p| p.as_rule()) {
+        Some(Rule::type_annotation) => {
+            Some(parse_to_type(inner.next().unwrap().into_inner().next().unwrap()))
+        }
+        _ => None,
+    }
+}
+
 fn parse_param(pair: Pair<Rule>) -> Param {
     let mut inner = pair.into_inner();
     let name = inner.next().unwrap().as_str().to_string();
-    let type_annotation = if let Some(Rule::type_annotation) = inner.peek().map(|p| p.as_rule()) {
-        let type_str = inner.next().unwrap().as_str();
-        Some(parse_to_type(type_str.split_whitespace().last().unwrap()))
-    } else {
-        None
-    };
+    let type_annotation = get_value_type(&mut inner);
 
     Param { name, type_annotation }
 }
@@ -292,10 +301,7 @@ fn parse_let_stmt(pair: &Pair<Rule>) -> Stmt {
 
     let ident = inner.next().unwrap().as_str().to_string();
 
-    let type_annotation = match inner.peek().map(|p| p.as_rule()) {
-        Some(Rule::type_annotation) => Some(parse_to_type(inner.next().unwrap().as_str().split_whitespace().last().unwrap())),
-        _ => None,
-    };
+    let type_annotation = get_value_type(&mut inner);
 
     let value = Box::new(parse_expr(inner.next().expect("Expected expression after '='")));
 
@@ -307,8 +313,34 @@ fn parse_let_stmt(pair: &Pair<Rule>) -> Stmt {
     })
 }
 
-fn parse_to_type(token_type: &str) -> Type {
-    match token_type {
+fn parse_to_type(pair: Pair<Rule>) -> Type {
+    assert_eq!(pair.as_rule(), Rule::var_type);
+
+    let mut inner = pair.into_inner();
+
+    // First child must be the basic_type
+    let basic = inner.next().unwrap();
+    let mut ty = parse_basic_type(basic);
+
+    // Then we can have 0 or more array_suffixes
+    for suffix in inner {
+        match suffix.as_rule() {
+            Rule::array_suffix => {
+                let mut inner = suffix.into_inner();
+                let size = inner
+                    .next()
+                    .map(|num| num.as_str().parse::<u64>().expect("invalid array size"));
+                ty = Type::Array(Box::new(ty), size);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    ty
+}
+
+fn parse_basic_type(pair: Pair<Rule>) -> Type {
+    match pair.as_str() {
         "u8" => Type::U8,
         "i8" => Type::I8,
         "u16" => Type::U16,
@@ -321,7 +353,7 @@ fn parse_to_type(token_type: &str) -> Type {
         "i128" => Type::I128,
         "str" => Type::String,
         "boolean" => Type::Boolean,
-        name => Class(name.to_string())
+        other => Type::Class(other.to_string()),
     }
 }
 
@@ -406,9 +438,19 @@ fn parse_expr(pair: Pair<Rule>) -> Expr {
             };
             Expr::Boolean(val)
         },
-        Rule::number => Expr::Number(pair.as_str().parse().unwrap()),
+        Rule::number => Expr::Number(pair.as_str().parse::<i64>().unwrap()),
         Rule::string => Expr::String(parse_string(pair.as_str())),
         Rule::ident => Expr::Ident(pair.as_str().to_string()),
+        Rule::array_init => {
+            let mut inner = pair.into_inner();
+            
+            let array_type = parse_to_type(inner.next().unwrap());
+            let num_of_elements = inner.next().unwrap().as_str().parse().unwrap();
+            Expr::ArrayInit { 
+                array_type, 
+                num_of_elements 
+            }
+        }
 
         Rule::assignment => {
             let mut inner = pair.clone().into_inner();
@@ -523,11 +565,34 @@ fn parse_expr(pair: Pair<Rule>) -> Expr {
                             field: next.as_str().to_string(),
                         };
                     }
+                    Rule::indexing => {
+                        let mut args = next.into_inner();
+                        expr = Expr::ArrayIndex {
+                            array: Box::new(expr),
+                            index: Box::new(parse_expr(args.next().unwrap()))
+                        }
+                    }
                     _ => unreachable!("Unexpected rule in primary tail: {:?}", next.as_rule())
                 }
             }
 
             expr
+        }
+
+        Rule::array_literal => {
+            let inner = pair.into_inner();
+
+            let elements: Vec<Expr> = inner.map(parse_expr).collect();
+
+            Expr::Array {
+                elements: Box::new(Expr::ExprList { exprs: elements })
+            }
+        }
+
+        Rule::expr_list => {
+            Expr::ExprList {
+                exprs: pair.into_inner().into_iter().map(parse_expr).collect()
+            }
         }
 
         _ => panic!("Unexpected expression rule: {:?}", pair.as_rule()),

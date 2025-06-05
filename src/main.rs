@@ -2,18 +2,15 @@ use bumpalo::Bump;
 use std::time::Instant;
 
 fn main() {
-    let bump = Bump::with_capacity(1_000_000);
     let start = Instant::now();
-    for i in 0..1_000_000 {
-        bump.alloc(i); // bump alloc
+    println!("Hello, world!");
+    
+    let arr: [i64; 3] = [1,2,3];
+    let mut i = 0;
+    while (i < 3) {
+        println!("{}", arr[i]);
+        i += 1;
     }
-    drop(bump);
-    println!("Bump: {:?}", start.elapsed());
-
-    let start = Instant::now();
-    for i in 0..1_000_000 {
-        let x = Box::new(i); // heap alloc
-        drop(x);
-    }
-    println!("Box::new: {:?}", start.elapsed());
+    
+    println!("Time elapsed: {} ns", start.elapsed().as_nanos());
 }
