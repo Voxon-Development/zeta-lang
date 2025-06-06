@@ -1,5 +1,5 @@
 use crate::ast::{ClassDecl, FuncDecl, Stmt};
-use crate::compiler::Codegen;
+pub use crate::codegen::cranelift::compiler::Codegen;
 use cranelift::prelude::{types, AbiParam};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module};
@@ -7,14 +7,13 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::println::*;
-use clap::{Parser, Subcommand};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::process;
 
 mod parser;
 mod ast;
-mod compiler;
 mod println;
+mod codegen;
 /*fn main() {
     match parser::parse_program("\
     fun main() {
@@ -36,98 +35,8 @@ mod println;
 }
 */
 
-#[derive(Parser)]
-#[command(name = "zeta")]
-#[command(about = "The New Generation Programming Language: Zeta")]
-#[command(version = "0.1.0")]
-struct Cli {
-    #[command(subcommand)]
-    command: Option<Commands>,
 
-    /// Input file to run
-    #[arg(value_name = "FILE")]
-    file: Option<PathBuf>,
-
-    /// Show verbose output
-    #[arg(short, long)]
-    verbose: bool,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    Jit {
-        /// Input file
-        file: PathBuf,
-        /// Show verbose output
-        #[arg(short, long)]
-        verbose: bool,
-    },
-    Aot {
-        file: PathBuf,
-
-        #[arg(short, long)]
-        output: Option<PathBuf>
-    },
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
-
-    match cli.command {
-        Some(Commands::Jit { file, verbose }) => {
-            Ok(run_file(file, false, verbose, None)?)
-        },
-        Some(Commands::Aot { file, output }) => {
-            Ok(run_file(file, true, false, output)?)
-        },
-        None => {
-            if let Some(file) = cli.file {
-                Ok(run_file(file, false, cli.verbose, None)?)
-            } else {
-                eprintln!("No file specified. Use --help for usage information.");
-                process::exit(1);
-            }
-        }
-    }
-}
-
-fn run_file(file: PathBuf, native: bool, verbose: bool, native_output: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
-    let instant = Instant::now();
-
-    let module = compile_to_ir(file, native, native_output);
-
-    match module {
-        BackendModule::JIT(module, codegen) => {
-            if let Some(main_id) = codegen.func_ids.get("main") {
-                let ptr = module.get_finalized_function(*main_id);
-                let main: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
-
-                let other_instant = Instant::now();
-
-                main();
-                println!("Finished execution in {}ns", other_instant.elapsed().as_nanos());
-                println!("Finished execution and compilation in {}ms", instant.elapsed().as_millis());
-
-                Ok(())
-            } else {
-                eprintln!("No `main` function found");
-                Ok(())
-            }
-        },
-        BackendModule::Native(module, output, _codegen) => {
-            let obj_bytes = module.finish().emit().expect("Should have been able to emit object file");
-
-            let final_output = output.unwrap_or(PathBuf::from(Path::new("output.o")));
-            std::fs::write(final_output.clone(), &obj_bytes).expect("Unable to write object file");
-            println!("Wrote object file to {}", final_output.to_str().unwrap());
-            Ok(())
-        }
-    }
-
-    // --- Find and call `main` ---
-}
-
-fn compile_to_ir(file: PathBuf, native: bool, native_output: Option<PathBuf>) -> BackendModule {
+pub fn compile_to_ir(file: PathBuf, native: bool, native_output: Option<PathBuf>) -> BackendModule {
     let contents_of_file = std::fs::read_to_string(file).expect("Unable to read file");
 
     let stmts = parser::parse_program(contents_of_file.as_str()).expect("Unable to parse program."); // Returns Vec<Stmt>
@@ -219,7 +128,7 @@ fn compile_to_ir(file: PathBuf, native: bool, native_output: Option<PathBuf>) ->
     }
 }
 
-enum BackendModule {
+pub enum BackendModule {
     JIT(JITModule, Codegen),
     Native(ObjectModule, Option<PathBuf>, Codegen),
 }

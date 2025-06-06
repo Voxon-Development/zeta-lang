@@ -1,47 +1,30 @@
-use crate::ast::*;
-use cranelift::prelude::*;
-use cranelift_module::{DataDescription, FuncId, Linkage, Module};
-
-use cranelift::codegen::{ir, CodegenError, Context};
 use std::collections::{HashMap, HashSet};
-use crate::ast;
-
-use std;
-use std::sync::Mutex;
 use anyhow::Error;
+use cranelift::codegen::{ir, CodegenError};
 use cranelift::codegen::ir::StackSlot;
 use cranelift::codegen::ir::stackslot::StackSize;
-use lazy_static::lazy_static;
-
-type VariableMap = HashMap<String, Variable>;
-type FunctionIds = HashMap<String, FuncId>;
-
-lazy_static! {
-    static ref CLASSES: Mutex<HashMap<String, CompiledClass>> = Mutex::new(HashMap::new());
-}
-
-pub struct Codegen {
-    builder_context: FunctionBuilderContext,
-    ctx: Context,
-    stmt_compiler: StmtCompiler,
-    pub func_ids: FunctionIds,
-}
+use cranelift::frontend::{FunctionBuilder, Variable};
+use cranelift::prelude::{types, EntityRef, InstBuilder, IntCC, MemFlags, StackSlotData, StackSlotKind, TrapCode, Value};
+use cranelift_module::{DataDescription, Linkage, Module};
+use crate::ast;
+use crate::ast::{ComparisonOp, ElseBranch, Expr, IfStmt, Op, Pattern, Stmt};
+use crate::codegen::cranelift::compiler::parse_type;
 
 #[derive(Clone)]
 pub struct StmtCompiler {
-    variables: VariableMap,
-    func_ids: FunctionIds,
-    string_counter: usize,
-    loop_stack: Vec<(ir::Block, ir::Block)>,
+    pub variables: crate::codegen::cranelift::compiler::VariableMap,
+    pub func_ids: crate::codegen::cranelift::compiler::FunctionIds,
+    pub string_counter: usize,
+    pub loop_stack: Vec<(ir::Block, ir::Block)>,
     pub variable_types: HashMap<String, String>,
-    did_return: bool,
-    class_fields: HashSet<String>,
-    in_class_scope: bool,
-    field_offsets: HashMap<String, i32>
+    pub did_return: bool,
+    pub class_fields: HashSet<String>,
+    pub in_class_scope: bool,
+    pub field_offsets: HashMap<String, i32>
 }
 
 impl StmtCompiler {
-    pub fn new(func_ids: FunctionIds) -> Self {
+    pub fn new(func_ids: crate::codegen::cranelift::compiler::FunctionIds) -> Self {
         Self {
             variables: HashMap::new(),
             func_ids,
@@ -60,9 +43,9 @@ impl StmtCompiler {
     }
 
     pub fn compile_stmt(
-        &mut self, 
-        builder: &mut FunctionBuilder<'_>, 
-        stmt: &Stmt, 
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        stmt: &Stmt,
         module: &mut dyn Module
     ) -> anyhow::Result<()> {
         match stmt {
@@ -236,7 +219,7 @@ impl StmtCompiler {
 
                 // === Condition check ===
                 builder.switch_to_block(cond_block);
-                 if let Some(cond_expr) = &for_stmt.condition {
+                if let Some(cond_expr) = &for_stmt.condition {
                     let cond_val = self.compile_expr(builder, cond_expr, module)?;
                     builder.ins().brif(cond_val, body_block, &[], exit_block, &[]);
                 } else {
@@ -268,7 +251,6 @@ impl StmtCompiler {
 
                 self.loop_stack.pop();
             }
-
 
             Stmt::Break => {
                 if let Some((_, break_block)) = self.loop_stack.last() {
@@ -356,7 +338,6 @@ impl StmtCompiler {
         Ok(())
     }
 
-
     //noinspection RsUnwrap
     pub fn compile_expr(&mut self, builder: &mut FunctionBuilder, expr: &Expr, module: &mut dyn Module) -> anyhow::Result<Value> {
         match expr {
@@ -378,7 +359,7 @@ impl StmtCompiler {
 
             Expr::Array { elements } => {
                 let expr_list = match &**elements {
-                    Expr::ExprList { exprs} => exprs,
+                    Expr::ExprList { exprs } => exprs,
                     _ => panic!("Expected ExprList"),
                 };
 
@@ -405,7 +386,7 @@ impl StmtCompiler {
             }
 
             Expr::ArrayInit { array_type, num_of_elements } => {
-                let element_size = type_size(array_type);
+                let element_size = crate::codegen::utils::type_size(array_type);
                 let total_elements = *num_of_elements + 1;
                 let size_in_bytes = total_elements * (element_size as u32);
 
@@ -518,7 +499,7 @@ impl StmtCompiler {
                     _ => anyhow::bail!("Expected identifier in class init"),
                 };
 
-                let classes = CLASSES.lock().unwrap();
+                let classes = crate::codegen::cranelift::compiler::CLASSES.lock().unwrap();
                 let compiled_class = classes.get(class_name).ok_or_else(|| anyhow::anyhow!("Class `{}` not found", class_name))?;
 
                 let param_names = compiled_class.field_layout.param_names.clone(); // e.g., ["x", "y"]
@@ -687,9 +668,7 @@ impl StmtCompiler {
                 } else {
                     panic!("Variable `{}` not found", var_name);
                 }
-
             }
-
 
             _ => anyhow::bail!("Unsupported expression"),
         }
@@ -720,310 +699,5 @@ impl StmtCompiler {
             _ => panic!("Only direct identifiers or field accesses are valid for function calls"),
         }
     }
-
 }
 
-#[derive(Clone)]
-struct CompiledClass {
-    field_layout: FieldLayout,
-    methods: Vec<FuncDecl>
-}
-
-impl Codegen {
-    pub fn new() -> Self {
-        let map = HashMap::new();
-        Self {
-            builder_context: FunctionBuilderContext::new(),
-            ctx: Context::new(),
-            stmt_compiler: StmtCompiler::new(map),
-            func_ids: HashMap::new(),
-        }
-    }
-
-    //noinspection RsUnwrap
-    fn compile_class(&mut self, class: &ClassDecl, module: &mut dyn Module) -> anyhow::Result<CompiledClass> {
-        self.stmt_compiler.class_fields = HashSet::from_iter(class.clone().params.unwrap_or(Vec::new()).iter().map(|p| p.name.clone()));
-        self.stmt_compiler.in_class_scope = true;
-
-        let field_layout: FieldLayout = compute_field_offsets(&class.params);
-
-        if let Some(params) = class.params.clone() {
-            for param in params {
-                match param.type_annotation {
-                    Some(ast::Type::Class(class_name)) => {
-                        self.stmt_compiler.variable_types.insert(param.name.clone(), class_name);
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        self.stmt_compiler.field_offsets = field_layout.offsets.clone();
-
-        let mut compiled_class = CompiledClass {
-            field_layout,
-            methods: Vec::new()
-        };
-
-        for stmt in class.body.clone().into_iter() {
-            match stmt {
-                Stmt::FuncDecl(f) => {
-                    compiled_class.methods.push(FuncDecl {
-                        visibility: f.visibility,
-                        is_async: f.is_async,
-                        is_unsafe: f.is_unsafe,
-                        name: class.name.clone() + "_" + &f.name,
-                        params: f.params,
-                        return_type: f.return_type,
-                        body: f.body,
-                    });
-                }
-                _ => unimplemented!()
-            }
-        }
-
-        self.declare_funcs(compiled_class.methods.as_slice(), module)?;
-        self.define_funcs(compiled_class.methods.as_slice(), module)?;
-
-        let mut classes = CLASSES.lock().unwrap();
-
-        classes.insert(class.name.clone(), compiled_class.clone());
-
-
-        self.stmt_compiler.class_fields.clear();
-        self.stmt_compiler.in_class_scope = false;
-
-        Ok(compiled_class)
-    }
-
-    pub fn declare_classes(&mut self, class_decls: &[ClassDecl], module: &mut dyn Module) -> anyhow::Result<()> {
-        for class_decl in class_decls {
-            self.compile_class(class_decl, module)?;
-        }
-        Ok(())
-    }
-
-    pub fn declare_funcs(&mut self, funcs: &[FuncDecl], module: &mut dyn Module) -> anyhow::Result<()> {
-        for func in funcs {
-
-            let mut sig: Signature = module.make_signature();
-
-            // Check if it's an instance method (first param is `self`)
-            let is_method = matches!(func.params.first(), Some(p) if p.name == "self");
-
-            for (i, param) in func.params.iter().enumerate() {
-                let ty = if is_method && i == 0 {
-                    types::I64 // assume self is a pointer
-                } else {
-                    parse_type(param.type_annotation.clone().unwrap())
-                };
-                sig.params.push(AbiParam::new(ty));
-            }
-
-            if let Some(ret_ty) = &func.return_type {
-                sig.returns.push(AbiParam::new(parse_type(ret_ty.clone())));
-            }
-
-            let func_id = module.declare_function(&func.name, Linkage::Export, &sig)?;
-            self.func_ids.insert(func.name.clone(), func_id);
-        }
-
-        self.stmt_compiler.func_ids = self.func_ids.clone();
-
-        Ok(())
-    }
-
-    pub fn declare_funcs_with_ret_type(&mut self, funcs: &[FuncDecl], ret_type: types::Type, module: &mut dyn Module) -> anyhow::Result<()> {
-        for func in funcs {
-
-            let mut sig: Signature = module.make_signature();
-
-            // Check if it's an instance method (first param is `self`)
-            let is_method = matches!(func.params.first(), Some(p) if p.name == "self");
-
-            for (i, param) in func.params.iter().enumerate() {
-                let ty = if is_method && i == 0 {
-                    types::I64 // assume self is a pointer
-                } else {
-                    parse_type(param.type_annotation.clone().unwrap())
-                };
-                sig.params.push(AbiParam::new(ty));
-            }
-
-            sig.returns.push(AbiParam::new(ret_type));
-
-            let func_id = module.declare_function(&func.name, Linkage::Export, &sig)?;
-            self.func_ids.insert(func.name.clone(), func_id);
-        }
-
-        self.stmt_compiler.func_ids = self.func_ids.clone();
-
-        Ok(())
-    }
-
-    pub fn define_funcs(&mut self, funcs: &[FuncDecl], module: &mut dyn Module) -> anyhow::Result<()> {
-        for func in funcs {
-            let func_id = *self
-                .func_ids
-                .get(&func.name)
-                .ok_or_else(|| anyhow::anyhow!("Function {} not declared", func.name))?;
-
-            let mut sig = module.make_signature();
-
-            // Check if it's an instance method (first param is `self`)
-            // Always push all params (including self) into the function signature
-            for (i, param) in func.params.iter().enumerate() {
-                let ty = if i == 0 && param.name == "self" {
-                    types::I64
-                } else {
-                    parse_type(param.type_annotation.clone().unwrap())
-                };
-
-                sig.params.push(AbiParam::new(ty));
-            }
-
-
-            if let Some(ret_ty) = &func.return_type {
-                sig.returns.push(AbiParam::new(parse_type(ret_ty.clone())));
-            }
-
-            self.ctx.func.signature = sig;
-
-            {
-                let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_context);
-                let block = builder.create_block();
-                builder.append_block_params_for_function_params(block);
-                builder.switch_to_block(block);
-                builder.seal_block(block);
-
-                self.stmt_compiler.variables.clear();
-
-                let is_method = func.params.len() > 0 && func.params.first().unwrap().name == "self";
-                self.stmt_compiler.in_class_scope = is_method;
-
-                // Bind all parameters (including self if present)
-                for (i, param) in func.params.iter().enumerate() {
-                    let ty = if is_method && i == 0 {
-                        types::I64 // assume self is a pointer
-                    } else {
-                        parse_type(param.type_annotation.clone().unwrap())
-                    };
-
-                    let var = Variable::new(i);
-                    builder.declare_var(var, ty);
-
-                    let block_params = builder.block_params(block);
-                    assert_eq!(
-                        block_params.len(),
-                        func.params.len(),
-                        "Mismatched parameter count: expected {}, got {}",
-                        func.params.len(),
-                        block_params.len()
-                    );
-
-                    let val = block_params[i];
-
-                    builder.def_var(var, val);
-                    self.stmt_compiler.variables.insert(param.name.clone(), var);
-
-                    if let Some(type_annotation) = param.type_annotation.clone() {
-                        match type_annotation {
-                            ast::Type::Class(class_name) => {
-                                self.stmt_compiler.variable_types.insert(param.name.clone(), class_name);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-
-                for stmt in &func.body.block {
-                    self.stmt_compiler.compile_stmt(&mut builder, stmt, module)?;
-                }
-
-                if !self.stmt_compiler.did_return {
-                    builder.ins().return_(&[]);
-                }
-
-                builder.finalize();
-                self.stmt_compiler.did_return = false;
-            }
-
-            module.define_function(func_id, &mut self.ctx)?;
-
-            module.clear_context(&mut self.ctx);
-        }
-
-        Ok(())
-    }
-}
-
-pub fn parse_type(variable_type: ast::Type) -> types::Type {
-    match variable_type {
-        ast::Type::F64 => types::F64,
-        ast::Type::F32 => types::F32,
-        ast::Type::I32 => types::I64,
-        ast::Type::I64 => types::I64,
-        ast::Type::U32 => types::I64,
-        ast::Type::UF64 => types::F64,
-        ast::Type::I128 => types::I128,
-        ast::Type::U128 => types::I128,
-        ast::Type::U64 => types::I64,
-        ast::Type::UF32 => types::F32,
-        ast::Type::Void => types::I8,
-        ast::Type::Boolean => types::I8,
-
-        // Pointers
-        ast::Type::Class(_) => types::I64,
-        ast::Type::String => types::I64,
-        ast::Type::Array(_, _) => types::I64,
-        _ => panic!("Unexpected type in parse_type: {:?}", variable_type),
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct FieldLayout {
-    pub offsets: HashMap<String, i32>, // field name → offset
-    pub param_names: Vec<String>,      // ordered list of field names
-    pub total_size: i32,
-}
-
-pub fn compute_field_offsets(params: &Option<Vec<Param>>) -> FieldLayout {
-    let mut offsets = HashMap::new();
-    let mut param_names = Vec::new();
-    let mut offset: i32 = 0;
-
-    if let Some(params) = params {
-        for param in params {
-            offsets.insert(param.name.clone(), offset);
-            param_names.push(param.name.clone());
-            offset += 8; // TODO: not all offsets are 8 bytes
-        }
-    }
-
-    FieldLayout {
-        offsets,
-        param_names,
-        total_size: offset,
-    }
-}
-
-#[inline]
-fn type_size(ty: &ast::Type) -> u8 {
-    match ty {
-        ast::Type::F64 => 8,
-        ast::Type::F32 => 4,
-        ast::Type::I32 => 4,
-        ast::Type::I64 => 8,
-        ast::Type::U32 => 4,
-        ast::Type::UF64 => 8,
-        ast::Type::I128 => 16,
-        ast::Type::U128 => 16,
-        ast::Type::U64 => 8,
-        ast::Type::UF32 => 4,
-        ast::Type::Void => 1,
-        ast::Type::Boolean => 1,
-        ast::Type::Class(_) => 8,
-        ast::Type::Array(_, _) => 8,
-        _ => panic!("Unexpected type in type_size: {:?}", ty),
-    }
-}

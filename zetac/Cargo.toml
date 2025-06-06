@@ -13,7 +13,6 @@ cranelift-module = "0.120"
 cranelift-jit = "0.120"
 cranelift-object = "0.120.0"
 cranelift-native = "0.120.0"
-clap = { version = "4.5.39", features = ["derive"] }
 pest = "2.8.0"
 pest_derive = "2.8.0"
 lazy_static = "1.5.0"

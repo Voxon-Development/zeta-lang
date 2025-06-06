@@ -3,14 +3,10 @@ use pest_derive::Parser;
 use pest::iterators::{Pair, Pairs};
 use pest::Parser;
 
-use pest::pratt_parser::PrattParser;
-
 use crate::ast::ElseBranch::If;
 use crate::ast::Op;
 use crate::ast::Stmt::ExprStmt;
 use crate::ast::*;
-use crate::ast::Type::Class;
-use crate::compiler::parse_type;
 
 #[derive(Parser)]
 #[grammar = "grammar.pest"]
@@ -57,11 +53,11 @@ fn parse_stmt(stmts: &mut Vec<Stmt>, pair: Pair<Rule>) -> bool {
     false
 }
 
-fn parse_break_stmt(pair: &Pair<Rule>) -> Stmt {
+fn parse_break_stmt(_: &Pair<Rule>) -> Stmt {
     Stmt::Break
 }
 
-fn parse_continue_stmt(pair: &Pair<Rule>) -> Stmt {
+fn parse_continue_stmt(_: &Pair<Rule>) -> Stmt {
     Stmt::Continue
 }
 
@@ -178,7 +174,7 @@ fn parse_fun_decl(pair: &Pair<Rule>) -> Stmt {
     let mut inner = pair.clone().into_inner();
 
     let mut visibility = None;
-    let mut is_async = false;
+    let is_async = false;
     let mut is_unsafe = false;
 
     while let Some(peek) = inner.peek() {
@@ -318,7 +314,7 @@ fn parse_to_type(pair: Pair<Rule>) -> Type {
 
     let mut inner = pair.into_inner();
 
-    // First child must be the basic_type
+    // The first child must be the basic_type
     let basic = inner.next().unwrap();
     let mut ty = parse_basic_type(basic);
 

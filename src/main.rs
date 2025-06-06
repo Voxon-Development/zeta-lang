@@ -1,16 +1,30 @@
-use bumpalo::Bump;
-use std::time::Instant;
+use std::arch::asm;
+use std::ffi::CStr;
 
 fn main() {
-    let start = Instant::now();
-    println!("Hello, world!");
+    let msg = CStr::from_bytes_with_nul(b"Came from assembly!\n\0").unwrap();
+    unsafe { println_syscall(msg); }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn println_syscall(string: &CStr) { 
+    unsafe {
+        // write syscall
+        asm!(
+            "syscall",
+            in("rax") 1,                           // sys_write
+            in("rdi") 1,                           // fd = stdout
+            in("rsi") string.as_ptr(),             // buffer
+            in("rdx") string.to_bytes().len(),     // length
+            clobber_abi("C"),
+        );
     
-    let arr: [i64; 3] = [1,2,3];
-    let mut i = 0;
-    while (i < 3) {
-        println!("{}", arr[i]);
-        i += 1;
+        // exit syscall (noreturn)
+        asm!(
+            "syscall",
+            in("rax") 60,     // sys_exit
+            in("rdi") 0,      // exit code
+            options(noreturn)
+        );
     }
-    
-    println!("Time elapsed: {} ns", start.elapsed().as_nanos());
 }

@@ -1,5 +1,5 @@
 [package]
-name = "untitled"
+name = "zeta-lang"
 version = "0.1.0"
 edition = "2024"
 
@@ -9,9 +9,7 @@ opt-level = 3
 
 [workspace]
 members = [
-    "zvm",
-    "zetac"
-]
+    "zetac", "zeta", "ir"]
 
 [dependencies]
 bumpalo = "3.17.0"

@@ -1,4 +1,5 @@
 use std::arch::asm;
+use std::ffi::c_char;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn println_str(s: *const u8) {
@@ -19,28 +20,17 @@ pub extern "C" fn println_bool(i: bool) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn syscall6(
-    syscall_number: u64,
-    arg1: u64,
-    arg2: u64,
-    arg3: u64,
-    arg4: u64,
-    arg5: u64,
-    arg6: u64,
-) -> u64 {
+pub unsafe extern "C" fn println_syscall(string: *const c_char) { 
     unsafe {
-        let ret: u64 = 0;
         asm!(
-            "mov rax, rdi",  // syscall number
-            "mov rdi, rsi",  // arg1
-            "mov rsi, rdx",  // arg2
-            "mov rdx, rcx",  // arg3
-            "mov r10, r8",   // arg4
-            "mov r8,  r9",   // arg5
-            "mov r9, [rsp]", // arg6 is passed on stack
+            "mov rax, 1",
+            "mov rdi, 1",
+            "mov rsi, {0}",
+            "mov rdx, {1:e}",
             "syscall",
-            "ret"
+            in(reg) string,
+            in(reg) std::ffi::CStr::from_ptr(string).to_bytes().len(),
+            options(noreturn)
         );
-        ret
     }
 }
