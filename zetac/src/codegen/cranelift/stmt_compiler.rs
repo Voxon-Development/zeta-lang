@@ -359,7 +359,7 @@ impl StmtCompiler {
 
             Expr::Array { elements } => {
                 let expr_list = match &**elements {
-                    Expr::ExprList { exprs } => exprs,
+                    Expr::ExprList { exprs: expression_list } => expression_list,
                     _ => panic!("Expected ExprList"),
                 };
 
