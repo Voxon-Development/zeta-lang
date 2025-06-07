@@ -1,30 +1,47 @@
-// async version of Vec
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::collections::VecDeque;
+use crate::vm::virtualmachine::VirtualMachine;
 
-struct EventLoop {
-    events: Arc<Mutex<Vec<Event>>>,
-    event_queue: Arc<Mutex<Vec<Event>>>
+pub(crate) struct Event {
+    pub function_id: u64,
+    pub execution_context: ExecutionContext
+}
+
+#[derive(Default)]
+pub(crate) struct EventLoop {
+    event_queue: VecDeque<Event>
 }
 
 impl EventLoop {
-    fn new() -> EventLoop {
+    pub(crate) fn new() -> EventLoop {
         EventLoop {
-            events: Vec::new(),
-            event_queue: Vec::new(),
+            event_queue: VecDeque::new(),
         }
     }
 
-    async fn add_event(&mut self, event: Event) {
-        self.event_queue.lock().unwrap().push(event);
+    pub(crate) fn add_event(&mut self, event: Event) {
+        self.event_queue.push_back(event);
     }
 
-    async fn process_events(&mut self) {
-        let mut events_queue = self.events_queue.lock().unwrap();
-        let mut events = self.events.lock().unwrap();
-        for event in events_queue.iter() {
-            events.push(event.clone());
+    fn process_events(&mut self, virtual_machine: &mut VirtualMachine) {
+        for event in self.event_queue.iter() {
+            match event.execution_context {
+                ExecutionContext::Sync => virtual_machine.run_function(event.function_id),
+                ExecutionContext::Fiber => todo!(),
+                ExecutionContext::Thread => todo!(),
+                ExecutionContext::Parallelized => todo!()
+            }
         }
-        events_queue.clear();
+        
+        self.event_queue.clear();
     }
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Default)]
+pub(crate) enum ExecutionContext {
+    #[default]
+    Sync,
+    
+    Fiber,
+    Thread,
+    Parallelized
 }
