@@ -13,7 +13,7 @@ use std::process;
 mod parser;
 mod ast;
 mod println;
-mod codegen;
+pub mod codegen;
 /*fn main() {
     match parser::parse_program("\
     fun main() {

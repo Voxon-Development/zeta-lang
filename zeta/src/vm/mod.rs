@@ -1,6 +1,8 @@
-pub mod events;
 pub mod virtualmachine;
 pub mod profiler;
 pub mod frames;
-mod stack;
+pub mod stack;
+pub mod functions;
+pub mod eventloop;
+pub mod heap;
 
