@@ -1,5 +1,6 @@
 use std::mem::{align_of, size_of};
 use crate::vm::frames;
+use crate::vm::frames::{CallFrame, StackFrame};
 
 pub struct BumpStack {
     buffer: Vec<u8>,
@@ -13,10 +14,12 @@ impl BumpStack {
         Self { buffer: vec![0u8; size], offset: 0, frames: vec![], function_frames: vec![] }
     }
 
-    pub fn push_frame(&mut self) {
-        self.frames.push(frames::StackFrame { offset: self.offset });
+    pub fn push_frame(&mut self) -> &StackFrame {
+        let stack_frame = StackFrame { offset: self.offset };
+        self.frames.push(stack_frame);
+        self.frames.last().unwrap()
     }
-
+    
     pub fn pop_frame(&mut self) {
         if let Some(frame) = self.frames.pop() {
             self.offset = frame.offset;
