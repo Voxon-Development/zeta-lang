@@ -1,0 +1,10 @@
+[package]
+name = "zeta"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+zetac = { path = "../zetac" }
+ir = { path = "../ir" }
+clap = { version = "4.5.39", features = ["derive"] }
+tokio = { version = "1.45.1", features = ["full"] }
