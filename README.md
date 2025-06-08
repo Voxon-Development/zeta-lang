@@ -32,4 +32,4 @@ Current stuff to be done:
 - [x] Arrays
 - [ ] Memory management
 - [x] Pointers
-- [ ] Casting
+- [ ] Casting (Partially done)
