@@ -168,10 +168,7 @@ impl VirtualMachine {
             return;
         }
 
-        let call_frame: &StackFrame = self.stack.push_frame();
-        let program_counter: usize = 0;
-        let instruction_counter: usize = 0;
-
+        let stack_frame = StackFrame::new(0, 0, function_id);
         let now = std::time::Instant::now();
         functions::interpret_function(
             call_frame,
