@@ -112,6 +112,7 @@ pub struct VirtualMachine {
     function_module: module::ZetaModule,
     event_loop: FiberScheduler,
     instruction_counter: usize,
+    string_pool: StringPool
 }
 
 impl VirtualMachine {
