@@ -358,12 +358,8 @@ impl StmtCompiler {
             }
 
             Expr::Array { elements } => {
-                let expr_list = match &**elements {
-                    Expr::ExprList { exprs: expression_list } => expression_list,
-                    _ => panic!("Expected ExprList"),
-                };
 
-                let length: i64 = expr_list.len() as i64;
+                let length: i64 = elements.len() as i64;
                 let size = (length + 1) * 8;
 
                 let array_slot: StackSlot = builder.create_sized_stack_slot(
@@ -376,7 +372,7 @@ impl StmtCompiler {
                 let length_val = builder.ins().iconst(types::I64, length);
                 builder.ins().store(MemFlags::new(), length_val, array_ptr, 0);
 
-                for (i, expr) in expr_list.iter().enumerate() {
+                for (i, expr) in elements.iter().enumerate() {
                     let value = self.compile_expr(builder, expr, module).unwrap();
                     let offset = ((i + 1) * 8) as i32;
                     builder.ins().store(MemFlags::new(), value, array_ptr, offset);

@@ -73,11 +73,10 @@ impl Codegen {
                 Stmt::FuncDecl(f) => {
                     compiled_class.methods.push(FuncDecl {
                         visibility: f.visibility,
-                        is_async: f.is_async,
-                        is_unsafe: f.is_unsafe,
                         name: class.name.clone() + "_" + &f.name,
                         params: f.params,
                         return_type: f.return_type,
+                        effects: f.effects,
                         body: f.body,
                     });
                 }
