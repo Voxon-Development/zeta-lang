@@ -1,47 +1,64 @@
-use std::collections::VecDeque;
-use crate::vm::virtualmachine::VirtualMachine;
+use crate::vm::{virtualmachine::VirtualMachine, fibers::Fiber};
+use crossbeam::deque::{Injector, Stealer, Worker};
+use rayon::ThreadPoolBuilder;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
-pub(crate) struct Event {
-    pub function_id: u64,
-    pub execution_context: ExecutionContext
+pub struct FiberScheduler {
+    injector: Arc<Injector<Fiber>>,
 }
 
-#[derive(Default)]
-pub(crate) struct EventLoop {
-    event_queue: VecDeque<Event>
-}
-
-impl EventLoop {
-    pub(crate) fn new() -> EventLoop {
-        EventLoop {
-            event_queue: VecDeque::new(),
+impl FiberScheduler {
+    pub fn new() -> Self {
+        Self {
+            injector: Arc::new(Injector::new()),
         }
     }
 
-    pub(crate) fn add_event(&mut self, event: Event) {
-        self.event_queue.push_back(event);
+    pub fn spawn(&self, fiber: Fiber) {
+        self.injector.push(fiber);
     }
 
-    fn process_events(&mut self, virtual_machine: &mut VirtualMachine) {
-        for event in self.event_queue.iter() {
-            match event.execution_context {
-                ExecutionContext::Sync => virtual_machine.run_function(event.function_id),
-                ExecutionContext::Fiber => todo!(),
-                ExecutionContext::Thread => todo!(),
-                ExecutionContext::Parallelized => todo!()
+    pub fn run(self, vm: Arc<Mutex<VirtualMachine>>) {
+        let injector = self.injector.clone();
+
+        ThreadPoolBuilder::new().build_global().unwrap();
+
+        rayon::scope(|s| {
+            for _ in 0..rayon::current_num_threads() {
+                let injector = injector.clone();
+                let vm = vm.clone();
+
+                s.spawn(move |_| {
+                    let local = Worker::new_fifo();
+                    Self::loop_through_fibers(injector, &vm, &local);
+                });
+            }
+        });
+    }
+
+    fn loop_through_fibers(injector: Arc<Injector<Fiber>>, vm: &Arc<Mutex<VirtualMachine>>, local: &Worker<Fiber>) {
+        loop {
+            let fiber = local.pop()
+                .or_else(|| injector.steal_batch_and_pop(&local).success());
+
+            match fiber {
+                Some(mut fiber) => {
+                    fiber.step(&mut vm.lock().unwrap());
+
+                    if !fiber.done && !fiber.yielded {
+                        local.push(fiber);
+                    } else if fiber.yielded {
+                        injector.push(fiber);
+                    } else {
+                        fiber.reset();
+                    }
+                }
+                None => {
+                    thread::sleep(Duration::from_millis(1));
+                }
             }
         }
-        
-        self.event_queue.clear();
     }
-}
-
-#[derive(Copy, Clone, Eq, PartialEq, Default)]
-pub(crate) enum ExecutionContext {
-    #[default]
-    Sync,
-    
-    Fiber,
-    Thread,
-    Parallelized
 }
