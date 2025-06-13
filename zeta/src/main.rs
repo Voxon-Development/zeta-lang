@@ -2,9 +2,16 @@ mod vm;
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
+use std::{fs, process};
+use std::any::Any;
 use std::time::Instant;
 use clap::{Parser, Subcommand};
-use zetac::{compile_to_ir, BackendModule, Codegen};
+use zetac::{compile_to_ir, frontend, BackendModule, Codegen, compile_files_async};
+use zetac::ast::{ClassDecl, FuncDecl, Stmt};
+use zetac::codegen::ir::ir_compiler::IrCompiler;
+use zetac::codegen::ir::module::ZetaModule;
+use crate::vm::virtualmachine::VirtualMachine;
+use zetac::AsyncCompileError;
 
 #[derive(Parser)]
 #[command(name = "zeta")]
@@ -43,22 +50,55 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
+    
     match cli.command {
         Some(Commands::Jit { file, verbose }) => {
-            run_file(file, false, verbose, None)?;
+            run_files_async(vec![file], verbose).await?;
         },
         Some(Commands::Aot { file, output }) => {
+            // For AOT compilation, we'll still use the old synchronous version
+            // since we need to generate object files
             run_file(file, true, false, output)?;
         },
         None => {
             if let Some(file) = cli.file {
-                run_file(file, false, cli.verbose, None)?;
+                // For single file, use the async version for consistency
+                run_files_async(vec![file], cli.verbose).await?;
             } else {
                 eprintln!("No file specified. Use --help for usage information.");
                 std::process::exit(1);
             }
         }
     }
+    
+    Ok(())
+}
+
+async fn run_files_async(files: Vec<PathBuf>, verbose: bool) -> Result<(), Box<dyn Error>> {
+    if verbose {
+        println!("Compiling {} files asynchronously...", files.len());
+    }
+    
+    let start_time = Instant::now();
+    
+    let module = compile_files_async(files.clone())
+        .await
+        .map_err(|e| {
+            eprintln!("Async compilation failed: {}", e);
+            std::process::exit(1);
+        })?;
+    
+    let duration = start_time.elapsed();
+    
+    if verbose {
+        println!("Compilation completed in {:.2?}", duration);
+        println!("Module contains {} functions", module.functions.len());
+    }
+    
+    // Run the compiled code
+    let mut vm = VirtualMachine::new(module);
+    vm.run();
+    
     Ok(())
 }
 
