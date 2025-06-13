@@ -2,11 +2,12 @@ use std::collections::HashMap;
 
 pub type TimeTaken = u64;
 
+#[derive(Debug)]
 pub struct Profiler {
     call_counts: HashMap<u64, FunctionCall>
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct FunctionCall {
     pub count: u64,
     pub time_taken: TimeTaken

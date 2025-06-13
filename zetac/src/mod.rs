@@ -1,4 +1,4 @@
-mod ast;
-mod lexer;
-mod parser;
-mod lib;
+pub mod ast;
+pub mod lexer;
+pub mod frontend;
+pub mod lib;

@@ -2,10 +2,20 @@ use std::arch::asm;
 use std::ffi::CStr;
 
 fn main() {
-    let msg = CStr::from_bytes_with_nul(b"Came from assembly!\n\0").unwrap();
-    unsafe { println_syscall(msg); }
+    /*let msg = CStr::from_bytes_with_nul(b"Came from assembly!\n\0").unwrap();
+    unsafe { println_syscall(msg); }*/
+    
+    let time = std::time::Instant::now();
+    
+    let mut hi = 0;
+    while hi < 1000000 {
+        println!("{}", hi);
+        hi += 1;
+    }
+    
+    println!("Took {}ms", time.elapsed().as_millis());
 }
-
+/*
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn println_syscall(string: &CStr) { 
     unsafe {
@@ -27,4 +37,4 @@ pub unsafe extern "C" fn println_syscall(string: &CStr) {
             options(noreturn)
         );
     }
-}
+}*/

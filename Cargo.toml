@@ -9,7 +9,8 @@ opt-level = 3
 
 [workspace]
 members = [
-    "zetac", "zeta", "ir"]
+    "zetac", "zeta", "ir"
+]
 
 [dependencies]
 bumpalo = "3.17.0"

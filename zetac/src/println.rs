@@ -18,19 +18,3 @@ pub extern "C" fn println_int(i: i32) {
 pub extern "C" fn println_bool(i: bool) {
     println!("{}", i);
 }
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn println_syscall(string: *const c_char) { 
-    unsafe {
-        asm!(
-            "mov rax, 1",
-            "mov rdi, 1",
-            "mov rsi, {0}",
-            "mov rdx, {1:e}",
-            "syscall",
-            in(reg) string,
-            in(reg) std::ffi::CStr::from_ptr(string).to_bytes().len(),
-            options(noreturn)
-        );
-    }
-}

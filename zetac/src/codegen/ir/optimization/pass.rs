@@ -1,35 +1,18 @@
-pub trait Pass {
-    fn optimize(&mut self, stmts: &mut Vec<ir::Bytecode>) -> anyhow::Result<()>;
+use enum_map::Enum;
+
+pub trait Pass: Send + Sync {
+    fn optimize(&mut self, stmts: &mut Vec<u8>) -> anyhow::Result<()>;
 
     fn priority(&self) -> OptimizationPassPriority;
 }
 
-impl From<u16> for OptimizationPassPriority {
-    fn from(value: u16) -> Self {
-        match value {
-            5 => OptimizationPassPriority::Max,
-            4 => OptimizationPassPriority::High,
-            3 => OptimizationPassPriority::Medium,
-            2 => OptimizationPassPriority::Low,
-            1 => OptimizationPassPriority::Min,
-            _ => OptimizationPassPriority::Medium
-        }
-    }
-}
-
-impl From<OptimizationPassPriority> for u16 {
-    fn from(value: OptimizationPassPriority) -> Self {
-        value as u16
-    }
-}
-
-#[derive(Copy, Clone, Hash, Eq, PartialEq)]
+#[derive(Copy, Clone, Hash, Eq, PartialEq, Debug, Enum)]
 pub enum OptimizationPassPriority {
-    Max = 5,
-    High = 4,
-    Medium = 3,
-    Low = 2,
-    Min = 1
+    Max,
+    High,
+    Medium,
+    Low,
+    Min,
 }
 
 impl OptimizationPassPriority {
@@ -44,6 +27,18 @@ impl OptimizationPassPriority {
     }
 }
 
+impl From<u8> for OptimizationPassPriority {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => OptimizationPassPriority::Max,
+            1 => OptimizationPassPriority::High,
+            2 => OptimizationPassPriority::Medium,
+            3 => OptimizationPassPriority::Low,
+            _ => OptimizationPassPriority::Min,
+        }
+    }
+}
+
 impl Default for OptimizationPassPriority {
     fn default() -> Self {
         OptimizationPassPriority::Medium
@@ -53,7 +48,7 @@ impl Default for OptimizationPassPriority {
 pub struct ConstantFoldingPass;
 
 impl Pass for ConstantFoldingPass {
-    fn optimize(&mut self, bytecode: &mut Vec<ir::Bytecode>) -> anyhow::Result<()> {
+    fn optimize(&mut self, bytecode: &mut Vec<u8>) -> anyhow::Result<()> {
          for stmt in bytecode.iter_mut() {
              // TODO: check the bytecode, and if it's a math operation with two constants then let's replace it with a constant
              
@@ -69,7 +64,7 @@ impl Pass for ConstantFoldingPass {
 pub struct DeadCodeEliminationPass;
 
 impl Pass for DeadCodeEliminationPass {
-    fn optimize(&mut self, bytecode: &mut Vec<ir::Bytecode>) -> anyhow::Result<()> {
+    fn optimize(&mut self, bytecode: &mut Vec<u8>) -> anyhow::Result<()> {
         todo!()
     }
 
@@ -81,7 +76,7 @@ impl Pass for DeadCodeEliminationPass {
 pub struct InliningPass;
 
 impl Pass for InliningPass {
-    fn optimize(&mut self, bytecode: &mut Vec<ir::Bytecode>) -> anyhow::Result<()> {
+    fn optimize(&mut self, bytecode: &mut Vec<u8>) -> anyhow::Result<()> {
         todo!()
     }
 
