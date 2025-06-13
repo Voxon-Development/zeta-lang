@@ -134,6 +134,11 @@ impl VirtualMachine {
             string_pool: StringPool::new()
         }
     }
+
+    /// Run a function but in a fiber
+    pub fn run_function_in_fiber(&mut self, function_id: u64) {
+        self.event_loop.spawn(Fiber::new(function_id, self.function_module.get_function(function_id).unwrap().clone()));
+    }
     
     pub fn schedule_function(&mut self, function_id: u64, execution_context: ExecutionContext) {
         let function: &mut Function = self.function_module
