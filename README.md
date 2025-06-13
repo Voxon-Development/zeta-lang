@@ -23,12 +23,13 @@ Current stuff to be done:
 - [x] Functions (Return values too)
 - [x] Type inference
 - [ ] Extensive FFI and Importing (Being implemented)
-- [ ] SDK (Dependent on Extensive FFI and Importing, memory management, and Arrays)
+- [ ] SDK (Dependent on Extensive FFI and Importing and memory management)
 - [ ] Optimizations for generated IR
 - [x] If statements
 - [x] While statements
 - [x] For statements
 - [x] Match statements
-- [ ] Arrays (Being implemented)
-- [ ] Memory management (not a garbage collector, mostly dependent on pointers)
-- [ ] Pointers
+- [x] Arrays
+- [ ] Memory management
+- [x] Pointers
+- [ ] Casting (Partially done)
