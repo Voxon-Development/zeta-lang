@@ -119,7 +119,8 @@ unsafe impl Send for VirtualMachine {}
 unsafe impl Sync for VirtualMachine {}
 
 impl VirtualMachine {
-    pub fn new(bytecode: Vec<Bytecode>) -> VirtualMachine {
+    #[inline]
+    pub fn new(function_module: module::ZetaModule) -> VirtualMachine {
         VirtualMachine {
             stack: stack::BumpStack::new(1024),
             heap: heap::HeapMemory::new(),
