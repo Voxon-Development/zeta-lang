@@ -183,7 +183,7 @@ impl VirtualMachine {
         self.interpret_function(&stack_frame, &mut code);
     }
 
-    pub fn run(&mut self, program: &[Bytecode]) {
+    pub fn run(&mut self) {
         // Pre program
         while self.program_counter < program.len() {
             // ...
