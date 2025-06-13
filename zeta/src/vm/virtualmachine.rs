@@ -115,6 +115,9 @@ pub struct VirtualMachine {
     string_pool: StringPool
 }
 
+unsafe impl Send for VirtualMachine {}
+unsafe impl Sync for VirtualMachine {}
+
 impl VirtualMachine {
     pub fn new(bytecode: Vec<Bytecode>) -> VirtualMachine {
         VirtualMachine {
