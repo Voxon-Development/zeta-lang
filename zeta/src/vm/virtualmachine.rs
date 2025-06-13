@@ -128,9 +128,10 @@ impl VirtualMachine {
             variables: Trie::new(),
             profiler: profiler::Profiler::new(),
             pass_manager: pass_manager::PassManager::new(),
-            function_module: module::ZetaModule::new(),
-            event_loop: EventLoop::new(),
-            instruction_counter: 0
+            function_module,
+            event_loop: FiberScheduler::new(),
+            instruction_counter: 0,
+            string_pool: StringPool::new()
         }
     }
     
