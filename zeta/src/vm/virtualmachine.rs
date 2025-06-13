@@ -170,12 +170,7 @@ impl VirtualMachine {
 
         let stack_frame = StackFrame::new(0, 0, function_id);
         let now = std::time::Instant::now();
-        functions::interpret_function(
-            call_frame,
-            program_counter,
-            instruction_counter,
-            function
-        );
+        self.interpret_function(&stack_frame, code); // first immutable borrow used here
         self.profiler.record_call(function_id, now.elapsed().as_nanos() as u64);
         self.stack.pop_frame();
 
