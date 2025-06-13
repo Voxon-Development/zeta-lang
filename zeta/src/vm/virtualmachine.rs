@@ -190,8 +190,185 @@ impl VirtualMachine {
             println!("Running main function");
             self.run_function(main_function_id);
 
-        // Post program
-        self.stack.reset();
-        self.heap.free_all();
+            // Post program
+            self.stack.reset();
+            self.heap.free_all();
+        } else {
+            eprintln!("No entry point found, please add a main function like the following:");
+            eprintln!("fun main() {{\
+                println_str(\"Hello World!\");
+            }}");
+            std::process::exit(1);
+        }
+    }
+
+    pub fn interpret_function(&mut self, call_frame: &StackFrame, function: &mut Vec<u8>) {
+        for instruction in function.clone() {
+            self.interpret_instruction(instruction, call_frame, function);
+        }
+    }
+
+    pub fn interpret_instruction(&mut self, instr: u8, _frame: &StackFrame, function: &mut Vec<u8>) -> bool {
+        println!("{:?}", Bytecode::from(instr));
+        match instr {
+            ADD => binary_op_int!(self, +),
+            SUB => binary_op_int!(self, -),
+            MUL => binary_op_int!(self, *),
+            DIV => binary_op_int!(self, /),
+            MOD => binary_op_int!(self, %),
+            AND => binary_op_int!(self, &),
+            OR => binary_op_int!(self, |),
+            XOR => binary_op_int!(self, ^),
+            NOT => {
+                let val = self.stack.pop_int();
+                self.stack.push_int(!val);
+            }
+            SHL => binary_op_int!(self, <<),
+            SHR => binary_op_int!(self, >>),
+
+            EQ => binary_op_cmp!(self, ==),
+            NEQ => binary_op_cmp!(self, !=),
+            LT => binary_op_cmp!(self, <),
+            LTE => binary_op_cmp!(self, <=),
+            GT => binary_op_cmp!(self, >),
+            GTE => binary_op_cmp!(self, >=),
+
+            PUSH_I64 => {
+                let val = self.fetch_i64(function);
+                self.stack.push_i64(val);
+            }
+
+            PUSH_F64 => {
+                let val = self.fetch_f64(function);
+                self.stack.push_f64(val);
+            }
+
+            PUSH_BOOL => {
+                let b = self.fetch_u8(function) != 0;
+                self.stack.push_bool(b);
+            }
+
+            PUSH_STR => {
+                let s = self.fetch_string(13, function);
+                let id = self.string_pool.intern(&s);
+                self.stack.push_string(id);
+            }
+
+            POP => {
+                self.stack.pop();
+            }
+
+            DUP => {
+                let v = self.stack.peek().clone();
+                self.stack.push(v.unwrap());
+            }
+
+            RETURN => {
+                return false;
+            }
+
+            HALT => {
+                std::process::exit(0);
+            }
+
+            // Jumps
+            JUMP => {
+                let offset = self.fetch_i16(function) as usize;
+                self.program_counter += offset;
+            }
+
+            JUMP_IF_TRUE => {
+                let offset = self.fetch_i16(function) as usize;
+                let condition = self.stack.pop_bool();
+                if condition {
+                    self.program_counter += offset;
+                }
+            }
+
+            JUMP_IF_FALSE => {
+                let offset = self.fetch_i16(function) as usize;
+                let condition = self.stack.pop_bool();
+                if !condition {
+                    self.program_counter += offset;
+                }
+            }
+            
+            CALL => {
+                // it's CALL, CALLEE, and arguments
+
+            }
+
+            _ => {
+                panic!("Unimplemented opcode: {instr}");
+            }
+        }
+
+        true
+    }
+
+    pub fn fetch_u8(&mut self, code: &mut Vec<u8>) -> u8 {
+        let byte = code[self.instruction_counter];
+        self.instruction_counter += 1;
+        byte
+    }
+
+    pub fn fetch_u16(&mut self, code: &mut Vec<u8>) -> u16 {
+        let bytes = &code[self.instruction_counter..self.instruction_counter + 2];
+        self.instruction_counter += 2;
+        u16::from_ne_bytes(bytes.try_into().unwrap())
+    }
+
+    pub fn fetch_u32(&mut self, code: &mut Vec<u8>) -> u32 {
+        let bytes = &code[self.instruction_counter..self.instruction_counter + 4];
+        self.instruction_counter += 4;
+        u32::from_ne_bytes(bytes.try_into().unwrap())
+    }
+
+    pub fn fetch_u64(&mut self, code: &mut Vec<u8>) -> u64 {
+        let bytes = &code[self.instruction_counter..self.instruction_counter + 8];
+        self.instruction_counter += 8;
+        u64::from_ne_bytes(bytes.try_into().unwrap())
+    }
+
+    pub fn fetch_i8(&mut self, code: &mut Vec<u8>) -> i8 {
+        self.fetch_u8(code) as i8
+    }
+
+    pub fn fetch_i16(&mut self, code: &mut Vec<u8>) -> i16 {
+        self.fetch_u16(code) as i16
+    }
+
+    pub fn fetch_i32(&mut self, code: &mut Vec<u8>) -> i32 {
+        self.fetch_u32(code) as i32
+    }
+
+    pub fn fetch_i64(&mut self, code: &mut Vec<u8>) -> i64 {
+        self.fetch_u64(code) as i64
+    }
+
+    pub fn fetch_f32(&mut self, code: &mut Vec<u8>) -> f32 {
+        f32::from_bits(self.fetch_u32(code))
+    }
+
+    pub fn fetch_f64(&mut self, code: &mut Vec<u8>) -> f64 {
+        f64::from_bits(self.fetch_u64(code))
+    }
+
+    /// Assumes string is encoded as a u16 length followed by that many bytes
+    pub fn fetch_string(&mut self, len: u16, code: &mut Vec<u8>) -> String {
+        println!("Fetching string of length {}", len);
+        println!("Instruction counter: {}", self.instruction_counter);
+        println!("Code: {:?}", code);
+        let bytes = &code[self.instruction_counter..self.instruction_counter + len as usize];
+        self.instruction_counter += len as usize;
+        String::from_utf8(bytes.to_vec()).expect("Invalid UTF-8 string in bytecode")
+    }
+    
+    pub fn get_function_module(&self) -> &module::ZetaModule {
+        &self.function_module
+    }
+    
+    pub fn get_function_module_mut(&mut self) -> &mut module::ZetaModule {
+        &mut self.function_module
     }
 }
