@@ -1,15 +1,14 @@
-use std::cmp::PartialEq;
 use crate::vm::frames::StackFrame;
-use crate::vm::functions;
 use crate::vm::{profiler, stack};
 use ir::Bytecode;
-use std::collections::HashMap;
-use zetac::codegen::ir::module;
-use zetac::codegen::ir::module::Function;
-use zetac::codegen::ir::optimization::pass_manager;
-use crate::vm::eventloop::{Event, EventLoop, ExecutionContext};
+
+use crate::vm::eventloop::FiberScheduler;
+use crate::vm::fibers::Fiber;
 use crate::vm::heap;
 use crate::vm::string_pool::StringPool;
+use radix_trie::Trie;
+use zetac::codegen::ir::module;
+use zetac::codegen::ir::optimization::pass_manager;
 
 use mimalloc;
 
@@ -172,7 +171,6 @@ impl VirtualMachine {
         let now = std::time::Instant::now();
         self.interpret_function(&stack_frame, code); // first immutable borrow used here
         self.profiler.record_call(function_id, now.elapsed().as_nanos() as u64);
-        self.stack.pop_frame();
 
         // check profiler results
         let function_call_count = self.profiler.get_func_call_count(function_id);
