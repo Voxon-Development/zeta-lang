@@ -140,29 +140,28 @@ impl VirtualMachine {
         self.event_loop.spawn(Fiber::new(function_id, self.function_module.get_function(function_id).unwrap().clone()));
     }
     
-    pub fn schedule_function(&mut self, function_id: u64, execution_context: ExecutionContext) {
-        let function: &mut Function = self.function_module
-            .get_function_mut(function_id)
-            .unwrap();
-        
-        if execution_context == ExecutionContext::Sync {
-            // We don't need an event loop for sync functions
-            self.run_function(function_id);
-            return;
-        }
-        
-        self.event_loop.add_event(Event {
-            function_id,
-            execution_context
-        });
-    }
+    pub fn run_function(&mut self, function_id: u64) {
+        /*println!("Running function {}", function_id);
+        let (is_native, code, optimization_level) = {
+            let function = match self.function_module.get_function_mut(function_id) {
+                None => {
+                    panic!("Tried to run a function that doesn't exist");
+                }
+                Some(function) => function,
+            };
+            let is_native = function.is_native;
+            let code = &mut function.code;
+            let optimization_level = function.optimization_level;
+            (is_native, code, optimization_level)
+        };
 
-    pub fn run_function(&mut self,
-                        function_id: u64) {
-        let function: &mut Function = self.function_module
-            .get_function_mut(function_id)
-            .unwrap();
-        if function.is_native {
+        if is_native {
+            println!("Running native function");
+            if optimization_level == OptimizationPassPriority::Max {
+                println!("Running native function optimized to the max");
+                functions::run_native_function(function); // optimized to the max
+                return;
+            }
             let now = std::time::Instant::now();
             functions::run_native_function(function);
             self.profiler.record_call(function_id, now.elapsed().as_nanos() as u64);
