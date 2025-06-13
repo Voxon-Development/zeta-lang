@@ -176,7 +176,11 @@ impl VirtualMachine {
 
         // check profiler results
         let function_call_count = self.profiler.get_func_call_count(function_id);
-        functions::optimize_function(function, function_call_count, &mut self.pass_manager);
+        functions::optimize_function(function, function_call_count, &mut self.pass_manager);*/
+
+        let stack_frame = StackFrame::new(0, 0, function_id);
+        let mut code = self.function_module.get_function(function_id).unwrap().code.clone();
+        self.interpret_function(&stack_frame, &mut code);
     }
 
     pub fn run(&mut self, program: &[Bytecode]) {
