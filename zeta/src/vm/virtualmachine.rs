@@ -185,9 +185,10 @@ impl VirtualMachine {
 
     pub fn run(&mut self) {
         // Pre program
-        while self.program_counter < program.len() {
-            // ...
-        }
+        let optional_main_function_id = self.function_module.entry;
+        if let Some(main_function_id) = optional_main_function_id {
+            println!("Running main function");
+            self.run_function(main_function_id);
 
         // Post program
         self.stack.reset();
