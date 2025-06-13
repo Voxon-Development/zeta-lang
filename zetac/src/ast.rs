@@ -1,5 +1,4 @@
-#[derive(Debug, Clone)]
-#[derive(PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     Import(ImportStmt),
     Let(LetStmt),
@@ -12,21 +11,35 @@ pub enum Stmt {
     FuncDecl(FuncDecl),
     ClassDecl(ClassDecl),
     ExprStmt(InternalExprStmt),
+    EffectDecl(EffectDecl),
     Break,
     Continue,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ImportStmt {
-    pub path: String,
+pub enum Visibility {
+    Public,
+    Private,
+    Protected
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EffectDecl {
+    pub name: String,
+    pub effect: String
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LetStmt {
-    pub mutability: Option<MutKeyword>,
+    pub mutability: bool,
     pub ident: String,
     pub type_annotation: Option<Type>,
     pub value: Box<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportStmt {
+    pub path: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -112,19 +125,23 @@ pub struct UnsafeBlock {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FuncDecl {
-    pub visibility: Option<String>,
-    pub is_async: bool,
-    pub is_unsafe: bool,
+    pub visibility: Option<Visibility>,
     pub name: String,
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
+    pub effects: Option<Effects>,
     pub body: Block,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Effects {
+    pub effect_vector: Vec<String>
 }
 
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClassDecl {
-    pub visibility: Option<String>,
+    pub visibility: Option<Visibility>,
     pub name: String,
     pub params: Option<Vec<Param>>,
     pub body: Block,
@@ -156,14 +173,9 @@ pub struct InternalExprStmt {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum MutKeyword {
-    Mut,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Array {
-        elements: Box<Expr>
+        elements: Vec<Expr>
     },
     ArrayIndex {
         array: Box<Expr>,
@@ -173,6 +185,8 @@ pub enum Expr {
         array_type: Type,
         num_of_elements: u32
     },
+    AddressOf(Box<Expr>),
+    Deref(Box<Expr>),
     Number(i64),
     Decimal(f64),
     String(String),

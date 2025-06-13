@@ -32,8 +32,11 @@ unsafe_block = { "unsafe" ~ block }
 expr_stmt    = { expr }
 
 fun_decl = {
-    visibility_modifier? ~ unsafe_modifier? ~ ident ~ param_list ~ type_annotation? ~ block
+    visibility_modifier? ~ unsafe_modifier? ~ ident ~ param_list ~ type_annotation? ~ effect_decl_on_func? ~ block
 }
+
+effect_decl = { visibility_modifier? ~ "effect" ~ ident ~ block }
+effect_decl_on_func = { "[" ~ expr ~ ("," ~ expr)* ~ "]" }
 
 visibility_modifier = { "public" | "private" | "protected" }
 unsafe_modifier = { "unsafe" }
@@ -44,6 +47,14 @@ class_decl   = { visibility? ~ "class" ~ ident ~ param_list? ~ block }
 param_list   = { "(" ~ (param ~ ("," ~ param)*)? ~ ")" }
 param        = { ident ~ type_annotation? }
 type_annotation = { ":" ~ var_type }
+
+pointer_type = { pointer_prefix* ~ var_type }
+
+pointer_prefix = { "*" ~ mut_keyword? }
+
+address_of = { "&" ~ expr }
+deref      = { "*" ~ expr }
+
 
 block        = { "{" ~ stmt* ~ "}" }
 
@@ -72,8 +83,7 @@ number = @{ "-"? ~ ASCII_DIGIT+ }
 string = @{ "\"" ~ string_inner* ~ "\"" }
 string_inner = _{ "\\\"" | "\\\\" | (!"\"" ~ ANY) }
 
-
-expr = { class_initialization | array_init | assignment }
+expr = { class_initialization | array_init | assignment | address_of | deref }
 
 assignment = { lhs ~ assign_op ~ expr | logic_or }
 

@@ -1,3 +1,3 @@
-main() {
-    println_str("Hello, world!");
+fun main() {
+    println_str("Hello, World!")
 }
