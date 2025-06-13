@@ -4,3 +4,5 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+enum-ordinalize = "4.3.0"
+enum-ordinalize-derive = "4.3.1"

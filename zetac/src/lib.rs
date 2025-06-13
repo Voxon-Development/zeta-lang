@@ -10,12 +10,15 @@ use crate::println::*;
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::process;
 
-mod parser;
-mod ast;
+pub mod async_compiler;
+pub use async_compiler::{compile_files_async, AsyncCompileError};
+pub mod frontend;
+pub mod ast;
 mod println;
 pub mod codegen;
+
 /*fn main() {
-    match parser::parse_program("\
+    match frontend::parse_program("\
     fun main() {
         let hi = 1
     }
@@ -38,8 +41,24 @@ pub mod codegen;
 
 pub fn compile_to_ir(file: PathBuf, native: bool, native_output: Option<PathBuf>) -> BackendModule {
     let contents_of_file = std::fs::read_to_string(file).expect("Unable to read file");
+    
+    let mut lexer = frontend::lexer::Lexer::new(contents_of_file);
+    
+    let result = lexer.tokenize();
+    
+    let tokens = match result {
+        Ok(tokens) => tokens,
+        Err(err) => {
+            let errors = lexer.errors;
+            
+            for error in errors {
+                eprintln!("{}", error);
+            }
+            process::exit(1);
+        }
+    };
 
-    let stmts = parser::parse_program(contents_of_file.as_str()).expect("Unable to parse program."); // Returns Vec<Stmt>
+    let stmts = frontend::parser::parse_program(tokens).expect("Unable to parse program."); // Returns Vec<Stmt>
 
     let classes: Vec<ClassDecl> = stmts.iter()
         .filter_map(|stmt| if let Stmt::ClassDecl(s) = stmt { Some(s.clone()) } else { None })

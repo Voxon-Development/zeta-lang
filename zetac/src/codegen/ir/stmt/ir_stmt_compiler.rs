@@ -1,244 +1,191 @@
 use ir::Bytecode;
 use crate::ast::*;
+use crate::codegen::ir::ir_buffer::ByteWriter;
 
 pub struct IRStmtCompiler;
 
 impl IRStmtCompiler {
-    pub fn new() -> Self {
-        IRStmtCompiler
-    }
-    
-    pub fn compile_stmts(&self, stmts: &Vec<Stmt>) -> Vec<Bytecode> {
+    pub fn compile_stmts(&self, stmts: &Vec<Stmt>) -> Vec<u8> {
         let mut bytecode = Vec::new();
         for stmt in stmts {
             bytecode.extend(self.compile_stmt(&stmt));
         }
-        
         bytecode
     }
-    
-    pub fn compile_stmt(&self, stmt: &Stmt) -> Vec<Bytecode> {
-        match stmt {
-            Stmt::ExprStmt(InternalExprStmt { expr }) => {
-                self.compile_expr(expr)
-            }
-            Stmt::Return(ReturnStmt { value }) => {
-                let mut return_bytecode = vec![Bytecode::Return];
-                if let Some(value) = value {
-                    return_bytecode.extend(self.compile_expr(value));
-                }
-                return_bytecode
 
+    pub fn compile_stmt(&self, stmt: &Stmt) -> Vec<u8> {
+        match stmt {
+            Stmt::ExprStmt(InternalExprStmt { expr }) => self.compile_expr(expr),
+            Stmt::Return(ReturnStmt { value }) => {
+                let mut w = ByteWriter::new();
+                w.write_u8(Bytecode::Return as u8);
+                if let Some(v) = value {
+                    w.extend(self.compile_expr(v));
+                }
+                w.into_bytes()
             }
-            Stmt::If(if_stmt) => {
-                self.compile_if_stmt(if_stmt)
-            }
-            Stmt::While(while_stmt) => {
-                self.compile_while_stmt(while_stmt)
-            }
-            Stmt::For(for_stmt) => {
-                self.compile_for_stmt(for_stmt)
-            }
-            Stmt::Match(match_stmt) => {
-                self.compile_match_stmt(match_stmt)
-            }
-            Stmt::Let(let_stmt) => {
-                self.compile_let_stmt(let_stmt)
-            }
-            Stmt::UnsafeBlock(UnsafeBlock { block }) => {
-                self.compile_stmts(&block.block)
-            }
-            
-            _ => todo!()
+            Stmt::If(if_stmt) => self.compile_if_stmt(if_stmt),
+            Stmt::While(while_stmt) => self.compile_while_stmt(while_stmt),
+            Stmt::For(for_stmt) => self.compile_for_stmt(for_stmt),
+            Stmt::Match(match_stmt) => self.compile_match_stmt(match_stmt),
+            Stmt::Let(let_stmt) => self.compile_let_stmt(let_stmt),
+            Stmt::UnsafeBlock(UnsafeBlock { block }) => self.compile_stmts(&block.block),
+            _ => todo!(),
         }
     }
-    
-    fn compile_expr(&self, expr: &Expr) -> Vec<Bytecode> {
-        let mut ir = Vec::new();
+
+    fn compile_expr(&self, expr: &Expr) -> Vec<u8> {
+        let mut ir = ByteWriter::new();
         match expr {
             Expr::Binary { left, op, right } => {
-                ir.extend(self.compile_expr(&left));
-                ir.push(parse_ast_op_to_ir(op));
-                ir.extend(self.compile_expr(&right));
+                ir.extend(self.compile_expr(left));
+                ir.write_u8(parse_ast_op_to_ir(op) as u8);
+                ir.extend(self.compile_expr(right));
             }
             Expr::Array { elements } => {
-                /*ir.push(Bytecode::AllocArray {
-                    array_type: parse_ast_to_ir(elements[0].get_type()),
-                    num_of_elements: elements.len(),
-                });*/
-                ir.extend(self.compile_expr(&elements));
+                for el in elements {
+                    ir.extend(self.compile_expr(el));
+                }
+                ir.write_u8(Bytecode::ArrayAlloc as u8);
+                ir.write_u16(elements.len() as u16);
+            }
+            Expr::Assignment { lhs, op, rhs } => {
             }
             Expr::ArrayIndex { array, index } => {
-                ir.extend(self.compile_expr(&array));
-                ir.extend(self.compile_expr(&index));
-                ir.push(Bytecode::ArrayGet);
+                ir.extend(self.compile_expr(array));
+                ir.extend(self.compile_expr(index));
+                ir.write_u8(Bytecode::ArrayGet as u8);
             }
-            Expr::ArrayInit { array_type, num_of_elements } => {
-                ir.push(Bytecode::AllocArray {
-                    array_type: parse_ast_to_ir(array_type.clone()),
-                    num_of_elements: *num_of_elements,
-                });
+            Expr::ArrayInit { .. } => {
+                ir.write_u8(Bytecode::ArrayAlloc as u8);
             }
             Expr::ExprList { exprs } => {
-                for expr in exprs {
-                    ir.extend(self.compile_expr(&expr));
+                for e in exprs {
+                    ir.extend(self.compile_expr(e));
                 }
             }
             Expr::Ident(ident) => {
-                ir.push(Bytecode::LoadVar {
-                    name: ident.clone(),
-                });
+                ir.write_u8(Bytecode::LoadVar as u8);
+                ir.write_string(ident);
             }
             Expr::Number(num) => {
-                ir.push(Bytecode::PushInt(*num as usize));
+                ir.write_u8(Bytecode::PushInt as u8);
+                ir.write_i64(*num);
             }
             Expr::String(str) => {
-                ir.push(Bytecode::PushStr(str.clone().as_ptr()));
+                ir.write_u8(Bytecode::PushStr as u8);
+                ir.write_string(str);
             }
-            Expr::Boolean(bool) => {
-                ir.push(Bytecode::PushBool(*bool));
+            Expr::Boolean(b) => {
+                ir.write_u8(Bytecode::PushBool as u8);
+                ir.write_u8(*b as u8);
             }
             Expr::Call { callee, arguments } => {
-                ir.push(Bytecode::Call);
-                ir.extend(self.compile_expr(&callee));
+                ir.write_u8(Bytecode::Call as u8);
+                ir.extend(self.compile_expr(callee));
+                ir.write_u8(arguments.len() as u8); // assuming arity must be known
                 for arg in arguments {
                     ir.extend(self.compile_expr(arg));
                 }
             }
             Expr::Comparison { lhs, op, rhs } => {
-                ir.extend(self.compile_expr(&lhs));
-                ir.extend(self.compile_expr(&rhs));
-                ir.push(match op {
-                    ComparisonOp::Equal => Bytecode::Eq,
-                    ComparisonOp::NotEqual => Bytecode::Ne,
-                    ComparisonOp::GreaterThan => Bytecode::Gt,
-                    ComparisonOp::GreaterThanOrEqual => Bytecode::Ge,
-                    ComparisonOp::LessThan => Bytecode::Lt,
-                    ComparisonOp::LessThanOrEqual => Bytecode::Le,
+                ir.extend(self.compile_expr(lhs));
+                ir.extend(self.compile_expr(rhs));
+                ir.write_u8(match op {
+                    ComparisonOp::Equal => Bytecode::Eq as u8,
+                    ComparisonOp::NotEqual => Bytecode::Ne as u8,
+                    ComparisonOp::GreaterThan => Bytecode::Gt as u8,
+                    ComparisonOp::GreaterThanOrEqual => Bytecode::Ge as u8,
+                    ComparisonOp::LessThan => Bytecode::Lt as u8,
+                    ComparisonOp::LessThanOrEqual => Bytecode::Le as u8,
                 });
             }
-            _ => todo!()
+            _ => {}
         }
-        
-        ir
+        ir.into_bytes()
     }
 
-    fn compile_if_stmt(&self, if_stmt: &IfStmt) -> Vec<Bytecode> {
-        let mut ir = Vec::new();
+    fn compile_if_stmt(&self, if_stmt: &IfStmt) -> Vec<u8> {
+        let mut ir = self.compile_expr(&if_stmt.condition);
 
-        ir.extend(self.compile_expr(&if_stmt.condition));
-
-        let jump_if_false_index = ir.len();
-        ir.push(Bytecode::JumpIfFalse(0)); // placeholder
+        let jump_if_false_pos = ir.len();
+        ir.push(Bytecode::JumpIfFalse as u8);
+        ir.extend(&[0, 0]); // placeholder offset
 
         let then_ir = self.compile_stmts(&if_stmt.then_branch.block);
+        let then_len = then_ir.len() as u16;
         ir.extend(then_ir);
 
-        let jump_to_merge_index = ir.len();
-        ir.push(Bytecode::Jump(0)); // placeholder
+        // Patch offset
+        let offset_bytes = then_len.to_le_bytes();
+        ir[jump_if_false_pos + 1] = offset_bytes[0];
+        ir[jump_if_false_pos + 2] = offset_bytes[1];
 
-        let else_label = ir.len();
-
-        // Compile else branch if exists
         if let Some(else_branch) = &if_stmt.else_branch {
-            let else_ir = match &**else_branch {
-                ElseBranch::Else(expr) => self.compile_stmts(&expr.block),
-                ElseBranch::If(nested_if) => self.compile_if_stmt(nested_if),
-            };
-            ir.extend(else_ir);
-        }
-
-        // Label for merge block
-        let merge_label = ir.len();
-
-        // Patch jump targets
-        if let Bytecode::JumpIfFalse(ref mut target) = ir[jump_if_false_index] {
-            *target = else_label;
-        }
-
-        if let Bytecode::Jump(ref mut target) = ir[jump_to_merge_index] {
-            *target = merge_label;
+            match &**else_branch {
+                ElseBranch::Else(block) => ir.extend(self.compile_stmts(&block.block)),
+                ElseBranch::If(nested_if) => ir.extend(self.compile_if_stmt(nested_if)),
+            }
         }
 
         ir
     }
 
-    fn compile_while_stmt(&self, while_stmt: &WhileStmt) -> Vec<Bytecode> {
+    fn compile_while_stmt(&self, while_stmt: &WhileStmt) -> Vec<u8> {
         let mut ir = Vec::new();
 
-        // Compile the condition
-        let cond_val = self.compile_expr(&while_stmt.condition);
+        let start_pos = ir.len();
+        ir.extend(self.compile_expr(&while_stmt.condition));
 
-        // Compile the body
+        let jump_out_pos = ir.len();
+        ir.push(Bytecode::JumpIfFalse as u8);
+        ir.extend(&[0, 0]);
+
         let body = self.compile_stmts(&while_stmt.block.block);
+        ir.extend(body.clone());
 
-        // Compile the merge block
-        let merge_block = self.compile_stmts(&while_stmt.block.block);
+        ir.push(Bytecode::Jump as u8);
+        let loop_back = ir.len() + 3 - start_pos;
+        let offset = (-(loop_back as i16)) as u16;
+        ir.extend(&offset.to_le_bytes());
 
-        ir.extend(cond_val);
-        ir.extend(body);
-        ir.extend(merge_block);
+        let body_len = body.len() as u16;
+        let jump_out = body_len.to_le_bytes();
+        ir[jump_out_pos + 1] = jump_out[0];
+        ir[jump_out_pos + 2] = jump_out[1];
+
         ir
     }
 
-    fn compile_for_stmt(&self, for_stmt: &ForStmt) -> Vec<Bytecode> {
+    fn compile_for_stmt(&self, for_stmt: &ForStmt) -> Vec<u8> {
         let mut ir = Vec::new();
-
-        // Compile the init
-        let init_val = self.compile_let_stmt(&for_stmt.let_stmt.clone().unwrap());
-        ir.extend(init_val);
-
-        // Compile the condition
-        let cond_val = self.compile_expr(&for_stmt.condition.clone().unwrap());
-        ir.extend(cond_val);
-
-        // Compile the increment
-        let increment_val = self.compile_expr(&for_stmt.increment.clone().unwrap());
-        ir.extend(increment_val);
-
-        // Compile the body
-        let body = self.compile_stmts(&for_stmt.block.block);
-        ir.extend(body);
+        if let Some(init) = &for_stmt.let_stmt {
+            ir.extend(self.compile_let_stmt(init));
+        }
+        if let Some(cond) = &for_stmt.condition {
+            ir.extend(self.compile_expr(cond));
+        }
+        if let Some(inc) = &for_stmt.increment {
+            ir.extend(self.compile_expr(inc));
+        }
+        ir.extend(self.compile_stmts(&for_stmt.block.block));
         ir
     }
 
-    fn compile_match_stmt(&self, match_stmt: &MatchStmt) -> Vec<Bytecode> {
+    fn compile_match_stmt(&self, _match_stmt: &MatchStmt) -> Vec<u8> {
         todo!()
     }
 
-    fn compile_let_stmt(&self, let_stmt: &LetStmt) -> Vec<Bytecode> {
-        let mut ir = Vec::new();
-
-        let value = self.compile_expr(&let_stmt.value);
-
-        ir.push(Bytecode::StoreVar {
-            name: let_stmt.ident.clone(),
-        });
+    fn compile_let_stmt(&self, let_stmt: &LetStmt) -> Vec<u8> {
+        let mut ir = ByteWriter::new();
+        ir.extend(self.compile_expr(&let_stmt.value));
+        ir.write_u8(Bytecode::StoreVar as u8);
+        ir.write_string(&let_stmt.ident);
 
         let var_type = parse_ast_to_ir(let_stmt.type_annotation.clone().unwrap());
-        match var_type {
-            ir::BytecodeType::U8 => ir.push(Bytecode::PushU8(0)),
-            ir::BytecodeType::I8 => ir.push(Bytecode::PushI8(0)),
-            ir::BytecodeType::U16 => ir.push(Bytecode::PushU16(0)),
-            ir::BytecodeType::I16 => ir.push(Bytecode::PushI16(0)),
-            ir::BytecodeType::I32 => ir.push(Bytecode::PushI32(0)),
-            ir::BytecodeType::F32 => ir.push(Bytecode::PushF32(0.0)),
-            ir::BytecodeType::F64 => ir.push(Bytecode::PushF64(0.0)),
-            ir::BytecodeType::I64 => ir.push(Bytecode::PushI64(0)),
-            ir::BytecodeType::String => ir.push(Bytecode::PushStr("".to_string().as_ptr())),
-            ir::BytecodeType::Boolean => ir.push(Bytecode::PushBool(false)),
-            ir::BytecodeType::UF32 => ir.push(Bytecode::PushUF32(0.0)),
-            ir::BytecodeType::U32 => ir.push(Bytecode::PushU32(0)),
-            ir::BytecodeType::U64 => ir.push(Bytecode::PushU64(0)),
-            ir::BytecodeType::I128 => ir.push(Bytecode::PushI128(0)),
-            ir::BytecodeType::UF64 => ir.push(Bytecode::PushUF64(0.0)),
-            ir::BytecodeType::U128 => ir.push(Bytecode::PushU128(0)),
-            ir::BytecodeType::Void => todo!(),
-            ir::BytecodeType::Array(_, _) => ir.extend(value),
-            ir::BytecodeType::Class(_) => todo!(),
-        }
+        ir.write_u8(var_type as u8);
 
-        ir
+        ir.into_bytes()
     }
 }
 
@@ -262,13 +209,13 @@ fn parse_ast_to_ir(ast_type: Type) -> ir::BytecodeType {
         Type::U128 => ir::BytecodeType::U128,
         Type::UF64 => ir::BytecodeType::UF64,
         Type::Void => ir::BytecodeType::Void,
-        Type::Array(ty, _) => ir::BytecodeType::Array(Box::from(parse_ast_to_ir(*ty)), None),
-        Type::Class(name) => ir::BytecodeType::Class(name),
+        Type::Array(_, _) => ir::BytecodeType::Array,
+        Type::Class(_) => ir::BytecodeType::Class,
     }
 }
 
 #[inline]
-fn parse_ast_op_to_ir(op: &Op) -> Bytecode {
+const fn parse_ast_op_to_ir(op: &Op) -> Bytecode {
     match op {
         Op::Add => Bytecode::Add,
         Op::Sub => Bytecode::Sub,
@@ -296,6 +243,6 @@ fn parse_ast_op_to_ir(op: &Op) -> Bytecode {
         Op::Lt => Bytecode::Lt,
         Op::Lte => Bytecode::Le,
         Op::Gt => Bytecode::Gt,
-        Op::Gte => Bytecode::Ge
+        Op::Gte => Bytecode::Ge,
     }
 }

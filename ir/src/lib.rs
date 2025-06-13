@@ -1,210 +1,196 @@
 use std::fmt;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct VmString {
+    pub offset: usize,
+    pub length: usize,
+    pub hash: u64, // Storing hash here is crucial for collision resolution
+}
+
+impl fmt::Display for VmString {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "offset: {}, length: {}, hash: {}", self.offset, self.length, self.hash)
+    }
+}
+
+#[derive(Debug, PartialEq, Copy, Clone)]
+#[repr(u8)]
 pub enum Bytecode {
-    // Arithmetic & Bitwise
-    Add, Sub, Mul, Div, Mod,
-    BitOr, BitXor, BitAnd, Shl, Shr,
-
+    // Math
+    Add = 0x01,
+    Sub = 0x02,
+    Mul = 0x03,
+    Div = 0x04,
+    Mod = 0x05,
+    // Bitwise
+    BitOr = 0x06,
+    BitXor = 0x07,
+    BitAnd = 0x08,
+    Shl = 0x09,
+    Shr = 0x0A,
     // Assignment
-    Assign,
-    AddAssign, SubAssign, MulAssign, DivAssign, ModAssign,
-    ShlAssign, ShrAssign, BitOrAssign, BitXorAssign, BitAndAssign,
-
+    Assign = 0x0B,
+    AddAssign = 0x0C,
+    SubAssign = 0x0D,
+    MulAssign = 0x0E,
+    DivAssign = 0x0F,
+    ModAssign = 0x10,
+    ShlAssign = 0x11,
+    ShrAssign = 0x12,
+    BitOrAssign = 0x13,
+    BitXorAssign = 0x14,
+    BitAndAssign = 0x15,
     // Comparison
-    Eq, Ne, Gt, Ge, Lt, Le,
-
+    Eq = 0x16,
+    Ne = 0x17,
+    Gt = 0x18,
+    Ge = 0x19,
+    Lt = 0x1A,
+    Le = 0x1B,
     // Logic
-    And, Or, Not, Xor,
-
+    And = 0x1C,
+    Or = 0x1D,
+    Not = 0x1E,
+    Xor = 0x1F,
     // Stack/Memory
-    // Numbers
-    PushInt(usize),
-    PushU8(u8),
-    PushU16(u16),
-    PushU32(u32),
-    PushU64(u64),
-    PushI8(i8),
-    PushI16(i16),
-    PushI32(i32),
-    PushI64(i64),
-    PushF32(f32),
-    PushUF32(f32),
-    PushUF64(f64),
-    PushF64(f64),
-    PushU128(u128),
-    PushI128(i128),
+    PushInt = 0x20,
+    PushU8 = 0x21,
+    PushU16 = 0x22,
+    PushU32 = 0x23,
+    PushU64 = 0x24,
+    PushI8 = 0x25,
+    PushI16 = 0x26,
+    PushI32 = 0x27,
+    PushI64 = 0x28,
+    PushF32 = 0x29,
+    PushUF32 = 0x2A,
+    PushUF64 = 0x2B,
+    PushF64 = 0x2C,
+    PushU128 = 0x2D,
+    PushI128 = 0x2E,
+    PushChar = 0x2F,
+    PushPtr = 0x30,
+    PushBool = 0x31,
+    PushStr = 0x32,
+    Pop = 0x33,
+    Dup = 0x34,
+    Swap = 0x35,
+    Load = 0x36,
+    Store = 0x37,
+    LoadGlobal = 0x38,
+    StoreGlobal = 0x39,
+    LoadLocal = 0x3A,
+    StoreLocal = 0x3B,
+    StoreVar = 0x3C,
+    LoadVar = 0x3D,
+    GetPtr = 0x3E,
+    SetPtr = 0x3F,
+    GetPtrMut = 0x40,
+    SetPtrMut = 0x41,
+    AddressOf = 0x42,
+    Deref = 0x43,
+    DerefMut = 0x44,
+    Cast = 0x45,
     
-    PushChar(char),
-    PushPtr(usize),
-    
-    // Booleans
-    PushBool(bool),
-    
-    // Strings
-    PushStr(*const u8),
-
-    // Stack
-    Pop, Dup, Swap,
-    Load, Store,
-    LoadGlobal, StoreGlobal,
-    LoadLocal, StoreLocal,
-    StoreVar { name: String },
-    LoadVar { name: String },
-
-    // Control Flow
-    Jump(usize),
-    JumpIfTrue(usize),
-    JumpIfFalse(usize),
-    Branch(usize), // generic conditional jump
-    Return,
-    Halt,
-
-    // Call
-    Call,
-    TailCall(usize),
-    CallNative(String),
-
-    // Heap / Object / Arrays
-    AllocArray {
-        array_type: BytecodeType,
-        num_of_elements: u32
-    },
-    ArrayGet,
-    ArraySet,
-    AllocStruct,
-    StructGet(String),
-    StructSet(String),
-
-    // Debug
-    Nop,
-    Trace,
+    // Control
+    Jump = 0x46,
+    JumpIfTrue = 0x47,
+    JumpIfFalse = 0x48,
+    Branch = 0x49,
+    Return = 0x4A,
+    Halt = 0x4B,
+    Call = 0x4C,
+    TailCall = 0x4D,
+    CallNative = 0x4E,
+    ArrayGet = 0x4F,
+    ArraySet = 0x50,
+    GetArrayMut = 0x51,
+    SetArrayMut = 0x52,
+    GetField = 0x53,
+    ArrayAlloc = 0x54,
+    ArrayLen = 0x55,
 }
 
-impl Bytecode {
-    pub fn is_jump(&self) -> bool {
-        matches!(
-            self,
-            Bytecode::Jump(_)
-                | Bytecode::JumpIfTrue(_)
-                | Bytecode::JumpIfFalse(_)
-                | Bytecode::Branch(_)
-        )
-    }
-
-    pub fn is_push(&self) -> bool {
-        matches!(self, Bytecode::PushInt(_) | Bytecode::PushBool(_) | Bytecode::PushStr(_))
-    }
-
-    pub fn mnemonic(&self) -> String {
-        match self {
-            Bytecode::Add => "add".to_string(),
-            Bytecode::Sub => "sub".to_string(),
-            Bytecode::Mul => "mul".to_string(),
-            Bytecode::Div => "div".to_string(),
-            Bytecode::PushInt(_) => "push_int".to_string(),
-            Bytecode::Call => "call".to_string(),
-            Bytecode::Mod => "mod".to_string(),
-            Bytecode::BitOr => "bit_or".to_string(),
-            Bytecode::BitXor => "bit_xor".to_string(),
-            Bytecode::BitAnd => "bit_and".to_string(),
-            Bytecode::Shl => "shl".to_string(),
-            Bytecode::Shr => "shr".to_string(),
-            Bytecode::Assign => "assign".to_string(),
-            Bytecode::AddAssign => "add_assign".to_string(),
-            Bytecode::SubAssign => "sub_assign".to_string(),
-            Bytecode::MulAssign => "mul_assign".to_string(),
-            Bytecode::DivAssign => "div_assign".to_string(),
-            Bytecode::ModAssign => "mod_assign".to_string(),
-            Bytecode::ShlAssign => "shl_assign".to_string(),
-            Bytecode::ShrAssign => "shr_assign".to_string(),
-            Bytecode::BitOrAssign => "bit_or_assign".to_string(),
-            Bytecode::BitXorAssign => "bit_xor_assign".to_string(),
-            Bytecode::BitAndAssign => "bit_and_assign".to_string(),
-            Bytecode::Eq => "eq".to_string(),
-            Bytecode::Ne => "ne".to_string(),
-            Bytecode::Gt => "gt".to_string(),
-            Bytecode::Ge => "ge".to_string(),
-            Bytecode::Lt => "lt".to_string(),
-            Bytecode::Le => "le".to_string(),
-            Bytecode::And => "and".to_string(),
-            Bytecode::Or => "or".to_string(),
-            Bytecode::Not => "not".to_string(),
-            Bytecode::Xor => "xor".to_string(),
-            Bytecode::Pop => "pop".to_string(),
-            Bytecode::Dup => "dup".to_string(),
-            Bytecode::Swap => "swap".to_string(),
-            Bytecode::Load => "load".to_string(),
-            Bytecode::Store => "store".to_string(),
-            Bytecode::LoadGlobal => "load_global".to_string(),
-            Bytecode::StoreGlobal => "store_global".to_string(),
-            Bytecode::LoadLocal => "load_local".to_string(),
-            Bytecode::StoreLocal => "store_local".to_string(),
-            Bytecode::Jump(jmp) => format!("jump {}", jmp),
-            Bytecode::JumpIfTrue(jmp) => format!("jump_if_true {}", jmp),
-            Bytecode::JumpIfFalse(jmp) => format!("jump_if_false {}", jmp),
-            Bytecode::Branch(jmp) => format!("branch {}", jmp),
-            Bytecode::Return => "return".to_string(),
-            Bytecode::Halt => "halt".to_string(),
-            Bytecode::TailCall(call) => format!("tail_call {}", call),
-            Bytecode::CallNative(name) => format!("call_native {}", name),
-            Bytecode::AllocArray { array_type: _, num_of_elements: _ } => "alloc_array".to_string(),
-            Bytecode::ArrayGet => "array_get".to_string(),
-            Bytecode::ArraySet => "array_set".to_string(),
-            Bytecode::AllocStruct => "alloc_struct".to_string(),
-            Bytecode::StructGet(name) => format!("struct_get {}", name),
-            Bytecode::StructSet(name) => format!("struct_set {}", name),
-            Bytecode::Nop => "nop".to_string(),
-            Bytecode::Trace => "trace".to_string(),
-            Bytecode::PushBool(b) => format!("push_bool {}", b),
-            Bytecode::PushStr(string) => format!("push_str {:?}", string),
-            Bytecode::PushU8(num) => format!("push_u8 {}", num),
-            Bytecode::PushU16(num) => format!("push_u16 {}", num),
-            Bytecode::PushU32(num) => format!("push_u32 {}", num),
-            Bytecode::PushU64(num) => format!("push_u64 {}", num),
-            Bytecode::PushU128(num) => format!("push_u128 {}", num),
-            Bytecode::PushI8(num) => format!("push_i8 {}", num),
-            Bytecode::PushI16(num) => format!("push_i16 {}", num),
-            Bytecode::PushI32(num) => format!("push_i32 {}", num),
-            Bytecode::PushI64(num) => format!("push_i64 {}", num),
-            Bytecode::PushI128(num) => format!("push_i128 {}", num),
-            Bytecode::PushF32(num) => format!("push_f32 {}", num),
-            Bytecode::PushF64(num) => format!("push_f64 {}", num),
-            Bytecode::PushChar(c) => format!("push_char {}", c),
-            Bytecode::PushPtr(ptr) => format!("push_ptr {}", ptr),
-            Bytecode::LoadVar { .. } => "load_var".to_string(),
-            Bytecode::StoreVar { .. } => "store_var".to_string(),
-            Bytecode::PushUF32(num) => format!("push_uf32 {}", num),
-            Bytecode::PushUF64(num) => format!("push_uf64 {}", num),
-        }
+impl From<u8> for Bytecode {
+    fn from(byte: u8) -> Self {
+        unsafe { std::mem::transmute(byte) }
     }
 }
 
-impl fmt::Display for Bytecode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.mnemonic())
+impl From<Bytecode> for u8 {
+    fn from(byte: Bytecode) -> Self {
+        byte as u8
     }
 }
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum VMValue {
+    Int(usize),
+    U8(u8),
+    U16(u16),
+    U32(u32),
+    U64(u64),
+    I8(i8),
+    I16(i16),
+    I32(i32),
+    I64(i64),
+    F32(f32),
+    F64(f64),
+    Bool(bool),
+    Char(char),
+    Ptr(usize),
+    Str(*const u8),
+}
+
+impl Eq for VMValue {}
 
 
 #[derive(Debug, Clone, PartialEq)]
+#[repr(u8)]
 pub enum BytecodeType {
-    U8,
-    I8,
-    U16,
-    I16,
-    I32,
-    F32,
-    F64,
-    I64,
-    String,
-    Boolean,
-    UF32,
-    U32,
-    U64,
-    I128,
-    U128,
-    UF64,
-    Void,
-    Array(Box<BytecodeType>, Option<u64>),
-    Class(String),
+    U8 = 0x60,
+    I8 = 0x61,
+    U16 = 0x62,
+    I16 = 0x63,
+    I32 = 0x64,
+    F32 = 0x65,
+    F64 = 0x66,
+    I64 = 0x67,
+    String = 0x68, 
+    Boolean = 0x69,
+    UF32 = 0x6A,
+    U32 = 0x6B,
+    U64 = 0x6C,
+    I128 = 0x6D,
+    U128 = 0x6E,
+    UF64 = 0x6F,
+    Void = 0x70,
+    Array = 0x71,
+    Class = 0x72,
+}
+
+impl fmt::Display for BytecodeType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BytecodeType::U8 => write!(f, "u8"),
+            BytecodeType::I8 => write!(f, "i8"),
+            BytecodeType::U16 => write!(f, "u16"),
+            BytecodeType::I16 => write!(f, "i16"),
+            BytecodeType::I32 => write!(f, "i32"),
+            BytecodeType::F32 => write!(f, "f32"),
+            BytecodeType::F64 => write!(f, "f64"),
+            BytecodeType::I64 => write!(f, "i64"),
+            BytecodeType::String => write!(f, "string"),
+            BytecodeType::Boolean => write!(f, "bool"),
+            BytecodeType::UF32 => write!(f, "uf32"),
+            BytecodeType::U32 => write!(f, "u32"),
+            BytecodeType::U64 => write!(f, "u64"),
+            BytecodeType::I128 => write!(f, "i128"),
+            BytecodeType::UF64 => write!(f, "uf64"),
+            BytecodeType::U128 => write!(f, "u128"),
+            BytecodeType::Void => write!(f, "void"),
+            BytecodeType::Array => write!(f, "array"),
+            BytecodeType::Class => write!(f, "class"),
+        }
+    }
 }

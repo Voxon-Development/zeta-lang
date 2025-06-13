@@ -1,4 +1,5 @@
-mod ir_compiler;
+pub mod ir_compiler;
 pub mod optimization;
-mod stmt;
+pub mod stmt;
 pub mod module;
+mod ir_buffer;
