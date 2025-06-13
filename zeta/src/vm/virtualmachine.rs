@@ -9,6 +9,98 @@ use zetac::codegen::ir::module::Function;
 use zetac::codegen::ir::optimization::pass_manager;
 use crate::vm::eventloop::{Event, EventLoop, ExecutionContext};
 use crate::vm::heap;
+use crate::vm::string_pool::StringPool;
+
+use mimalloc;
+
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+const ADD: u8 = Bytecode::Add as u8;
+const SUB: u8 = Bytecode::Sub as u8;
+const MUL: u8 = Bytecode::Mul as u8;
+const DIV: u8 = Bytecode::Div as u8;
+const MOD: u8 = Bytecode::Mod as u8;
+const AND: u8 = Bytecode::And as u8;
+const OR: u8 = Bytecode::Or as u8;
+const XOR: u8 = Bytecode::Xor as u8;
+const NOT: u8 = Bytecode::Not as u8;
+const SHL: u8 = Bytecode::Shl as u8;
+const SHR: u8 = Bytecode::Shr as u8;
+const EQ: u8 = Bytecode::Eq as u8;
+const NEQ: u8 = Bytecode::Ne as u8;
+const LT: u8 = Bytecode::Lt as u8;
+const LTE: u8 = Bytecode::Le as u8;
+const GT: u8 = Bytecode::Gt as u8;
+const GTE: u8 = Bytecode::Ge as u8;
+const JUMP: u8 = Bytecode::Jump as u8;
+const JUMP_IF_TRUE: u8 = Bytecode::JumpIfTrue as u8;
+const JUMP_IF_FALSE: u8 = Bytecode::JumpIfFalse as u8;
+const BRANCH: u8 = Bytecode::Branch as u8;
+const RETURN: u8 = Bytecode::Return as u8;
+const HALT: u8 = Bytecode::Halt as u8;
+const CALL: u8 = Bytecode::Call as u8;
+const TAIL_CALL: u8 = Bytecode::TailCall as u8;
+const CALL_NATIVE: u8 = Bytecode::CallNative as u8;
+const ARRAY_GET: u8 = Bytecode::ArrayGet as u8;
+const ARRAY_SET: u8 = Bytecode::ArraySet as u8;
+const GET_ARRAY_MUT: u8 = Bytecode::GetArrayMut as u8;
+const SET_ARRAY_MUT: u8 = Bytecode::SetArrayMut as u8;
+const GET_FIELD: u8 = Bytecode::GetField as u8;
+const ARRAY_ALLOC: u8 = Bytecode::ArrayAlloc as u8;
+const ARRAY_LEN: u8 = Bytecode::ArrayLen as u8;
+
+const PUSH_I64: u8 = Bytecode::PushI64 as u8;
+const PUSH_F64: u8 = Bytecode::PushF64 as u8;
+const PUSH_U8: u8 = Bytecode::PushU8 as u8;
+const PUSH_U16: u8 = Bytecode::PushU16 as u8;
+const PUSH_U32: u8 = Bytecode::PushU32 as u8;
+const PUSH_U64: u8 = Bytecode::PushU64 as u8;
+const PUSH_I8: u8 = Bytecode::PushI8 as u8;
+const PUSH_I16: u8 = Bytecode::PushI16 as u8;
+const PUSH_I32: u8 = Bytecode::PushI32 as u8;
+
+const PUSH_F32: u8 = Bytecode::PushF32 as u8;
+const PUSH_STR: u8 = Bytecode::PushStr as u8;
+const PUSH_BOOL: u8 = Bytecode::PushBool as u8;
+
+const POP: u8 = Bytecode::Pop as u8;
+const DUP: u8 = Bytecode::Dup as u8;
+const SWAP: u8 = Bytecode::Swap as u8;
+
+const LOAD: u8 = Bytecode::Load as u8;
+const STORE: u8 = Bytecode::Store as u8;
+const LOAD_VAR: u8 = Bytecode::LoadVar as u8;
+const STORE_VAR: u8 = Bytecode::StoreVar as u8;
+const LOAD_GLOBAL: u8 = Bytecode::LoadGlobal as u8;
+const STORE_GLOBAL: u8 = Bytecode::StoreGlobal as u8;
+const LOAD_LOCAL: u8 = Bytecode::LoadLocal as u8;
+const STORE_LOCAL: u8 = Bytecode::StoreLocal as u8;
+
+const GET_PTR: u8 = Bytecode::GetPtr as u8;
+const SET_PTR: u8 = Bytecode::SetPtr as u8;
+const GET_PTR_MUT: u8 = Bytecode::GetPtrMut as u8;
+const SET_PTR_MUT: u8 = Bytecode::SetPtrMut as u8;
+const ADDRESS_OF: u8 = Bytecode::AddressOf as u8;
+const DEREF: u8 = Bytecode::Deref as u8;
+const DEREF_MUT: u8 = Bytecode::DerefMut as u8;
+const CAST: u8 = Bytecode::Cast as u8;
+
+macro_rules! binary_op_int {
+    ($self:ident, $op:tt) => {{
+        let rhs = $self.stack.pop_int();
+        let lhs = $self.stack.pop_int();
+        $self.stack.push_int(lhs $op rhs);
+    }};
+}
+
+macro_rules! binary_op_cmp {
+    ($self:ident, $op:tt) => {{
+        let rhs = $self.stack.pop_int();
+        let lhs = $self.stack.pop_int();
+        $self.stack.push_bool(lhs $op rhs);
+    }};
+}
 
 pub struct VirtualMachine {
     stack: stack::BumpStack,
