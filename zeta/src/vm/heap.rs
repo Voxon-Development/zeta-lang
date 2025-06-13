@@ -9,6 +9,7 @@ impl HeapMemory {
         Self { memory: Vec::new() }
     }
 
+    #[inline]
     pub fn alloc(&mut self, size: usize) -> *mut u8 {
         unsafe {
             let layout = std::alloc::Layout::from_size_align(size, 8).unwrap();
@@ -18,6 +19,7 @@ impl HeapMemory {
         }
     }
 
+    #[inline]
     pub fn free(&mut self, ptr: *mut u8) {
         unsafe {
             std::alloc::dealloc(ptr, std::alloc::Layout::from_size_align(0, 8).unwrap());
