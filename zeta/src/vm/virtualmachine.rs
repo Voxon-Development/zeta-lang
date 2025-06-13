@@ -110,7 +110,7 @@ pub struct VirtualMachine {
     profiler: profiler::Profiler,
     pass_manager: pass_manager::PassManager,
     function_module: module::ZetaModule,
-    event_loop: EventLoop,
+    event_loop: FiberScheduler,
     instruction_counter: usize,
 }
 
