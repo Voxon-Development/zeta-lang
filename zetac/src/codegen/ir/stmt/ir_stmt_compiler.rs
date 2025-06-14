@@ -82,8 +82,16 @@ impl IRStmtCompiler {
             }
             Expr::Call { callee, arguments } => {
                 ir.write_u8(Bytecode::Call as u8);
-                ir.extend(self.compile_expr(callee));
-                ir.write_u8(arguments.len() as u8); // assuming arity must be known
+                match &**callee {
+                    Expr::Ident(ident) => {
+                        ir.write_u16(ident.len() as u16);
+                        ir.write_string(ident);
+                    }
+                    _ => {
+                        ir.extend(self.compile_expr(callee));
+                    }
+                }
+                ir.write_u8(arguments.len() as u8);
                 for arg in arguments {
                     ir.extend(self.compile_expr(arg));
                 }
