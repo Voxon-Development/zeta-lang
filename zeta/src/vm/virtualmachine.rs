@@ -246,6 +246,28 @@ impl VirtualMachine {
             std::process::exit(1);
         }
     }
+    
+    async fn optimize_function_async(
+        function_module: Arc<Mutex<module::ZetaModule>>,
+        pass_manager: Arc<Mutex<PassManager>>,
+        task: OptimizationFrame,
+    ) {
+        let mut function = {
+            function_module.lock().unwrap()
+                .get_function(task.function_id)
+                .cloned()
+                .unwrap()
+        };
+
+        functions::optimize_function(
+            &mut function,
+            task,
+            &mut pass_manager.lock().unwrap(),
+            &function_module.lock().unwrap(),
+        );
+
+        function_module.lock().unwrap().add_function(function);
+    }
 
     pub fn tick(&mut self) -> bool {
         let event_loop = std::mem::replace(&mut self.event_loop, FiberScheduler::new());
@@ -265,14 +287,11 @@ impl VirtualMachine {
                     .unwrap()
             };
 
-            functions::optimize_function(
-                &mut function,
-                task, // Move value
-                &mut self.pass_manager.lock().unwrap(),
-                &self.function_module.lock().unwrap(),
-            );
-
-            self.function_module.lock().unwrap().add_function(function);
+            tokio::spawn(Self::optimize_function_async(
+                self.function_module.clone(),
+                self.pass_manager.clone(),
+                task,
+            ));
         }
         true
     }
