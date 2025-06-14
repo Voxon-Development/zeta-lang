@@ -46,6 +46,36 @@ impl BumpStack {
             None
         }
     }
+    
+    pub fn push_i8(&mut self, value: i8) {
+        self.buffer.push(value as u8);
+        self.offset += 1;
+    }
+    
+    pub fn push_u32(&mut self, value: u32) {
+        self.buffer.extend_from_slice(&value.to_ne_bytes());
+        self.offset += size_of::<u32>();
+    }
+    
+    pub fn push_u16(&mut self, value: u16) {
+        self.buffer.extend_from_slice(&value.to_ne_bytes());
+        self.offset += size_of::<u16>();
+    }
+    
+    pub fn push_i16(&mut self, value: i16) {
+        self.buffer.extend_from_slice(&value.to_ne_bytes());
+        self.offset += size_of::<i16>();
+    }
+    
+    pub fn push_i32(&mut self, value: i32) {
+        self.buffer.extend_from_slice(&value.to_ne_bytes());
+        self.offset += size_of::<i32>();
+    }
+    
+    pub fn push_f32(&mut self, value: f32) {
+        self.buffer.extend_from_slice(&value.to_ne_bytes());
+        self.offset += size_of::<f32>();
+    }
 
     pub fn push_string(&mut self, vm_str: VmString) {
         self.push_bytes(&vm_str.offset.to_ne_bytes());
@@ -57,6 +87,11 @@ impl BumpStack {
         let value = self.buffer[self.offset - 1];
         self.offset -= 1;
         value != 0
+    }
+    
+    pub fn push_u8(&mut self, value: u8) {
+        self.buffer.push(value);
+        self.offset += 1;
     }
 
     pub fn pop_string(&mut self) -> VmString {
@@ -103,6 +138,35 @@ impl BumpStack {
     pub fn push_i64(&mut self, value: i64) {
         self.buffer.extend_from_slice(&value.to_ne_bytes());
         self.offset += size_of::<i64>();
+    }
+    
+    pub fn pop_f64(&mut self) -> f64 {
+        let vector: Vec<u8> = self.buffer.drain(self.offset - size_of::<f64>()..self.offset).collect();
+        assert_eq!(vector.len(), size_of::<f64>());
+        let value = f64::from_ne_bytes(vector.as_slice().try_into().unwrap());
+        self.offset -= size_of::<f64>();
+        value
+    }
+    
+    pub fn push_u64(&mut self, value: u64) {
+        self.buffer.extend_from_slice(&value.to_ne_bytes());
+        self.offset += size_of::<u64>();
+    }
+    
+    pub fn pop_i64(&mut self) -> i64 {
+        let vector: Vec<u8> = self.buffer.drain(self.offset - size_of::<i64>()..self.offset).collect();
+        assert_eq!(vector.len(), size_of::<i64>());
+        let value = i64::from_ne_bytes(vector.as_slice().try_into().unwrap());
+        self.offset -= size_of::<i64>();
+        value
+    }
+    
+    pub fn pop_i32(&mut self) -> i32 {
+        let vector: Vec<u8> = self.buffer.drain(self.offset - size_of::<i32>()..self.offset).collect();
+        assert_eq!(vector.len(), size_of::<i32>());
+        let value = i32::from_ne_bytes(vector.as_slice().try_into().unwrap());
+        self.offset -= size_of::<i32>();
+        value
     }
 
     pub fn pop_ptr(&mut self) -> Option<*mut u8> {
