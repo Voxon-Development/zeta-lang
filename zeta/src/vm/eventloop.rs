@@ -5,14 +5,17 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+#[derive(Debug)]
 pub struct FiberScheduler {
     injector: Arc<Injector<Fiber>>,
+    local: Worker<Fiber>, // local worker queue for this thread
 }
 
 impl FiberScheduler {
     pub fn new() -> Self {
         Self {
             injector: Arc::new(Injector::new()),
+            local: Worker::new_fifo(),
         }
     }
 
@@ -20,44 +23,31 @@ impl FiberScheduler {
         self.injector.push(fiber);
     }
 
-    pub fn run(self, vm: Arc<Mutex<VirtualMachine>>) {
-        let injector = self.injector.clone();
+    /// Tick the scheduler once: process 1 fiber (or batch-steal from global queue).
+    /// Returns `true` if there are still fibers to run.
+    pub fn tick(&self, vm: &mut VirtualMachine) -> bool {
+        let fiber = self
+            .local
+            .pop()
+            .or_else(|| self.injector.steal_batch_and_pop(&self.local).success());
 
-        ThreadPoolBuilder::new().build_global().unwrap();
+        match fiber {
+            Some(mut fiber) => {
+                fiber.step(vm);
 
-        rayon::scope(|s| {
-            for _ in 0..rayon::current_num_threads() {
-                let injector = injector.clone();
-                let vm = vm.clone();
+                if !fiber.done && !fiber.yielded {
+                    self.local.push(fiber);
+                } else if fiber.yielded {
+                    self.injector.push(fiber);
+                } else {
+                    fiber.reset(); // optional: clean-up/reset
+                }
 
-                s.spawn(move |_| {
-                    let local = Worker::new_fifo();
-                    Self::loop_through_fibers(injector, &vm, &local);
-                });
+                true
             }
-        });
-    }
-
-    fn loop_through_fibers(injector: Arc<Injector<Fiber>>, vm: &Arc<Mutex<VirtualMachine>>, local: &Worker<Fiber>) {
-        loop {
-            let fiber = local.pop()
-                .or_else(|| injector.steal_batch_and_pop(&local).success());
-
-            match fiber {
-                Some(mut fiber) => {
-                    fiber.step(&mut vm.lock().unwrap());
-
-                    if !fiber.done && !fiber.yielded {
-                        local.push(fiber);
-                    } else if fiber.yielded {
-                        injector.push(fiber);
-                    } else {
-                        fiber.reset();
-                    }
-                }
-                None => {
-                    thread::sleep(Duration::from_millis(1));
-                }
+            None => {
+                // No work found
+                !self.injector.is_empty() || !self.local.is_empty()
             }
         }
     }
