@@ -33,3 +33,9 @@ impl StackFrame {
         self.locals.get(name)
     }
 }
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OptimizationFrame {
+    pub function_id: u64,
+    pub call_count: u64,
+}

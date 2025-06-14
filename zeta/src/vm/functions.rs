@@ -3,6 +3,7 @@ pub(crate) use zetac::codegen::ir::module::Function;
 use zetac::codegen::ir::module::ZetaModule;
 use zetac::codegen::ir::optimization::pass::OptimizationPassPriority;
 use zetac::codegen::ir::optimization::pass_manager;
+use crate::vm::frames::OptimizationFrame;
 
 type NativeFn = fn();
 
@@ -26,12 +27,12 @@ pub(crate) fn optimize_function_with_priority(priority: OptimizationPassPriority
 }
 
 #[inline]
-pub(crate) fn optimize_function(function: &mut Function, function_call: &FunctionCall, pass_manager: &mut pass_manager::PassManager, module: &ZetaModule) {
+pub(crate) fn optimize_function(function: &mut Function, function_call: OptimizationFrame, pass_manager: &mut pass_manager::PassManager, module: &ZetaModule) {
     if function.optimization_level == OptimizationPassPriority::Max {
         return;
     }
 
-    let function_call_count = function_call.count;
+    let function_call_count = function_call.call_count;
 
     if function_call_count > 200 {
         optimize_function_with_priority(OptimizationPassPriority::Max, function, pass_manager, module);
