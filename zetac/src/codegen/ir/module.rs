@@ -41,6 +41,7 @@ unsafe impl Sync for Function {}
 
 pub struct ZetaModule {
     pub functions: HashMap<u64, Function>,
+    pub functions_by_name: HashMap<String, u64>,
     pub entry: Option<u64>,
 }
 
@@ -48,6 +49,7 @@ impl ZetaModule {
     pub fn new() -> ZetaModule {
         ZetaModule {
             functions: HashMap::new(),
+            functions_by_name: HashMap::new(),
             entry: None,
         }
     }
@@ -57,6 +59,20 @@ impl ZetaModule {
     }
     
     pub fn add_function(&mut self, function: Function) {
+        self.functions_by_name.insert(function.name.clone(), function.id);
+        self.functions.insert(function.id, function);
+    }
+    
+    pub fn get_function_by_name(&self, name: &String) -> Option<Function> {
+        let id = self.functions_by_name.get(name).cloned();
+        println!("ID: {:?}, Name: {}", id, name);
+        match id {
+            Some(id) => self.functions.get(&id).cloned(),
+            None => None
+        }
+    }
+    
+    pub fn replace_function(&mut self, function: Function) {
         self.functions.insert(function.id, function);
     }
     
