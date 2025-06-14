@@ -1,16 +1,20 @@
-use crate::vm::frames::StackFrame;
-use crate::vm::{profiler, stack};
-use ir::Bytecode;
-
+use crate::vm::frames::{OptimizationFrame, StackFrame};
+use crate::vm::{functions, profiler, stack};
+use ir::{Bytecode, VMValue};
+use std::sync::{Arc, Mutex};
+use crossbeam::channel::{unbounded, Receiver, Sender};
 use crate::vm::eventloop::FiberScheduler;
 use crate::vm::fibers::Fiber;
 use crate::vm::heap;
 use crate::vm::string_pool::StringPool;
 use radix_trie::Trie;
 use zetac::codegen::ir::module;
-use zetac::codegen::ir::optimization::pass_manager;
 
 use mimalloc;
+use zetac::ast::{Param, Type, Visibility};
+use zetac::codegen::ir::module::Function;
+use zetac::codegen::ir::optimization::pass::OptimizationPassPriority;
+use zetac::codegen::ir::optimization::pass_manager::PassManager;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -35,12 +39,26 @@ const GTE: u8 = Bytecode::Ge as u8;
 const JUMP: u8 = Bytecode::Jump as u8;
 const JUMP_IF_TRUE: u8 = Bytecode::JumpIfTrue as u8;
 const JUMP_IF_FALSE: u8 = Bytecode::JumpIfFalse as u8;
+
+// Assignments
+
+const ASSIGN: u8 = Bytecode::Assign as u8;
+const ADD_ASSIGN: u8 = Bytecode::AddAssign as u8;
+const SUB_ASSIGN: u8 = Bytecode::SubAssign as u8;
+const MUL_ASSIGN: u8 = Bytecode::MulAssign as u8;
+const DIV_ASSIGN: u8 = Bytecode::DivAssign as u8;
+const MOD_ASSIGN: u8 = Bytecode::ModAssign as u8;
+const BIT_AND_ASSIGN: u8 = Bytecode::BitAndAssign as u8;
+const BIT_OR_ASSIGN: u8 = Bytecode::BitOrAssign as u8;
+const BIT_XOR_ASSIGN: u8 = Bytecode::BitXorAssign as u8;
+const SHL_ASSIGN: u8 = Bytecode::ShlAssign as u8;
+const SHR_ASSIGN: u8 = Bytecode::ShrAssign as u8;
+
 const BRANCH: u8 = Bytecode::Branch as u8;
 const RETURN: u8 = Bytecode::Return as u8;
 const HALT: u8 = Bytecode::Halt as u8;
 const CALL: u8 = Bytecode::Call as u8;
 const TAIL_CALL: u8 = Bytecode::TailCall as u8;
-const CALL_NATIVE: u8 = Bytecode::CallNative as u8;
 const ARRAY_GET: u8 = Bytecode::ArrayGet as u8;
 const ARRAY_SET: u8 = Bytecode::ArraySet as u8;
 const GET_ARRAY_MUT: u8 = Bytecode::GetArrayMut as u8;
@@ -101,92 +119,121 @@ macro_rules! binary_op_cmp {
     }};
 }
 
+
 pub struct VirtualMachine {
     stack: stack::BumpStack,
     heap: heap::HeapMemory,
     program_counter: usize,
     variables: Trie<String, i64>,
     profiler: profiler::Profiler,
-    pass_manager: pass_manager::PassManager,
-    function_module: module::ZetaModule,
+    function_module: Arc<Mutex<module::ZetaModule>>,
+    pass_manager: Arc<Mutex<PassManager>>,
     event_loop: FiberScheduler,
     instruction_counter: usize,
-    string_pool: StringPool
+    string_pool: StringPool,
+    optimization_receiver: Receiver<OptimizationFrame>,
+    optimization_sender: Sender<OptimizationFrame>,
 }
 
 unsafe impl Send for VirtualMachine {}
 unsafe impl Sync for VirtualMachine {}
 
+pub extern "C" fn println_str(s: *const u8) {
+    unsafe {
+        let cstr = std::ffi::CStr::from_ptr(s as *const i8);
+        println!("{}", cstr.to_str().unwrap());
+    }
+}
+
 impl VirtualMachine {
     #[inline]
-    pub fn new(function_module: module::ZetaModule) -> VirtualMachine {
+    pub fn new(mut function_module: module::ZetaModule) -> VirtualMachine {
+        // Let's add some native methods, like println_str
+        let println_str_function = Function {
+            name: "println_s".to_string(),
+            id: 2,
+            params: vec![Param {
+                name: "thing_to_print".to_string(),
+                type_annotation: Some(Type::String)
+            }],
+            return_type: None,
+            visibility: Some(Visibility::Public),
+            is_method: false,
+            is_main: false,
+            is_native: true,
+            native_pointer: Some(Box::new(println_str as *const u8)),
+            locals: vec![],
+            code: vec![],
+            optimization_level: OptimizationPassPriority::Max // To prevent the virtual machine from optimizing this function
+        };
+
+        function_module.add_function(println_str_function);
+
+        let (optimization_sender, optimization_receiver) = unbounded();
         VirtualMachine {
             stack: stack::BumpStack::new(1024),
             heap: heap::HeapMemory::new(),
             program_counter: 1024,
             variables: Trie::new(),
             profiler: profiler::Profiler::new(),
-            pass_manager: pass_manager::PassManager::new(),
-            function_module,
+            function_module: Arc::new(Mutex::new(function_module)),
+            pass_manager: Arc::new(Mutex::new(PassManager::new())),
             event_loop: FiberScheduler::new(),
             instruction_counter: 0,
-            string_pool: StringPool::new()
+            string_pool: StringPool::new(),
+            optimization_receiver,
+            optimization_sender,
         }
     }
 
     /// Run a function but in a fiber
     pub fn run_function_in_fiber(&mut self, function_id: u64) {
-        self.event_loop.spawn(Fiber::new(function_id, self.function_module.get_function(function_id).unwrap().clone()));
+        self.event_loop.spawn(Fiber::new(function_id, self.function_module.lock().unwrap().get_function(function_id).unwrap().clone()));
     }
-    
-    pub fn run_function(&mut self, function_id: u64) {
-        /*println!("Running function {}", function_id);
-        let (is_native, code, optimization_level) = {
-            let function = match self.function_module.get_function_mut(function_id) {
-                None => {
-                    panic!("Tried to run a function that doesn't exist");
-                }
-                Some(function) => function,
-            };
-            let is_native = function.is_native;
-            let code = &mut function.code;
-            let optimization_level = function.optimization_level;
-            (is_native, code, optimization_level)
+
+    pub fn run_function(&mut self, function_id: u64, vm_args: Vec<VMValue>) {
+        let function_module = self.function_module.clone();
+        let pass_manager = self.pass_manager.clone();
+
+        let function = {
+            function_module.lock().unwrap().get_function(function_id).unwrap().clone()
         };
 
-        if is_native {
-            println!("Running native function");
-            if optimization_level == OptimizationPassPriority::Max {
-                println!("Running native function optimized to the max");
-                functions::run_native_function(function); // optimized to the max
-                return;
-            }
-            let now = std::time::Instant::now();
-            functions::run_native_function(function);
-            self.profiler.record_call(function_id, now.elapsed().as_nanos() as u64);
+        if function.is_native && function.optimization_level == OptimizationPassPriority::Max {
+            println!("Running native function optimized to the max");
+            functions::run_native_function(&function);
             return;
         }
 
-        let stack_frame = StackFrame::new(0, 0, function_id);
         let now = std::time::Instant::now();
-        self.interpret_function(&stack_frame, code); // first immutable borrow used here
+        if function.is_native {
+            functions::run_native_function(&function);
+        } else {
+            let stack_frame = StackFrame::new(0, 0, function_id);
+            self.interpret_function(&stack_frame, &mut function.code.clone());
+        }
+
         self.profiler.record_call(function_id, now.elapsed().as_nanos() as u64);
 
-        // check profiler results
-        let function_call_count = self.profiler.get_func_call_count(function_id);
-        functions::optimize_function(function, function_call_count, &mut self.pass_manager);*/
-
-        let stack_frame = StackFrame::new(0, 0, function_id);
-        let mut code = self.function_module.get_function(function_id).unwrap().code.clone();
-        self.interpret_function(&stack_frame, &mut code);
+        // Offload optimization to a background thread
+        let call_count = self.profiler.get_func_call_count(function_id);
+        let optimization_frame = OptimizationFrame {
+            function_id,
+            call_count: call_count.count,
+        };
+        self.optimization_sender.send(optimization_frame).unwrap();
     }
 
     pub fn run(&mut self) {
         // Pre program
-        let optional_main_function_id = self.function_module.entry;
+        let optional_main_function_id = self.function_module.lock().unwrap().entry;
         if let Some(main_function_id) = optional_main_function_id {
             println!("Running main function");
-            self.run_function(main_function_id);
+            self.run_function_in_fiber(main_function_id);
+
+            while self.tick() {
+                // Each tick executes one fiber and one optimization (at most)
+            }
 
             // Post program
             self.stack.reset();
@@ -200,6 +247,36 @@ impl VirtualMachine {
         }
     }
 
+    pub fn tick(&mut self) -> bool {
+        let event_loop = std::mem::replace(&mut self.event_loop, FiberScheduler::new());
+        let work_left = event_loop.tick(self);
+        self.event_loop = event_loop;
+        
+        if !work_left {
+            return false;
+        }
+
+        // Throttle optimization (e.g., 1 per tick)
+        if let Ok(task) = self.optimization_receiver.try_recv() {
+            let mut function = {
+                self.function_module.lock().unwrap()
+                    .get_function(task.function_id)
+                    .cloned()
+                    .unwrap()
+            };
+
+            functions::optimize_function(
+                &mut function,
+                task, // Move value
+                &mut self.pass_manager.lock().unwrap(),
+                &self.function_module.lock().unwrap(),
+            );
+
+            self.function_module.lock().unwrap().add_function(function);
+        }
+        true
+    }
+
     pub fn interpret_function(&mut self, call_frame: &StackFrame, function: &mut Vec<u8>) {
         for instruction in function.clone() {
             self.interpret_instruction(instruction, call_frame, function);
@@ -208,6 +285,10 @@ impl VirtualMachine {
 
     pub fn interpret_instruction(&mut self, instr: u8, _frame: &StackFrame, function: &mut Vec<u8>) -> bool {
         println!("{:?}", Bytecode::from(instr));
+        println!("Bytecode: {:?}", function);
+        println!("IP: {}", self.instruction_counter);
+        println!("Next opcode: {:?}", function[self.instruction_counter]);
+
         match instr {
             ADD => binary_op_int!(self, +),
             SUB => binary_op_int!(self, -),
@@ -231,15 +312,56 @@ impl VirtualMachine {
             GT => binary_op_cmp!(self, >),
             GTE => binary_op_cmp!(self, >=),
 
-            PUSH_I64 => {
-                let val = self.fetch_i64(function);
-                self.stack.push_i64(val);
+            PUSH_U8 => {
+                let v = self.fetch_u8(function);
+                self.stack.push_u8(v);
+            }
+
+            PUSH_I8 => {
+                let v = self.fetch_i8(function);
+                self.stack.push_i8(v);
+            }
+
+            PUSH_U16 => {
+                let v = self.fetch_u16(function);
+                self.stack.push_u16(v);
+            }
+
+            PUSH_I16 => {
+                let v = self.fetch_i16(function);
+                self.stack.push_i16(v);
+            }
+
+            PUSH_U32 => {
+                let v = self.fetch_u32(function);
+                self.stack.push_u32(v);
+            }
+
+            PUSH_I32 => {
+                let v = self.fetch_i32(function);
+                self.stack.push_i32(v);
+            }
+
+            PUSH_F32 => {
+                let v = self.fetch_f32(function);
+                self.stack.push_f32(v);
             }
 
             PUSH_F64 => {
-                let val = self.fetch_f64(function);
-                self.stack.push_f64(val);
+                let v = self.fetch_f64(function);
+                self.stack.push_f64(v);
             }
+
+            PUSH_U64 => {
+                let v = self.fetch_u64(function);
+                self.stack.push_u64(v);
+            }
+
+            PUSH_I64 => {
+                let v = self.fetch_i64(function);
+                self.stack.push_i64(v);
+            }
+
 
             PUSH_BOOL => {
                 let b = self.fetch_u8(function) != 0;
@@ -247,6 +369,7 @@ impl VirtualMachine {
             }
 
             PUSH_STR => {
+
                 let s = self.fetch_string(13, function);
                 let id = self.string_pool.intern(&s);
                 self.stack.push_string(id);
@@ -259,6 +382,13 @@ impl VirtualMachine {
             DUP => {
                 let v = self.stack.peek().clone();
                 self.stack.push(v.unwrap());
+            }
+
+            SWAP => {
+                let v1 = self.stack.pop().unwrap();
+                let v2 = self.stack.pop().unwrap();
+                self.stack.push(v1);
+                self.stack.push(v2);
             }
 
             RETURN => {
@@ -290,10 +420,198 @@ impl VirtualMachine {
                     self.program_counter += offset;
                 }
             }
-            
-            CALL => {
-                // it's CALL, CALLEE, and arguments
 
+            BRANCH => {
+                todo!("BRANCH");
+            }
+
+            CALL => {
+                self.instruction_counter += 1;
+                let offset = self.fetch_u16(function);
+                println!("Getting function name at offset {}", offset);
+
+                let name = self.fetch_string(offset, function).trim().to_string();
+                println!("Function name: {}", name);
+
+                let arity = self.fetch_u8(function);            // Read arity
+                println!("Function arity: {}", arity);
+
+                // Pop arguments in reverse order (or leave on stack if callee expects to read)
+                let mut args = Vec::with_capacity(arity as usize);
+                for _ in 0..arity {
+                    args.push(self.stack.pop());
+                }
+                args.reverse(); // preserve original order
+
+                let func = {
+                    self.function_module.lock().unwrap().get_function(2).cloned()
+                };
+                if let Some(func) = func {
+                    self.run_function(func.id, Vec::new());
+                } else {
+                    eprintln!("Function {} not found", name);
+                    std::process::exit(1);
+                }
+            }
+
+            TAIL_CALL => {
+                todo!("TAIL_CALL");
+            }
+
+            ASSIGN => {
+                todo!("ASSIGN");
+            }
+
+            ADD_ASSIGN => {
+                let rhs = self.stack.pop_int();
+                let lhs = self.stack.pop_int();
+                self.stack.push_int(lhs + rhs);
+            }
+
+            SUB_ASSIGN => {
+                let rhs = self.stack.pop_int();
+                let lhs = self.stack.pop_int();
+                self.stack.push_int(lhs - rhs);
+            }
+
+            MUL_ASSIGN => {
+                let rhs = self.stack.pop_int();
+                let lhs = self.stack.pop_int();
+                self.stack.push_int(lhs * rhs);
+            }
+
+            DIV_ASSIGN => {
+                let rhs = self.stack.pop_int();
+                let lhs = self.stack.pop_int();
+                self.stack.push_int(lhs / rhs);
+            }
+
+            MOD_ASSIGN => {
+                let rhs = self.stack.pop_int();
+                let lhs = self.stack.pop_int();
+                self.stack.push_int(lhs % rhs);
+            }
+
+            SHL_ASSIGN => {
+                let rhs = self.stack.pop_int();
+                let lhs = self.stack.pop_int();
+                self.stack.push_int(lhs << rhs);
+            }
+
+            SHR_ASSIGN => {
+                let rhs = self.stack.pop_int();
+                let lhs = self.stack.pop_int();
+                self.stack.push_int(lhs >> rhs);
+            }
+
+            BIT_AND_ASSIGN => {
+                let rhs = self.stack.pop_int();
+                let lhs = self.stack.pop_int();
+                self.stack.push_int(lhs & rhs);
+            }
+
+            BIT_OR_ASSIGN => {
+                let rhs = self.stack.pop_int();
+                let lhs = self.stack.pop_int();
+                self.stack.push_int(lhs | rhs);
+            }
+
+            BIT_XOR_ASSIGN => {
+                let rhs = self.stack.pop_int();
+                let lhs = self.stack.pop_int();
+                self.stack.push_int(lhs ^ rhs);
+            }
+
+            LOAD => {
+                todo!("LOAD");
+            }
+
+            STORE => {
+                todo!("STORE");
+            }
+
+            LOAD_VAR => {
+                todo!("LOAD_VAR");
+            }
+
+            STORE_VAR => {
+                todo!("STORE_VAR");
+            }
+
+            LOAD_GLOBAL => {
+                todo!("LOAD_GLOBAL");
+            }
+
+            STORE_GLOBAL => {
+                todo!("STORE_GLOBAL");
+            }
+
+            LOAD_LOCAL => {
+                todo!("LOAD_LOCAL");
+            }
+
+            STORE_LOCAL => {
+                todo!("STORE_LOCAL");
+            }
+
+            GET_PTR => {
+                todo!("GET_PTR");
+            }
+
+            SET_PTR => {
+                todo!("SET_PTR");
+            }
+
+            GET_PTR_MUT => {
+                todo!("GET_PTR_MUT");
+            }
+
+            SET_PTR_MUT => {
+                todo!("SET_PTR_MUT");
+            }
+
+            ADDRESS_OF => {
+                todo!("ADDRESS_OF");
+            }
+
+            DEREF => {
+                todo!("DEREF");
+            }
+
+            DEREF_MUT => {
+                todo!("DEREF_MUT");
+            }
+
+            CAST => {
+                todo!("CAST");
+            }
+
+            ARRAY_GET => {
+                todo!("ARRAY_GET");
+            }
+
+            ARRAY_SET => {
+                todo!("ARRAY_SET");
+            }
+
+            ARRAY_LEN => {
+                todo!("ARRAY_LEN");
+            }
+
+            ARRAY_ALLOC => {
+                todo!("ARRAY_ALLOC");
+            }
+
+            GET_ARRAY_MUT => {
+                todo!("GET_ARRAY_MUT");
+            }
+
+            SET_ARRAY_MUT => {
+                todo!("SET_ARRAY_MUT");
+            }
+
+            GET_FIELD => {
+                todo!("GET_FIELD");
             }
 
             _ => {
@@ -306,6 +624,7 @@ impl VirtualMachine {
 
     pub fn fetch_u8(&mut self, code: &mut Vec<u8>) -> u8 {
         let byte = code[self.instruction_counter];
+        println!("Fetched u8: {}", byte);
         self.instruction_counter += 1;
         byte
     }
@@ -353,20 +672,15 @@ impl VirtualMachine {
     }
 
     /// Assumes string is encoded as a u16 length followed by that many bytes
-    pub fn fetch_string(&mut self, len: u16, code: &mut Vec<u8>) -> String {
+    pub fn fetch_string(&mut self, len: u16, function: &mut Vec<u8>) -> String {
         println!("Fetching string of length {}", len);
-        println!("Instruction counter: {}", self.instruction_counter);
-        println!("Code: {:?}", code);
-        let bytes = &code[self.instruction_counter..self.instruction_counter + len as usize];
-        self.instruction_counter += len as usize;
-        String::from_utf8(bytes.to_vec()).expect("Invalid UTF-8 string in bytecode")
-    }
-    
-    pub fn get_function_module(&self) -> &module::ZetaModule {
-        &self.function_module
-    }
-    
-    pub fn get_function_module_mut(&mut self) -> &mut module::ZetaModule {
-        &mut self.function_module
+        let mut result = Vec::with_capacity(len as usize);
+        for _ in 0..len {
+            let byte = self.fetch_u8(function);
+            result.push(byte);
+        }
+        let s = String::from_utf8(result).expect("Invalid UTF-8 in string");
+        println!("Fetched string: {}", s);
+        s
     }
 }
