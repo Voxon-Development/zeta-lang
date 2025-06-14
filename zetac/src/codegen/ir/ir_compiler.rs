@@ -92,7 +92,7 @@ impl<'a> IrCompiler<'a> {
         if !self.module.functions.contains_key(&function.id) {
             self.module.functions.insert(function.id, function);
         } else {
-            panic!("Function {} already exists", func.name);
+            eprintln!("Function {} already exists", func.name);
         }
     }
 }
