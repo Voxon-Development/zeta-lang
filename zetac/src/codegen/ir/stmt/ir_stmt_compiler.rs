@@ -1,3 +1,4 @@
+use std::ops::Deref;
 use ir::Bytecode;
 use crate::ast::*;
 use crate::codegen::ir::ir_buffer::ByteWriter;
@@ -8,7 +9,8 @@ impl IRStmtCompiler {
     pub fn compile_stmts(&self, stmts: &Vec<Stmt>) -> Vec<u8> {
         let mut bytecode = Vec::new();
         for stmt in stmts {
-            bytecode.extend(self.compile_stmt(&stmt));
+            let stmt_ir: Vec<u8> = self.compile_stmt(stmt);
+            bytecode.extend(stmt_ir);
         }
         bytecode
     }
@@ -30,7 +32,10 @@ impl IRStmtCompiler {
             Stmt::Match(match_stmt) => self.compile_match_stmt(match_stmt),
             Stmt::Let(let_stmt) => self.compile_let_stmt(let_stmt),
             Stmt::UnsafeBlock(UnsafeBlock { block }) => self.compile_stmts(&block.block),
-            _ => todo!(),
+            _ => {
+                eprintln!("Unsupported statement: {:#?}", stmt);
+                vec![]
+            },
         }
     }
 
@@ -50,6 +55,29 @@ impl IRStmtCompiler {
                 ir.write_u16(elements.len() as u16);
             }
             Expr::Assignment { lhs, op, rhs } => {
+                match (&**lhs, op) {
+                    (Expr::Ident(ident), Op::Assign) => {
+                        ir.extend(self.compile_expr(rhs)); // compute RHS
+                        ir.write_u8(Bytecode::StoreVar as u8);
+                        ir.write_string(ident);
+                    }
+                    (Expr::Ident(ident), compound_op) => {
+                        // For compound assignments like `+=`, `-=`, etc.
+                        ir.write_u8(Bytecode::LoadVar as u8);
+                        ir.write_string(ident); // load existing value
+                        ir.extend(self.compile_expr(rhs)); // compute RHS
+                        ir.write_u8(parse_ast_op_to_ir(compound_op)); // apply binary op
+                        ir.write_u8(Bytecode::StoreVar as u8);
+                        ir.write_string(ident); // re-store
+                    }
+                    (Expr::ArrayIndex { array, index }, Op::Assign) => {
+                        ir.extend(self.compile_expr(array));
+                        ir.extend(self.compile_expr(index));
+                        ir.extend(self.compile_expr(rhs));
+                        ir.write_u8(Bytecode::ArraySet as u8);
+                    }
+                    _ => unimplemented!("Unsupported assignment LHS: {:?}", lhs),
+                }
             }
             Expr::ArrayIndex { array, index } => {
                 ir.extend(self.compile_expr(array));
@@ -81,21 +109,24 @@ impl IRStmtCompiler {
                 ir.write_u8(*b as u8);
             }
             Expr::Call { callee, arguments } => {
-                ir.write_u8(Bytecode::Call as u8);
-                match &**callee {
-                    Expr::Ident(ident) => {
-                        ir.write_u16(ident.len() as u16);
-                        ir.write_string(ident);
-                    }
-                    _ => {
-                        ir.extend(self.compile_expr(callee));
-                    }
-                }
-                ir.write_u8(arguments.len() as u8);
                 for arg in arguments {
                     ir.extend(self.compile_expr(arg));
                 }
+
+                ir.write_u8(Bytecode::Call as u8);
+
+                match &**callee {
+                    Expr::Ident(ident) => {
+                        ir.write_string(ident); // function name
+                    }
+                    _ => {
+                        panic!("Dynamic call targets not supported yet");
+                    }
+                }
+
+                ir.write_u8(arguments.len() as u8); // arity
             }
+
             Expr::Comparison { lhs, op, rhs } => {
                 ir.extend(self.compile_expr(lhs));
                 ir.extend(self.compile_expr(rhs));
@@ -110,7 +141,8 @@ impl IRStmtCompiler {
             }
             _ => {}
         }
-        ir.into_bytes()
+        let ir = ir.into_bytes();
+        ir
     }
 
     fn compile_if_stmt(&self, if_stmt: &IfStmt) -> Vec<u8> {
@@ -186,14 +218,24 @@ impl IRStmtCompiler {
 
     fn compile_let_stmt(&self, let_stmt: &LetStmt) -> Vec<u8> {
         let mut ir = ByteWriter::new();
-        ir.extend(self.compile_expr(&let_stmt.value));
-        ir.write_u8(Bytecode::StoreVar as u8);
-        ir.write_string(&let_stmt.ident);
+        match &let_stmt.value.deref() {
+            Expr::RegionInit => {
+                ir.write_u8(Bytecode::NewRegion as u8);
+                ir.write_string(&let_stmt.ident); // variable name
 
-        let var_type = parse_ast_to_ir(let_stmt.type_annotation.clone().unwrap());
-        ir.write_u8(var_type as u8);
+                ir.into_bytes()
+            },
+            _ => {
+                ir.extend(self.compile_expr(&let_stmt.value));
+                ir.write_u8(Bytecode::StoreVar as u8);
+                ir.write_string(&let_stmt.ident);
 
-        ir.into_bytes()
+                let var_type = parse_ast_to_ir(let_stmt.type_annotation.clone().unwrap());
+                ir.write_u8(var_type as u8);
+
+                ir.into_bytes()
+            }
+        }
     }
 }
 
@@ -223,34 +265,35 @@ fn parse_ast_to_ir(ast_type: Type) -> ir::BytecodeType {
 }
 
 #[inline]
-const fn parse_ast_op_to_ir(op: &Op) -> Bytecode {
+const fn parse_ast_op_to_ir(op: &Op) -> u8 {
     match op {
-        Op::Add => Bytecode::Add,
-        Op::Sub => Bytecode::Sub,
-        Op::Mul => Bytecode::Mul,
-        Op::Div => Bytecode::Div,
-        Op::Mod => Bytecode::Mod,
-        Op::Shl => Bytecode::Shl,
-        Op::Shr => Bytecode::Shr,
-        Op::BitOr => Bytecode::BitOr,
-        Op::BitXor => Bytecode::BitXor,
-        Op::BitAnd => Bytecode::BitAnd,
-        Op::Assign => Bytecode::Assign,
-        Op::AddAssign => Bytecode::AddAssign,
-        Op::SubAssign => Bytecode::SubAssign,
-        Op::MulAssign => Bytecode::MulAssign,
-        Op::DivAssign => Bytecode::DivAssign,
-        Op::ModAssign => Bytecode::ModAssign,
-        Op::ShlAssign => Bytecode::ShlAssign,
-        Op::ShrAssign => Bytecode::ShrAssign,
-        Op::BitOrAssign => Bytecode::BitOrAssign,
-        Op::BitXorAssign => Bytecode::BitXorAssign,
-        Op::BitAndAssign => Bytecode::BitAndAssign,
-        Op::Eq => Bytecode::Eq,
-        Op::Neq => Bytecode::Ne,
-        Op::Lt => Bytecode::Lt,
-        Op::Lte => Bytecode::Le,
-        Op::Gt => Bytecode::Gt,
-        Op::Gte => Bytecode::Ge,
+        Op::Add => Bytecode::Add as u8,
+        Op::Sub => Bytecode::Sub as u8,
+        Op::Mul => Bytecode::Mul as u8,
+        Op::Div => Bytecode::Div as u8,
+        Op::Mod => Bytecode::Mod as u8,
+        Op::Shl => Bytecode::Shl as u8,
+        Op::Shr => Bytecode::Shr as u8,
+        Op::BitOr => Bytecode::BitOr as u8,
+        Op::BitXor => Bytecode::BitXor as u8,
+        Op::BitAnd => Bytecode::BitAnd as u8,
+        Op::Assign => Bytecode::Assign as u8,
+        Op::AddAssign => Bytecode::AddAssign as u8,
+        Op::SubAssign => Bytecode::SubAssign as u8,
+        Op::MulAssign => Bytecode::MulAssign as u8,
+        Op::DivAssign => Bytecode::DivAssign as u8,
+        Op::ModAssign => Bytecode::ModAssign as u8,
+        Op::ShlAssign => Bytecode::ShlAssign as u8,
+        Op::ShrAssign => Bytecode::ShrAssign as u8,
+        Op::BitOrAssign => Bytecode::BitOrAssign as u8,
+        Op::BitXorAssign => Bytecode::BitXorAssign as u8,
+        Op::BitAndAssign => Bytecode::BitAndAssign as u8,
+        Op::PowAssign => Bytecode::PowAssign as u8,
+        Op::Eq => Bytecode::Eq as u8,
+        Op::Neq => Bytecode::Ne as u8,
+        Op::Lt => Bytecode::Lt as u8,
+        Op::Lte => Bytecode::Le as u8,
+        Op::Gt => Bytecode::Gt as u8,
+        Op::Gte => Bytecode::Ge as u8,
     }
 }
