@@ -1,21 +1,23 @@
-use crate::vm::profiler::FunctionCall;
+use crate::vm::memory::frames::OptimizationFrame;
+use crate::vm::functions;
+use std::sync::Arc;
+use parking_lot::Mutex;
+use ir::VMValue;
 pub(crate) use zetac::codegen::ir::module::Function;
 use zetac::codegen::ir::module::ZetaModule;
 use zetac::codegen::ir::optimization::pass::OptimizationPassPriority;
 use zetac::codegen::ir::optimization::pass_manager;
-use crate::vm::frames::OptimizationFrame;
-
-type NativeFn = fn();
+use zetac::codegen::ir::optimization::pass_manager::PassManager;
+use crate::vm::memory::string_pool::StringPool;
 
 #[allow(dead_code)]
 
-pub(crate) fn run_native_function(function: &Function) {
-    let pointer = function.native_pointer.clone().unwrap();
+type NativeFn = fn(&[VMValue], &StringPool);
 
-    unsafe {
-        let pointer: NativeFn = std::mem::transmute(pointer);
-        pointer();
-    }
+pub(crate) fn run_native_function(function: &Function, args: &[VMValue], string_pool: &StringPool) {
+    let pointer = function.native_pointer.clone().unwrap();
+    let function: NativeFn = unsafe { std::mem::transmute::<*const u8, NativeFn>(*pointer) };
+    function(args, string_pool);
 }
 
 pub(crate) fn compile_function(function: &mut Function) {
@@ -27,6 +29,29 @@ pub(crate) fn optimize_function_with_priority(priority: OptimizationPassPriority
 }
 
 #[inline]
+pub(crate) async fn optimize_function_async(
+    function_module: Arc<Mutex<ZetaModule>>,
+    pass_manager: Arc<Mutex<PassManager>>,
+    task: OptimizationFrame,
+) {
+    let mut function = {
+        function_module.lock()
+            .get_function(task.function_id)
+            .cloned()
+            .unwrap()
+    };
+
+    optimize_function(
+        &mut function,
+        task,
+        &mut pass_manager.lock(),
+        &function_module.lock(),
+    );
+
+    function_module.lock().add_function(function);
+}
+
+#[inline]
 pub(crate) fn optimize_function(function: &mut Function, function_call: OptimizationFrame, pass_manager: &mut pass_manager::PassManager, module: &ZetaModule) {
     if function.optimization_level == OptimizationPassPriority::Max {
         return;
@@ -34,13 +59,14 @@ pub(crate) fn optimize_function(function: &mut Function, function_call: Optimiza
 
     let function_call_count = function_call.call_count;
 
-    if function_call_count > 200 {
+    if function_call_count == 200 {
         optimize_function_with_priority(OptimizationPassPriority::Max, function, pass_manager, module);
         compile_function(function);
 
         function.optimization_level = OptimizationPassPriority::Max;
     }
-    if function_call_count > 150 {
+    
+    if function_call_count == 150 {
         pass_manager.run_passes_with_priority(
             OptimizationPassPriority::High,
             &mut function.code,
@@ -50,7 +76,7 @@ pub(crate) fn optimize_function(function: &mut Function, function_call: Optimiza
         compile_function(function);
     }
 
-    if function_call_count > 100 {
+    if function_call_count == 100 {
         pass_manager.run_passes_with_priority(
             OptimizationPassPriority::Medium,
             &mut function.code,
@@ -60,7 +86,7 @@ pub(crate) fn optimize_function(function: &mut Function, function_call: Optimiza
         compile_function(function);
     }
 
-    if function_call_count > 50 {
+    if function_call_count == 50 {
         pass_manager.run_passes_with_priority(
             OptimizationPassPriority::Low,
             &mut function.code,
@@ -70,11 +96,11 @@ pub(crate) fn optimize_function(function: &mut Function, function_call: Optimiza
         compile_function(function);
     }
 
-    if function_call_count > 20 {
+    if function_call_count == 20 {
         compile_function(function);
     }
 
-    if function_call_count > 10 {
+    if function_call_count == 5 {
         pass_manager.run_passes_with_priority(
             OptimizationPassPriority::Min,
             &mut function.code,
