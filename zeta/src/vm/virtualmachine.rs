@@ -1,167 +1,58 @@
-use crate::vm::frames::{OptimizationFrame, StackFrame};
-use crate::vm::{functions, profiler, stack};
+use crate::vm::memory::frames::{OptimizationFrame, StackFrame};
+use crate::vm::{functions, println, profiler};
 use ir::{Bytecode, VMValue};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use crossbeam::channel::{unbounded, Receiver, Sender};
 use crate::vm::eventloop::FiberScheduler;
 use crate::vm::fibers::Fiber;
-use crate::vm::heap;
-use crate::vm::string_pool::StringPool;
-use radix_trie::Trie;
-use zetac::codegen::ir::module;
+use crate::vm::memory::heap;
+use crate::vm::memory::string_pool::StringPool;
+use zetac::codegen::ir::module::ZetaModule;
 
 use mimalloc;
-use zetac::ast::{Param, Type, Visibility};
+use zetac::ast::Visibility;
 use zetac::codegen::ir::module::Function;
 use zetac::codegen::ir::optimization::pass::OptimizationPassPriority;
 use zetac::codegen::ir::optimization::pass_manager::PassManager;
+use crate::{binary_op_cmp, binary_op_int};
+use crate::vm::interpreter::*;
+use crate::vm::memory::regions::RegionAllocator;
+use crate::vm::memory::stack;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-const ADD: u8 = Bytecode::Add as u8;
-const SUB: u8 = Bytecode::Sub as u8;
-const MUL: u8 = Bytecode::Mul as u8;
-const DIV: u8 = Bytecode::Div as u8;
-const MOD: u8 = Bytecode::Mod as u8;
-const AND: u8 = Bytecode::And as u8;
-const OR: u8 = Bytecode::Or as u8;
-const XOR: u8 = Bytecode::Xor as u8;
-const NOT: u8 = Bytecode::Not as u8;
-const SHL: u8 = Bytecode::Shl as u8;
-const SHR: u8 = Bytecode::Shr as u8;
-const EQ: u8 = Bytecode::Eq as u8;
-const NEQ: u8 = Bytecode::Ne as u8;
-const LT: u8 = Bytecode::Lt as u8;
-const LTE: u8 = Bytecode::Le as u8;
-const GT: u8 = Bytecode::Gt as u8;
-const GTE: u8 = Bytecode::Ge as u8;
-const JUMP: u8 = Bytecode::Jump as u8;
-const JUMP_IF_TRUE: u8 = Bytecode::JumpIfTrue as u8;
-const JUMP_IF_FALSE: u8 = Bytecode::JumpIfFalse as u8;
-
-// Assignments
-
-const ASSIGN: u8 = Bytecode::Assign as u8;
-const ADD_ASSIGN: u8 = Bytecode::AddAssign as u8;
-const SUB_ASSIGN: u8 = Bytecode::SubAssign as u8;
-const MUL_ASSIGN: u8 = Bytecode::MulAssign as u8;
-const DIV_ASSIGN: u8 = Bytecode::DivAssign as u8;
-const MOD_ASSIGN: u8 = Bytecode::ModAssign as u8;
-const BIT_AND_ASSIGN: u8 = Bytecode::BitAndAssign as u8;
-const BIT_OR_ASSIGN: u8 = Bytecode::BitOrAssign as u8;
-const BIT_XOR_ASSIGN: u8 = Bytecode::BitXorAssign as u8;
-const SHL_ASSIGN: u8 = Bytecode::ShlAssign as u8;
-const SHR_ASSIGN: u8 = Bytecode::ShrAssign as u8;
-
-const BRANCH: u8 = Bytecode::Branch as u8;
-const RETURN: u8 = Bytecode::Return as u8;
-const HALT: u8 = Bytecode::Halt as u8;
-const CALL: u8 = Bytecode::Call as u8;
-const TAIL_CALL: u8 = Bytecode::TailCall as u8;
-const ARRAY_GET: u8 = Bytecode::ArrayGet as u8;
-const ARRAY_SET: u8 = Bytecode::ArraySet as u8;
-const GET_ARRAY_MUT: u8 = Bytecode::GetArrayMut as u8;
-const SET_ARRAY_MUT: u8 = Bytecode::SetArrayMut as u8;
-const GET_FIELD: u8 = Bytecode::GetField as u8;
-const ARRAY_ALLOC: u8 = Bytecode::ArrayAlloc as u8;
-const ARRAY_LEN: u8 = Bytecode::ArrayLen as u8;
-
-const PUSH_I64: u8 = Bytecode::PushI64 as u8;
-const PUSH_F64: u8 = Bytecode::PushF64 as u8;
-const PUSH_U8: u8 = Bytecode::PushU8 as u8;
-const PUSH_U16: u8 = Bytecode::PushU16 as u8;
-const PUSH_U32: u8 = Bytecode::PushU32 as u8;
-const PUSH_U64: u8 = Bytecode::PushU64 as u8;
-const PUSH_I8: u8 = Bytecode::PushI8 as u8;
-const PUSH_I16: u8 = Bytecode::PushI16 as u8;
-const PUSH_I32: u8 = Bytecode::PushI32 as u8;
-
-const PUSH_F32: u8 = Bytecode::PushF32 as u8;
-const PUSH_STR: u8 = Bytecode::PushStr as u8;
-const PUSH_BOOL: u8 = Bytecode::PushBool as u8;
-
-const POP: u8 = Bytecode::Pop as u8;
-const DUP: u8 = Bytecode::Dup as u8;
-const SWAP: u8 = Bytecode::Swap as u8;
-
-const LOAD: u8 = Bytecode::Load as u8;
-const STORE: u8 = Bytecode::Store as u8;
-const LOAD_VAR: u8 = Bytecode::LoadVar as u8;
-const STORE_VAR: u8 = Bytecode::StoreVar as u8;
-const LOAD_GLOBAL: u8 = Bytecode::LoadGlobal as u8;
-const STORE_GLOBAL: u8 = Bytecode::StoreGlobal as u8;
-const LOAD_LOCAL: u8 = Bytecode::LoadLocal as u8;
-const STORE_LOCAL: u8 = Bytecode::StoreLocal as u8;
-
-const GET_PTR: u8 = Bytecode::GetPtr as u8;
-const SET_PTR: u8 = Bytecode::SetPtr as u8;
-const GET_PTR_MUT: u8 = Bytecode::GetPtrMut as u8;
-const SET_PTR_MUT: u8 = Bytecode::SetPtrMut as u8;
-const ADDRESS_OF: u8 = Bytecode::AddressOf as u8;
-const DEREF: u8 = Bytecode::Deref as u8;
-const DEREF_MUT: u8 = Bytecode::DerefMut as u8;
-const CAST: u8 = Bytecode::Cast as u8;
-
-macro_rules! binary_op_int {
-    ($self:ident, $op:tt) => {{
-        let rhs = $self.stack.pop_int();
-        let lhs = $self.stack.pop_int();
-        $self.stack.push_int(lhs $op rhs);
-    }};
-}
-
-macro_rules! binary_op_cmp {
-    ($self:ident, $op:tt) => {{
-        let rhs = $self.stack.pop_int();
-        let lhs = $self.stack.pop_int();
-        $self.stack.push_bool(lhs $op rhs);
-    }};
-}
-
-
-pub struct VirtualMachine {
-    stack: stack::BumpStack,
-    heap: heap::HeapMemory,
-    program_counter: usize,
-    variables: Trie<String, i64>,
-    profiler: profiler::Profiler,
-    function_module: Arc<Mutex<module::ZetaModule>>,
-    pass_manager: Arc<Mutex<PassManager>>,
-    event_loop: FiberScheduler,
-    instruction_counter: usize,
-    string_pool: StringPool,
-    optimization_receiver: Receiver<OptimizationFrame>,
-    optimization_sender: Sender<OptimizationFrame>,
-}
-
 unsafe impl Send for VirtualMachine {}
 unsafe impl Sync for VirtualMachine {}
 
-pub extern "C" fn println_str(s: *const u8) {
-    unsafe {
-        let cstr = std::ffi::CStr::from_ptr(s as *const i8);
-        println!("{}", cstr.to_str().unwrap());
-    }
+pub struct VirtualMachine {
+    pub(crate) stack: stack::BumpStack,
+    pub(crate) heap: heap::HeapMemory,
+    pub(crate) profiler: profiler::Profiler,
+    pub(crate) function_module: Arc<Mutex<ZetaModule>>,
+    pub(crate) pass_manager: Arc<Mutex<PassManager>>,
+    pub(crate) event_loop: FiberScheduler,
+    pub(crate) string_pool: StringPool,
+    pub(crate) optimization_receiver: Receiver<OptimizationFrame>,
+    pub(crate) optimization_sender: Sender<OptimizationFrame>,
+    pub(crate) region_allocator: RegionAllocator
 }
 
 impl VirtualMachine {
     #[inline]
-    pub fn new(mut function_module: module::ZetaModule) -> VirtualMachine {
+    pub fn new(mut function_module: ZetaModule) -> VirtualMachine {
         // Let's add some native methods, like println_str
         let println_str_function = Function {
-            name: "println_s".to_string(),
+            name: "println_str".to_string(),
             id: 2,
-            params: vec![Param {
-                name: "thing_to_print".to_string(),
-                type_annotation: Some(Type::String)
-            }],
+            params: vec![],
             return_type: None,
             visibility: Some(Visibility::Public),
             is_method: false,
             is_main: false,
             is_native: true,
-            native_pointer: Some(Box::new(println_str as *const u8)),
+            native_pointer: Some(Box::new(println::println_str as *const u8)),
             locals: vec![],
             code: vec![],
             optimization_level: OptimizationPassPriority::Max // To prevent the virtual machine from optimizing this function
@@ -173,49 +64,49 @@ impl VirtualMachine {
         VirtualMachine {
             stack: stack::BumpStack::new(1024),
             heap: heap::HeapMemory::new(),
-            program_counter: 1024,
-            variables: Trie::new(),
             profiler: profiler::Profiler::new(),
             function_module: Arc::new(Mutex::new(function_module)),
             pass_manager: Arc::new(Mutex::new(PassManager::new())),
             event_loop: FiberScheduler::new(),
-            instruction_counter: 0,
             string_pool: StringPool::new(),
             optimization_receiver,
             optimization_sender,
+            region_allocator: RegionAllocator::new()
         }
     }
 
     /// Run a function but in a fiber
     pub fn run_function_in_fiber(&mut self, function_id: u64) {
-        self.event_loop.spawn(Fiber::new(function_id, self.function_module.lock().unwrap().get_function(function_id).unwrap().clone()));
+        self.event_loop.spawn(Fiber::new(function_id));
     }
 
     pub fn run_function(&mut self, function_id: u64, vm_args: Vec<VMValue>) {
         let function_module = self.function_module.clone();
-        let pass_manager = self.pass_manager.clone();
 
         let function = {
-            function_module.lock().unwrap().get_function(function_id).unwrap().clone()
+            function_module.lock().get_function(function_id).unwrap().clone()
         };
 
         if function.is_native && function.optimization_level == OptimizationPassPriority::Max {
-            println!("Running native function optimized to the max");
-            functions::run_native_function(&function);
+            functions::run_native_function(&function, &vm_args, &self.string_pool);
             return;
         }
 
         let now = std::time::Instant::now();
         if function.is_native {
-            functions::run_native_function(&function);
+            functions::run_native_function(&function, &vm_args, &self.string_pool);
         } else {
-            let stack_frame = StackFrame::new(0, 0, function_id);
-            self.interpret_function(&stack_frame, &mut function.code.clone());
+            let mut frame = StackFrame::new(0, 0, function_id);
+            // For non-native functions, push arguments to the stack
+            for arg in vm_args.into_iter().rev() {
+                frame.stack.push_vm(arg);
+            }
+            self.interpret_function(&mut frame, &mut function.code.clone());
         }
 
-        self.profiler.record_call(function_id, now.elapsed().as_nanos() as u64);
+        self.profiler.record_call(function_id, now.elapsed().as_nanos());
 
-        // Offload optimization to a background thread
+        // Offload optimization to a queue
         let call_count = self.profiler.get_func_call_count(function_id);
         let optimization_frame = OptimizationFrame {
             function_id,
@@ -226,68 +117,33 @@ impl VirtualMachine {
 
     pub fn run(&mut self) {
         // Pre program
-        let optional_main_function_id = self.function_module.lock().unwrap().entry;
+        let optional_main_function_id = self.function_module.lock().entry;
         if let Some(main_function_id) = optional_main_function_id {
-            println!("Running main function");
             self.run_function_in_fiber(main_function_id);
 
-            while self.tick() {
-                // Each tick executes one fiber and one optimization (at most)
-            }
+            while self.tick() {}
 
             // Post program
-            self.stack.reset();
             self.heap.free_all();
         } else {
             eprintln!("No entry point found, please add a main function like the following:");
-            eprintln!("fun main() {{\
-                println_str(\"Hello World!\");
-            }}");
+            eprintln!("fun main() {{\n    println_str(\"Hello World!\");\n}}");
             std::process::exit(1);
         }
-    }
-    
-    async fn optimize_function_async(
-        function_module: Arc<Mutex<module::ZetaModule>>,
-        pass_manager: Arc<Mutex<PassManager>>,
-        task: OptimizationFrame,
-    ) {
-        let mut function = {
-            function_module.lock().unwrap()
-                .get_function(task.function_id)
-                .cloned()
-                .unwrap()
-        };
-
-        functions::optimize_function(
-            &mut function,
-            task,
-            &mut pass_manager.lock().unwrap(),
-            &function_module.lock().unwrap(),
-        );
-
-        function_module.lock().unwrap().add_function(function);
     }
 
     pub fn tick(&mut self) -> bool {
         let event_loop = std::mem::replace(&mut self.event_loop, FiberScheduler::new());
         let work_left = event_loop.tick(self);
         self.event_loop = event_loop;
-        
+
         if !work_left {
             return false;
         }
 
         // Throttle optimization (e.g., 1 per tick)
         if let Ok(task) = self.optimization_receiver.try_recv() {
-            let mut function = {
-                self.function_module.lock().unwrap()
-                    .get_function(task.function_id)
-                    .cloned()
-                    .unwrap()
-            };
-
-            tokio::spawn(Self::optimize_function_async(
+            tokio::spawn(functions::optimize_function_async(
                 self.function_module.clone(),
                 self.pass_manager.clone(),
                 task,
@@ -296,118 +152,122 @@ impl VirtualMachine {
         true
     }
 
-    pub fn interpret_function(&mut self, call_frame: &StackFrame, function: &mut Vec<u8>) {
-        for instruction in function.clone() {
-            self.interpret_instruction(instruction, call_frame, function);
+    pub fn interpret_function(&mut self, call_frame: &mut StackFrame, function: &mut Vec<u8>) {
+        call_frame.program_counter = 0;
+        while call_frame.program_counter < function.len() {
+            let opcode = function[call_frame.program_counter];
+            call_frame.program_counter += 1;
+            self.interpret_instruction(opcode, call_frame, function);
         }
     }
 
-    pub fn interpret_instruction(&mut self, instr: u8, _frame: &StackFrame, function: &mut Vec<u8>) -> bool {
-        println!("{:?}", Bytecode::from(instr));
-        println!("Bytecode: {:?}", function);
-        println!("IP: {}", self.instruction_counter);
-        println!("Next opcode: {:?}", function[self.instruction_counter]);
-
+    pub fn interpret_instruction(&mut self, instr: u8, frame: &mut StackFrame, function: &Vec<u8>) -> bool {
         match instr {
-            ADD => binary_op_int!(self, +),
-            SUB => binary_op_int!(self, -),
-            MUL => binary_op_int!(self, *),
-            DIV => binary_op_int!(self, /),
-            MOD => binary_op_int!(self, %),
-            AND => binary_op_int!(self, &),
-            OR => binary_op_int!(self, |),
-            XOR => binary_op_int!(self, ^),
+            ADD => binary_op_int!(frame.stack, +),
+            SUB => binary_op_int!(frame.stack, -),
+            MUL => binary_op_int!(frame.stack, *),
+            DIV => binary_op_int!(frame.stack, /),
+            MOD => binary_op_int!(frame.stack, %),
+            AND => binary_op_int!(frame.stack, &),
+            OR => binary_op_int!(frame.stack, |),
+            XOR => binary_op_int!(frame.stack, ^),
             NOT => {
-                let val = self.stack.pop_int();
-                self.stack.push_int(!val);
+                let val = frame.stack.pop_vm();
+                match val {
+                    Some(VMValue::Bool(val)) => {
+                        frame.stack.push_vm(VMValue::Bool(!val));
+                    }
+                    _ => panic!("Invalid type for NOT")
+                }
             }
-            SHL => binary_op_int!(self, <<),
-            SHR => binary_op_int!(self, >>),
+            SHL => binary_op_int!(frame.stack, <<),
+            SHR => binary_op_int!(frame.stack, >>),
 
-            EQ => binary_op_cmp!(self, ==),
-            NEQ => binary_op_cmp!(self, !=),
-            LT => binary_op_cmp!(self, <),
-            LTE => binary_op_cmp!(self, <=),
-            GT => binary_op_cmp!(self, >),
-            GTE => binary_op_cmp!(self, >=),
+            EQ => binary_op_cmp!(frame.stack, ==),
+            NEQ => binary_op_cmp!(frame.stack, !=),
+            LT => binary_op_cmp!(frame.stack, <),
+            LTE => binary_op_cmp!(frame.stack, <=),
+            GT => binary_op_cmp!(frame.stack, >),
+            GTE => binary_op_cmp!(frame.stack, >=),
 
             PUSH_U8 => {
-                let v = self.fetch_u8(function);
-                self.stack.push_u8(v);
+                let v = fetch_u8(function, &mut frame.program_counter);
+                frame.stack.push_vm(VMValue::U8(v));
             }
 
             PUSH_I8 => {
-                let v = self.fetch_i8(function);
-                self.stack.push_i8(v);
+                let v = fetch_i8(function, &mut frame.program_counter);
+                frame.stack.push_vm(VMValue::I8(v));
             }
 
             PUSH_U16 => {
-                let v = self.fetch_u16(function);
-                self.stack.push_u16(v);
+                let v = fetch_u16(function, &mut frame.program_counter);
+                frame.stack.push_vm(VMValue::U16(v))
             }
 
             PUSH_I16 => {
-                let v = self.fetch_i16(function);
-                self.stack.push_i16(v);
+                let v = fetch_i16(function, &mut frame.program_counter);
+                frame.stack.push_vm(VMValue::I16(v))
             }
 
             PUSH_U32 => {
-                let v = self.fetch_u32(function);
-                self.stack.push_u32(v);
+                let v = fetch_u32(function, &mut frame.program_counter);
+                frame.stack.push_vm(VMValue::U32(v))
             }
 
             PUSH_I32 => {
-                let v = self.fetch_i32(function);
-                self.stack.push_i32(v);
+                let v = fetch_i32(function, &mut frame.program_counter);
+                frame.stack.push_vm(VMValue::I32(v))
             }
 
             PUSH_F32 => {
-                let v = self.fetch_f32(function);
-                self.stack.push_f32(v);
+                let v = fetch_f32(function, &mut frame.program_counter);
+                frame.stack.push_vm(VMValue::F32(v))
             }
 
             PUSH_F64 => {
-                let v = self.fetch_f64(function);
-                self.stack.push_f64(v);
+                let v = fetch_f64(function, &mut frame.program_counter);
+                frame.stack.push_vm(VMValue::F64(v))
             }
 
             PUSH_U64 => {
-                let v = self.fetch_u64(function);
-                self.stack.push_u64(v);
+                let v = fetch_u64(function, &mut frame.program_counter);
+                frame.stack.push_vm(VMValue::U64(v))
             }
 
             PUSH_I64 => {
-                let v = self.fetch_i64(function);
-                self.stack.push_i64(v);
+                let v = fetch_i64(function, &mut frame.program_counter);
+                frame.stack.push_vm(VMValue::I64(v))
             }
 
 
             PUSH_BOOL => {
-                let b = self.fetch_u8(function) != 0;
-                self.stack.push_bool(b);
+                let b = fetch_u8(function, &mut frame.program_counter) != 0;
+                frame.stack.push_vm(VMValue::Bool(b))
             }
 
             PUSH_STR => {
+                let offset = fetch_u16(function, &mut frame.program_counter);
+                let s = fetch_string(offset, function, &mut frame.program_counter);
 
-                let s = self.fetch_string(13, function);
                 let id = self.string_pool.intern(&s);
-                self.stack.push_string(id);
+                frame.stack.push_vm(VMValue::Str(id))
             }
 
             POP => {
-                self.stack.pop();
+                frame.stack.pop_vm();
             }
 
             DUP => {
-                let v = self.stack.peek().clone();
-                self.stack.push(v.unwrap());
+                let v = frame.stack.peek_vm().cloned();
+                frame.stack.push_vm(v.unwrap());
             }
 
             SWAP => {
-                let v1 = self.stack.pop().unwrap();
-                let v2 = self.stack.pop().unwrap();
-                self.stack.push(v1);
-                self.stack.push(v2);
+                let v1 = frame.stack.pop_vm().unwrap();
+                let v2 = frame.stack.pop_vm().unwrap();
+                frame.stack.push_vm(v1);
+                frame.stack.push_vm(v2);
             }
 
             RETURN => {
@@ -420,23 +280,36 @@ impl VirtualMachine {
 
             // Jumps
             JUMP => {
-                let offset = self.fetch_i16(function) as usize;
-                self.program_counter += offset;
+                frame.program_counter += 1;
+                let offset = fetch_i16(function, &mut frame.program_counter) as usize;
+                frame.program_counter += offset;
             }
 
             JUMP_IF_TRUE => {
-                let offset = self.fetch_i16(function) as usize;
-                let condition = self.stack.pop_bool();
-                if condition {
-                    self.program_counter += offset;
+                frame.program_counter += 1;
+                let offset = fetch_i16(function, &mut frame.program_counter) as usize;
+                let condition = frame.stack.pop_vm();
+                match condition {
+                    Some(VMValue::Bool(condition)) => {
+                        if condition {
+                            frame.program_counter += offset;
+                        }
+                    }
+                    _ => panic!("Invalid type for JUMP_IF_TRUE")
                 }
             }
 
             JUMP_IF_FALSE => {
-                let offset = self.fetch_i16(function) as usize;
-                let condition = self.stack.pop_bool();
-                if !condition {
-                    self.program_counter += offset;
+                frame.program_counter += 1;
+                let offset = fetch_i16(function, &mut frame.program_counter) as usize;
+                let condition = frame.stack.pop_vm();
+                match condition {
+                    Some(VMValue::Bool(condition)) => {
+                        if condition {
+                            frame.program_counter += offset;
+                        }
+                    }
+                    _ => panic!("Invalid type for JUMP_IF_TRUE")
                 }
             }
 
@@ -444,101 +317,120 @@ impl VirtualMachine {
                 todo!("BRANCH");
             }
 
+            // Regions
+            NEW_REGION => {
+                frame.program_counter += 1;
+                let offset = fetch_u16(function, &mut frame.program_counter);
+                let name_as_string = fetch_string(offset, function, &mut frame.program_counter);
+                let name = name_as_string.trim();
+                frame.push_region(
+                    self.string_pool.intern(name),
+                    self.region_allocator.new_region()
+                );
+            }
+
             CALL => {
-                self.instruction_counter += 1;
-                let offset = self.fetch_u16(function);
-                println!("Getting function name at offset {}", offset);
+                let name = fetch_string_u16_len(function, &mut frame.program_counter);
 
-                let name = self.fetch_string(offset, function).trim().to_string();
-                println!("Function name: {}", name);
-
-                let arity = self.fetch_u8(function);            // Read arity
-                println!("Function arity: {}", arity);
+                let arity = fetch_u8(function, &mut frame.program_counter);
 
                 // Pop arguments in reverse order (or leave on stack if callee expects to read)
-                let mut args = Vec::with_capacity(arity as usize);
+                let mut arguments = Vec::with_capacity(arity as usize);
                 for _ in 0..arity {
-                    args.push(self.stack.pop());
+                    arguments.push(frame.stack.pop_vm().unwrap());
                 }
-                args.reverse(); // preserve original order
+                arguments.reverse(); // preserve original order
 
                 let func = {
-                    self.function_module.lock().unwrap().get_function(2).cloned()
+                    self.function_module.lock().get_function_by_name(&name)
                 };
                 if let Some(func) = func {
-                    self.run_function(func.id, Vec::new());
+                    self.run_function(func.id, arguments);
                 } else {
                     eprintln!("Function {} not found", name);
                     std::process::exit(1);
                 }
             }
 
+            ASSIGN => {
+                let value = frame.stack.pop_vm().expect("Stack underflow on Assign");
+                frame.stack.push_vm(value);
+            }
+
+            ADD_ASSIGN => binary_op_int!(frame.stack, +),
+
+            SUB_ASSIGN => binary_op_int!(frame.stack, -),
+
+            MUL_ASSIGN => binary_op_int!(frame.stack, *),
+
+            DIV_ASSIGN => binary_op_int!(frame.stack, /),
+
+            MOD_ASSIGN => binary_op_int!(frame.stack, %),
+
+            SHL_ASSIGN => binary_op_int!(frame.stack, <<),
+            SHR_ASSIGN => binary_op_int!(frame.stack, >>),
+
+            BIT_AND_ASSIGN => binary_op_int!(frame.stack, &),
+
+            BIT_OR_ASSIGN => binary_op_int!(frame.stack, |),
+
+            BIT_XOR_ASSIGN => binary_op_int!(frame.stack, ^),
+
+            POW_ASSIGN => {
+                let rhs_option = frame.stack.pop_vm();
+                let lhs_option = frame.stack.pop_vm();
+
+                let rhs = match rhs_option {
+                    Some(vm_value) => vm_value,
+                    None => panic!("RHS is None")
+                };
+
+                let lhs = match lhs_option {
+                    Some(vm_value) => vm_value,
+                    None => panic!("RHS is None")
+                };
+
+                match (lhs.clone(), rhs.clone()) {
+                    (VMValue::I32(lhs), VMValue::I32(rhs)) => {
+                        frame.stack.push_vm(VMValue::I32(lhs.pow(rhs as u32)));
+                    }
+                    (VMValue::I64(lhs), VMValue::I64(rhs)) => {
+                        frame.stack.push_vm(VMValue::I64(lhs.pow(rhs as u32)));
+                    }
+                    (VMValue::U32(lhs), VMValue::U32(rhs)) => {
+                        frame.stack.push_vm(VMValue::U32(lhs.pow(rhs)));
+                    }
+                    (VMValue::U64(lhs), VMValue::U64(rhs)) => {
+                        frame.stack.push_vm(VMValue::U64(lhs.pow(rhs as u32)));
+                    }
+                    (VMValue::F32(lhs), VMValue::F32(rhs)) => {
+                        frame.stack.push_vm(VMValue::F32(lhs.powf(rhs)));
+                    }
+                    (VMValue::F64(lhs), VMValue::F64(rhs)) => {
+                        frame.stack.push_vm(VMValue::F64(lhs.powf(rhs)));
+                    }
+                    (VMValue::I8(lhs), VMValue::I8(rhs)) => {
+                        frame.stack.push_vm(VMValue::I8(lhs.pow(rhs as u32)));
+                    }
+                    (VMValue::I16(lhs), VMValue::I16(rhs)) => {
+                        frame.stack.push_vm(VMValue::I16(lhs.pow(rhs as u32)));
+                    }
+                    (VMValue::U8(lhs), VMValue::U8(rhs)) => {
+                        frame.stack.push_vm(VMValue::U8(lhs.pow(rhs as u32)));
+                    }
+                    (VMValue::U16(lhs), VMValue::U16(rhs)) => {
+                        frame.stack.push_vm(VMValue::U16(lhs.pow(rhs as u32)));
+                    }
+                    (VMValue::Ptr(lhs), VMValue::Ptr(rhs)) => {
+                        frame.stack.push_vm(VMValue::Ptr(lhs.pow(rhs as u32)));
+                    }
+
+                    _ => panic!("Invalid types for binary operation: {:?} {:?}", lhs, rhs)
+                }
+            }
+
             TAIL_CALL => {
                 todo!("TAIL_CALL");
-            }
-
-            ASSIGN => {
-                todo!("ASSIGN");
-            }
-
-            ADD_ASSIGN => {
-                let rhs = self.stack.pop_int();
-                let lhs = self.stack.pop_int();
-                self.stack.push_int(lhs + rhs);
-            }
-
-            SUB_ASSIGN => {
-                let rhs = self.stack.pop_int();
-                let lhs = self.stack.pop_int();
-                self.stack.push_int(lhs - rhs);
-            }
-
-            MUL_ASSIGN => {
-                let rhs = self.stack.pop_int();
-                let lhs = self.stack.pop_int();
-                self.stack.push_int(lhs * rhs);
-            }
-
-            DIV_ASSIGN => {
-                let rhs = self.stack.pop_int();
-                let lhs = self.stack.pop_int();
-                self.stack.push_int(lhs / rhs);
-            }
-
-            MOD_ASSIGN => {
-                let rhs = self.stack.pop_int();
-                let lhs = self.stack.pop_int();
-                self.stack.push_int(lhs % rhs);
-            }
-
-            SHL_ASSIGN => {
-                let rhs = self.stack.pop_int();
-                let lhs = self.stack.pop_int();
-                self.stack.push_int(lhs << rhs);
-            }
-
-            SHR_ASSIGN => {
-                let rhs = self.stack.pop_int();
-                let lhs = self.stack.pop_int();
-                self.stack.push_int(lhs >> rhs);
-            }
-
-            BIT_AND_ASSIGN => {
-                let rhs = self.stack.pop_int();
-                let lhs = self.stack.pop_int();
-                self.stack.push_int(lhs & rhs);
-            }
-
-            BIT_OR_ASSIGN => {
-                let rhs = self.stack.pop_int();
-                let lhs = self.stack.pop_int();
-                self.stack.push_int(lhs | rhs);
-            }
-
-            BIT_XOR_ASSIGN => {
-                let rhs = self.stack.pop_int();
-                let lhs = self.stack.pop_int();
-                self.stack.push_int(lhs ^ rhs);
             }
 
             LOAD => {
@@ -550,11 +442,21 @@ impl VirtualMachine {
             }
 
             LOAD_VAR => {
-                todo!("LOAD_VAR");
+                let offset = fetch_u16(function, &mut frame.program_counter);
+                let name = fetch_string(offset, function, &mut frame.program_counter);
+
+                match frame.locals.get(&name) {
+                    Some(value) => frame.stack.push_vm(value.clone()),
+                    None => panic!("Undefined local variable '{}'", name),
+                }
             }
 
             STORE_VAR => {
-                todo!("STORE_VAR");
+                let offset = fetch_u16(function, &mut frame.program_counter);
+                let name = fetch_string(offset, function, &mut frame.program_counter);
+
+                let value = frame.stack.pop_vm().expect("Stack underflow in STORE_VAR");
+                frame.locals.insert(name.to_string(), value);
             }
 
             LOAD_GLOBAL => {
@@ -639,67 +541,5 @@ impl VirtualMachine {
         }
 
         true
-    }
-
-    pub fn fetch_u8(&mut self, code: &mut Vec<u8>) -> u8 {
-        let byte = code[self.instruction_counter];
-        println!("Fetched u8: {}", byte);
-        self.instruction_counter += 1;
-        byte
-    }
-
-    pub fn fetch_u16(&mut self, code: &mut Vec<u8>) -> u16 {
-        let bytes = &code[self.instruction_counter..self.instruction_counter + 2];
-        self.instruction_counter += 2;
-        u16::from_ne_bytes(bytes.try_into().unwrap())
-    }
-
-    pub fn fetch_u32(&mut self, code: &mut Vec<u8>) -> u32 {
-        let bytes = &code[self.instruction_counter..self.instruction_counter + 4];
-        self.instruction_counter += 4;
-        u32::from_ne_bytes(bytes.try_into().unwrap())
-    }
-
-    pub fn fetch_u64(&mut self, code: &mut Vec<u8>) -> u64 {
-        let bytes = &code[self.instruction_counter..self.instruction_counter + 8];
-        self.instruction_counter += 8;
-        u64::from_ne_bytes(bytes.try_into().unwrap())
-    }
-
-    pub fn fetch_i8(&mut self, code: &mut Vec<u8>) -> i8 {
-        self.fetch_u8(code) as i8
-    }
-
-    pub fn fetch_i16(&mut self, code: &mut Vec<u8>) -> i16 {
-        self.fetch_u16(code) as i16
-    }
-
-    pub fn fetch_i32(&mut self, code: &mut Vec<u8>) -> i32 {
-        self.fetch_u32(code) as i32
-    }
-
-    pub fn fetch_i64(&mut self, code: &mut Vec<u8>) -> i64 {
-        self.fetch_u64(code) as i64
-    }
-
-    pub fn fetch_f32(&mut self, code: &mut Vec<u8>) -> f32 {
-        f32::from_bits(self.fetch_u32(code))
-    }
-
-    pub fn fetch_f64(&mut self, code: &mut Vec<u8>) -> f64 {
-        f64::from_bits(self.fetch_u64(code))
-    }
-
-    /// Assumes string is encoded as a u16 length followed by that many bytes
-    pub fn fetch_string(&mut self, len: u16, function: &mut Vec<u8>) -> String {
-        println!("Fetching string of length {}", len);
-        let mut result = Vec::with_capacity(len as usize);
-        for _ in 0..len {
-            let byte = self.fetch_u8(function);
-            result.push(byte);
-        }
-        let s = String::from_utf8(result).expect("Invalid UTF-8 in string");
-        println!("Fetched string: {}", s);
-        s
     }
 }
