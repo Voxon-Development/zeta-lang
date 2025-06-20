@@ -109,11 +109,20 @@ pub enum Bytecode {
     GetField = 0x53,
     ArrayAlloc = 0x54,
     ArrayLen = 0x55,
+    PowAssign = 0x56,
+    NewRegion = 0x57,
+    StoreRegion = 0x58,
 }
 
-impl From<u8> for Bytecode {
-    fn from(byte: u8) -> Self {
-        unsafe { std::mem::transmute(byte) }
+impl TryFrom<u8> for Bytecode {
+    type Error = ();
+
+    fn try_from(byte: u8) -> Result<Self, Self::Error> {
+        if byte < 1 || byte > 0x58 {
+            Err(())
+        } else {
+            Ok(unsafe { std::mem::transmute(byte) })
+        }
     }
 }
 
@@ -123,7 +132,7 @@ impl From<Bytecode> for u8 {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum VMValue {
     Int(usize),
     U8(u8),
@@ -139,7 +148,10 @@ pub enum VMValue {
     Bool(bool),
     Char(char),
     Ptr(usize),
-    Str(*const u8),
+    Str(VmString),
+    Array(usize, Box<VMValue>),
+    Region(usize),
+    Void
 }
 
 impl Eq for VMValue {}
@@ -167,6 +179,7 @@ pub enum BytecodeType {
     Void = 0x70,
     Array = 0x71,
     Class = 0x72,
+    Region = 0x73,
 }
 
 impl fmt::Display for BytecodeType {
@@ -191,6 +204,7 @@ impl fmt::Display for BytecodeType {
             BytecodeType::Void => write!(f, "void"),
             BytecodeType::Array => write!(f, "array"),
             BytecodeType::Class => write!(f, "class"),
+            BytecodeType::Region => write!(f, "region"),
         }
     }
 }
