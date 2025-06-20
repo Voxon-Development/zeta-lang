@@ -1,4 +1,5 @@
 // TODO: Allow for custom allocators to be used as well!
+use std::alloc::*;
 
 pub struct HeapMemory {
     pub memory: Vec<u8>,
@@ -12,8 +13,8 @@ impl HeapMemory {
     #[inline]
     pub fn alloc(&mut self, size: usize) -> *mut u8 {
         unsafe {
-            let layout = std::alloc::Layout::from_size_align(size, 8).unwrap();
-            let ptr = std::alloc::alloc(layout);
+            let layout = Layout::from_size_align(size, 8).unwrap();
+            let ptr = alloc(layout);
             self.memory.extend_from_slice(std::slice::from_raw_parts(ptr, size));
             ptr
         }
@@ -22,7 +23,7 @@ impl HeapMemory {
     #[inline]
     pub fn free(&mut self, ptr: *mut u8) {
         unsafe {
-            std::alloc::dealloc(ptr, std::alloc::Layout::from_size_align(0, 8).unwrap());
+            dealloc(ptr, Layout::from_size_align(0, 8).unwrap());
         }
     }
 
@@ -40,7 +41,7 @@ impl HeapMemory {
 
     pub fn free_all(&mut self) {
         unsafe {
-            std::alloc::dealloc(self.memory.as_mut_ptr(), std::alloc::Layout::from_size_align(self.memory.len(), 8).unwrap());
+            dealloc(self.memory.as_mut_ptr(), Layout::from_size_align(self.memory.len(), 8).unwrap());
         }
     }
 }
