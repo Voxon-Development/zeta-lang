@@ -517,13 +517,16 @@ impl<I: Iterator<Item = Token> + Clone> StmtParser<I> {
                 let ident = token.value;
                 self.expect_token(TokenType::LParen, "Expected `(` after identifier");
                 // make a loop to parse arguments
+                // arguments, but no trailing comma and no errors if there are no arguments
                 let mut arguments = Vec::new();
-                loop {
-                    arguments.push(self.parse_expr()?);
-                    if self.tokens.peek().map_or(false, |t| t.value_type == TokenType::Comma) {
-                        self.expect_token(TokenType::Comma, "Expected `,` after argument");
-                    } else {
-                        break;
+                if self.tokens.peek().map_or(false, |t| t.value_type != TokenType::RParen) {
+                    loop {
+                        arguments.push(self.parse_expr()?);
+                        if self.tokens.peek().map_or(false, |t| t.value_type == TokenType::Comma) {
+                            self.expect_token(TokenType::Comma, "Expected `,` after argument");
+                        } else {
+                            break;
+                        }
                     }
                 }
                 self.expect_token(TokenType::RParen, "Expected `)` after arguments");
@@ -562,73 +565,87 @@ impl<I: Iterator<Item = Token> + Clone> StmtParser<I> {
                 let ident = token.value;
                 self.expect_token(TokenType::AddAssign, "Expected `+=` after identifier");
                 let value = self.parse_expr();
-                Some(Expr::Assignment { lhs: Box::new(Expr::Ident(ident)), op: "+=".to_string(), rhs: Box::new(value?) })
+                Some(Expr::Assignment { lhs: Box::new(Expr::Ident(ident)), op: Op::AddAssign, rhs: Box::new(value?) })
             }
             Some(token) if token.value_type == TokenType::Identifier && self.tokens.peek().map_or(false, |t| t.value_type == TokenType::SubAssign) => {
                 let ident = token.value;
                 self.expect_token(TokenType::SubAssign, "Expected `-=` after identifier");
                 let value = self.parse_expr();
-                Some(Expr::Assignment { lhs: Box::new(Expr::Ident(ident)), op: "-=".to_string(), rhs: Box::new(value?) })
+                Some(Expr::Assignment { lhs: Box::new(Expr::Ident(ident)), op: Op::SubAssign, rhs: Box::new(value?) })
             }
             Some(token) if token.value_type == TokenType::Identifier && self.tokens.peek().map_or(false, |t| t.value_type == TokenType::MulAssign) => {
                 let ident = token.value;
                 self.expect_token(TokenType::MulAssign, "Expected `*=` after identifier");
                 let value = self.parse_expr();
-                Some(Expr::Assignment { lhs: Box::new(Expr::Ident(ident)), op: "*=".to_string(), rhs: Box::new(value?) })
+                Some(Expr::Assignment { lhs: Box::new(Expr::Ident(ident)), op: Op::MulAssign, rhs: Box::new(value?) })
             }
             Some(token) if token.value_type == TokenType::Identifier && self.tokens.peek().map_or(false, |t| t.value_type == TokenType::ModAssign) => {
                 let ident = token.value;
                 self.expect_token(TokenType::ModAssign, "Expected `%=` after identifier");
                 let value = self.parse_expr();
-                Some(Expr::Assignment { lhs: Box::new(Expr::Ident(ident)), op: "%=".to_string(), rhs: Box::new(value?) })
+                Some(Expr::Assignment { lhs: Box::new(Expr::Ident(ident)), op: Op::ModAssign, rhs: Box::new(value?) })
             }
             Some(token) if token.value_type == TokenType::Identifier && self.tokens.peek().map_or(false, |t| t.value_type == TokenType::PowAssign) => {
                 let ident = token.value;
                 self.expect_token(TokenType::PowAssign, "Expected `**=` after identifier");
                 let value = self.parse_expr();
-                Some(Expr::Assignment { lhs: Box::new(Expr::Ident(ident)), op: "**=".to_string(), rhs: Box::new(value?) })
+                Some(Expr::Assignment { lhs: Box::new(Expr::Ident(ident)), op: Op::PowAssign, rhs: Box::new(value?) })
             }
             Some(token) if token.value_type == TokenType::Identifier && self.tokens.peek().map_or(false, |t| t.value_type == TokenType::BitAndAssign) => {
                 let ident = token.value;
                 self.expect_token(TokenType::BitAndAssign, "Expected `&=` after identifier");
                 let value = self.parse_expr();
-                Some(Expr::Assignment { lhs: Box::new(Expr::Ident(ident)), op: "&=".to_string(), rhs: Box::new(value?) })
+                Some(Expr::Assignment { lhs: Box::new(Expr::Ident(ident)), op: Op::BitAndAssign, rhs: Box::new(value?) })
             }
             Some(token) if token.value_type == TokenType::Identifier && self.tokens.peek().map_or(false, |t| t.value_type == TokenType::BitOrAssign) => {
                 let ident = token.value;
                 self.expect_token(TokenType::BitOrAssign, "Expected `|=` after identifier");
                 let value = self.parse_expr();
-                Some(Expr::Assignment { lhs: Box::new(Expr::Ident(ident)), op: "|=".to_string(), rhs: Box::new(value?) })
+                Some(Expr::Assignment { lhs: Box::new(Expr::Ident(ident)), op: Op::BitOrAssign, rhs: Box::new(value?) })
             }
             Some(token) if token.value_type == TokenType::Identifier && self.tokens.peek().map_or(false, |t| t.value_type == TokenType::ShlAssign) => {
                 let ident = token.value;
                 self.expect_token(TokenType::ShlAssign, "Expected `<<=` after identifier");
                 let value = self.parse_expr();
-                Some(Expr::Assignment { lhs: Box::new(Expr::Ident(ident)), op: "<<=".to_string(), rhs: Box::new(value?) })
+                Some(Expr::Assignment { lhs: Box::new(Expr::Ident(ident)), op: Op::ShlAssign, rhs: Box::new(value?) })
             }
             Some(token) if token.value_type == TokenType::Identifier && self.tokens.peek().map_or(false, |t| t.value_type == TokenType::ShrAssign) => {
                 let ident = token.value;
                 self.expect_token(TokenType::ShrAssign, "Expected `>>=` after identifier");
                 let value = self.parse_expr();
-                Some(Expr::Assignment { lhs: Box::new(Expr::Ident(ident)), op: ">>=".to_string(), rhs: Box::new(value?) })
+                Some(Expr::Assignment { lhs: Box::new(Expr::Ident(ident)), op: Op::ShrAssign, rhs: Box::new(value?) })
             }
             Some(token) if token.value_type == TokenType::Identifier && self.tokens.peek().map_or(false, |t| t.value_type == TokenType::BitXorAssign) => {
                 let ident = token.value;
                 self.expect_token(TokenType::BitXorAssign, "Expected `^=` after identifier");
                 let value = self.parse_expr();
-                Some(Expr::Assignment { lhs: Box::new(Expr::Ident(ident)), op: "^=".to_string(), rhs: Box::new(value?) })
+                Some(Expr::Assignment { lhs: Box::new(Expr::Ident(ident)), op: Op::BitXorAssign, rhs: Box::new(value?) })
             }
             Some(token) if token.value_type == TokenType::Identifier && self.tokens.peek().map_or(false, |t| t.value_type == TokenType::DivAssign) => {
                 let ident = token.value;
                 self.expect_token(TokenType::DivAssign, "Expected `/=` after identifier");
                 let value = self.parse_expr();
-                Some(Expr::Assignment { lhs: Box::new(Expr::Ident(ident)), op: "/=".to_string(), rhs: Box::new(value?) })
+                Some(Expr::Assignment { lhs: Box::new(Expr::Ident(ident)), op: Op::DivAssign, rhs: Box::new(value?) })
             }
             Some(token) if token.value_type == TokenType::Identifier && self.tokens.peek().map_or(false, |t| t.value_type == TokenType::Equal) => {
                 let ident = token.value;
                 self.expect_token(TokenType::Equal, "Expected `=` after identifier");
                 let value = self.parse_expr();
-                Some(Expr::Assignment { lhs: Box::new(Expr::Ident(ident)), op: "=".to_string(), rhs: Box::new(value?) })
+                Some(Expr::Assignment { lhs: Box::new(Expr::Ident(ident)), op: Op::Assign, rhs: Box::new(value?) })
+            }
+
+            Some(token) if token.value_type == TokenType::AtSymbol => {
+                // parse something like @{Region}, then it's Expr::RegionInit
+                self.expect_token(TokenType::LBrace, "Expected `{` after `@`");
+                match self.tokens.next() {
+                    Some(ident) if ident.value == "Region" => {},
+                    Some(token) => self.errors.push(ParserError { message: format!("Expected \"Region\" got {}", token.value), token }),
+                    None => self.errors.push(ParserError { 
+                        message: "Expected `Ident` after `@` but token list ended.".to_string(), token
+                    })
+                }
+                self.expect_token(TokenType::RBrace, "Expected `}` after `{`");
+                Some(Expr::RegionInit)
             }
             Some(token) if token.value_type == TokenType::Int => Some(Expr::Number(token.value.parse().unwrap())),
             Some(token) if token.value_type == TokenType::String => Some(Expr::String(token.value)),
