@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs;
 use tokio::sync::{Mutex, MutexGuard};
+use tokio::task::JoinHandle;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AsyncCompileError {
@@ -26,35 +27,24 @@ pub async fn compile_files_async(files: Vec<PathBuf>) -> Result<ZetaModule, Asyn
     let module = Arc::new(Mutex::new(ZetaModule::new()));
     
     // Create a stream of compilation tasks
-    let mut tasks: Vec<tokio::task::JoinHandle<Result<(), AsyncCompileError>>> = Vec::with_capacity(files.len());
+    let mut tasks: Vec<JoinHandle<Result<(), AsyncCompileError>>> = Vec::with_capacity(files.len());
     
     for file_path in files {
-        let module = Arc::clone(&module);
-        
-        let task = tokio::spawn(async move {
-            let content = fs::read_to_string(&file_path).await.map_err(AsyncCompileError::from);
-            
-            if content.is_err() {
-                eprintln!("Failed to read file: {}", file_path.to_string_lossy());
-                return Ok(());
-            }
-            
-            // Process the file
-            let result = process_file(&content.unwrap().as_str())
-                .await
-                .map_err(AsyncCompileError::from);
-            
-            // Lock the module and merge the results
-            if let Ok((main, functions, classes)) = result {
-                let mut lock: MutexGuard<ZetaModule> = module.lock().await;
+        let module: Arc<Mutex<ZetaModule>> = module.clone();
+
+        let task: JoinHandle<Result<(), AsyncCompileError>> = tokio::spawn(async move {
+            let content: String = fs::read_to_string(&file_path).await.map_err(AsyncCompileError::from)?;
+
+            if let Ok((_, functions, classes)) = process_file(content.as_str()).await {
+                let mut lock = module.lock().await;
                 let mut compiler = IrCompiler::new(&mut lock);
-                
-                compiler.compile(main, functions, classes);
+                compiler.compile(functions, classes);
             }
-            
+
             Ok(())
         });
-        
+
+
         tasks.push(task);
     }
     
