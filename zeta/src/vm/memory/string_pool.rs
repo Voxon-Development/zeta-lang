@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
+#[derive(Debug)]
 pub struct StringPool {
-    data_buffer: Vec<u8>,
-
+    pub(crate) data_buffer: Vec<u8>,
     interned_strings: HashMap<u64, Vec<ir::VmString>>,
 }
 
@@ -11,13 +11,13 @@ impl StringPool {
     pub fn new() -> Self {
         StringPool {
             data_buffer: Vec::new(),
-            interned_strings: HashMap::new(), // Default hasher for u64 is fine
+            interned_strings: HashMap::new(),
         }
     }
 
     #[inline(always)]
     pub fn intern(&mut self, s: &str) -> ir::VmString {
-        let s_hash = seahash::hash(s.as_bytes());
+        let s_hash = ahash::RandomState::new().hash_one(s);
 
         if let Some(collision_list) = self.interned_strings.get(&s_hash) {
             // Hash collision: iterate through the list of VmStrings

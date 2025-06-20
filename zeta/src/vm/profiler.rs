@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-pub type TimeTaken = u64;
+pub type TimeTaken = u128;
 
 #[derive(Debug)]
 pub struct Profiler {
@@ -33,15 +33,15 @@ impl Profiler {
     }
 
     pub fn record_call(&mut self, function_id: u64, time_taken: TimeTaken) {
-        if self.call_counts.contains_key(&function_id) {
-            let mut call_count = self.call_counts.get(&function_id).unwrap().clone();
-            call_count.count += 1;
-            call_count.time_taken = time_taken;
-            self.call_counts.insert(function_id, call_count);
-            return;
-        }
-        
-        self.call_counts.insert(function_id, FunctionCall { count: 1, time_taken });
+        self.call_counts.entry(function_id)
+            .and_modify(|fc| {
+                fc.count += 1;
+                fc.time_taken += time_taken;
+            })
+            .or_insert(FunctionCall {
+                count: 1,
+                time_taken,
+            });
     }
 
     pub fn get_call_counts(&self) -> &HashMap<u64, FunctionCall> {

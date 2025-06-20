@@ -74,6 +74,7 @@ pub enum TokenType {
     // Other
     EOF,
     EOL,
+    AtSymbol,
     
     Unknown, // placed for TokenError
     BitAnd,
@@ -121,25 +122,12 @@ impl std::fmt::Display for TokenError {
 
 pub struct ParserError {
     pub message: String,
-    pub line: usize,
-    pub column: usize,
     pub token: Token
-}
-
-impl ParserError {
-    pub fn new(message: String, line: usize, column: usize, token: Token) -> ParserError {
-        ParserError {
-            message,
-            line,
-            column,
-            token
-        }
-    }
 }
 
 impl std::fmt::Display for ParserError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Parse time error at line {}, column {}, value: {}\n {}", self.line, self.column, self.token, self.message)
+        write!(f, "Parse time error, value: {}\n {}", self.token, self.message)
     }
 }
 

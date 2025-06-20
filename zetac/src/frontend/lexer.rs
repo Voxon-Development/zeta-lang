@@ -448,6 +448,7 @@ impl Lexer {
             '.' => tokens::TokenType::Dot,
             ';' => tokens::TokenType::Semicolon,
             ':' => tokens::TokenType::Colon,
+            '@' => tokens::TokenType::AtSymbol,
 
             _ => {
                 // If it's an unknown character, report an error and advance

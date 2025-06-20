@@ -5,20 +5,6 @@ use ir::Bytecode;
 use crate::ast::{FuncDecl, Visibility};
 use crate::codegen::ir::optimization::pass::OptimizationPassPriority;
 
-use seahash;
-
-// seahash builder
-#[derive(Default)]
-pub struct SeaHashBuilder;
-
-impl std::hash::BuildHasher for SeaHashBuilder {
-    type Hasher = seahash::SeaHasher;
-
-    fn build_hasher(&self) -> Self::Hasher {
-        seahash::SeaHasher::new()
-    }
-}
-
 #[derive(Default, Debug, Clone)]
 pub struct Function {
     pub name: String,
@@ -54,10 +40,6 @@ impl ZetaModule {
         }
     }
     
-    pub fn println_str(string: &str) {
-        println!("{}", string);
-    }
-    
     pub fn add_function(&mut self, function: Function) {
         self.functions_by_name.insert(function.name.clone(), function.id);
         self.functions.insert(function.id, function);
@@ -65,7 +47,6 @@ impl ZetaModule {
     
     pub fn get_function_by_name(&self, name: &String) -> Option<Function> {
         let id = self.functions_by_name.get(name).cloned();
-        println!("ID: {:?}, Name: {}", id, name);
         match id {
             Some(id) => self.functions.get(&id).cloned(),
             None => None

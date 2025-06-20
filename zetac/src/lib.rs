@@ -14,7 +14,7 @@ pub mod async_compiler;
 pub use async_compiler::{compile_files_async, AsyncCompileError};
 pub mod frontend;
 pub mod ast;
-mod println;
+pub mod println;
 pub mod codegen;
 
 /*fn main() {
@@ -118,9 +118,6 @@ pub fn compile_to_ir(file: PathBuf, native: bool, native_output: Option<PathBuf>
     } else {
         // JIT backend
         let mut builder = JITBuilder::new(cranelift_module::default_libcall_names()).expect("Unable to create JIT builder");
-        builder.symbol("println_str", println_str as *const u8);
-        builder.symbol("println_int", println_int as *const u8);
-        builder.symbol("println_bool", println_bool as *const u8);
         let mut module = JITModule::new(builder);
 
         let mut sig = module.make_signature();
