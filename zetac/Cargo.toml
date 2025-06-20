@@ -15,7 +15,7 @@ cranelift-object = "0.120.0"
 cranelift-native = "0.120.0"
 ir = { path = "../ir" }
 
-seahash = "4.1.0"
+ahash = "0.8.12"
 
 random = "0.14.0"
 
