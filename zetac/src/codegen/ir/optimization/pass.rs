@@ -99,7 +99,7 @@ impl Pass for ConstantFoldingPass {
 
 impl ConstantFoldingPass {
     fn is_binary_op(op: u8) -> bool {
-        matches!(Bytecode::from(op), 
+        matches!(Bytecode::try_from(op).unwrap(),
             Bytecode::Add | Bytecode::Sub | 
             Bytecode::Mul | Bytecode::Div | 
             Bytecode::Mod | Bytecode::BitOr | 
@@ -109,15 +109,19 @@ impl ConstantFoldingPass {
     }
     
     fn is_constant_load(ops: &[u8]) -> bool {
-        matches!(Bytecode::from(ops[0]), 
-            Bytecode::PushI32 | Bytecode::PushI64 | 
-            Bytecode::PushU8 | Bytecode::PushU16 | 
+        let result = Bytecode::try_from(ops[0]);
+        if result.is_err() {
+            return false;
+        }
+        matches!(result.unwrap(),
+            Bytecode::PushI32 | Bytecode::PushI64 |
+            Bytecode::PushU8 | Bytecode::PushU16 |
             Bytecode::PushU32 | Bytecode::PushU64
         )
     }
     
     fn get_constant_value(ops: &[u8]) -> (i64, usize) {
-        match Bytecode::from(ops[0]) {
+        match Bytecode::try_from(ops[0]).unwrap() {
             Bytecode::PushI32 => (i32::from_le_bytes([ops[1], ops[2], ops[3], ops[4]]) as i64, 5),
             Bytecode::PushI64 => 
                 (i64::from_le_bytes([ops[1], ops[2], ops[3], ops[4], ops[5], ops[6], ops[7], ops[8]]), 9),
@@ -131,7 +135,7 @@ impl ConstantFoldingPass {
     }
     
     fn evaluate_binary_op(op: u8, left: i64, right: i64) -> Option<i64> {
-        match Bytecode::from(op) {
+        match Bytecode::try_from(op).unwrap() {
             Bytecode::Add => left.checked_add(right),
             Bytecode::Sub => left.checked_sub(right),
             Bytecode::Mul => left.checked_mul(right),
@@ -170,7 +174,7 @@ impl Pass for DeadCodeEliminationPass {
     fn optimize(&self, bytecode: &mut Vec<u8>, _module: &ZetaModule) -> anyhow::Result<()> {
         let mut i = 0;
         while i < bytecode.len() {
-            match Bytecode::from(bytecode[i]) {
+            match Bytecode::try_from(bytecode[i]).unwrap() {
                 // Remove unreachable code after return/break/continue/throw
                 Bytecode::Return | Bytecode::Halt => {
                     // Remove all instructions until the next label or end of function
@@ -224,7 +228,7 @@ impl Pass for DeadCodeEliminationPass {
 impl DeadCodeEliminationPass {
     fn is_control_flow(bytecode: &[u8]) -> bool {
         matches!(
-            Bytecode::from(bytecode[0]),
+            Bytecode::try_from(0).unwrap(),
             Bytecode::Jump
                 | Bytecode::JumpIfTrue
                 | Bytecode::JumpIfFalse
@@ -237,7 +241,7 @@ impl DeadCodeEliminationPass {
     }
     
     fn get_store_location(bytecode: &[u8]) -> Option<Vec<u8>> {
-        match Bytecode::from(bytecode[0]) {
+        match Bytecode::try_from(bytecode[0]).unwrap() {
             Bytecode::StoreLocal | Bytecode::LoadLocal => {
                 if bytecode.len() > 1 {
                     Some(bytecode[0..2].to_vec())
@@ -288,7 +292,7 @@ impl Pass for InliningPass {
     fn optimize(&self, bytecode: &mut Vec<u8>, module: &ZetaModule) -> anyhow::Result<()> {
         let mut i = 0;
         while i < bytecode.len() {
-            if i + 1 < bytecode.len() && Bytecode::from(bytecode[i]) == Bytecode::Call {
+            if i + 1 < bytecode.len() && Bytecode::try_from(bytecode[i]).unwrap() == Bytecode::Call {
                 // Get the function name
                 if let Some((name, name_len)) = self.get_function_name(&bytecode[i+1..]) {
                     // Look up the function in the module
@@ -300,7 +304,7 @@ impl Pass for InliningPass {
                             let mut new_code = func.code.clone();
                             
                             // Replace return with jump to the end of inlined code
-                            if let Some(return_pos) = new_code.iter().position(|&b| Bytecode::from(b) == Bytecode::Return) {
+                            if let Some(return_pos) = new_code.iter().position(|&b| Bytecode::try_from(b).unwrap() == Bytecode::Return) {
                                 new_code.truncate(return_pos);
                             }
 
