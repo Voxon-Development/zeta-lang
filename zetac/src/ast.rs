@@ -79,11 +79,45 @@ pub enum Op {
     Add, Sub, Mul, Div, Mod,
     Shl, Shr, BitOr, BitXor, BitAnd,
     Assign,
-    AddAssign, SubAssign, MulAssign, DivAssign,
+    AddAssign, SubAssign, MulAssign, DivAssign, PowAssign,
     ShlAssign, ShrAssign, BitOrAssign, BitXorAssign, BitAndAssign,
     Eq, Neq, Lt, Lte, Gt, Gte,
     // etc.
     ModAssign,
+}
+
+impl From<String> for Op {
+    fn from(s: String) -> Self {
+        match s.as_str() {
+            "+" => Op::Add,
+            "-" => Op::Sub,
+            "*" => Op::Mul,
+            "/" => Op::Div,
+            "%" => Op::Mod,
+            "<<" => Op::Shl,
+            ">>" => Op::Shr,
+            "|" => Op::BitOr,
+            "^" => Op::BitXor,
+            "&" => Op::BitAnd,
+            "=" => Op::Assign,
+            "+=" => Op::AddAssign,
+            "-=" => Op::SubAssign,
+            "*=" => Op::MulAssign,
+            "/=" => Op::DivAssign,
+            "<<=" => Op::ShlAssign,
+            ">>=" => Op::ShrAssign,
+            "|=" => Op::BitOrAssign,
+            "^=" => Op::BitXorAssign,
+            "&=" => Op::BitAndAssign,
+            "==" => Op::Eq,
+            "!=" => Op::Neq,
+            "<" => Op::Lt,
+            "<=" => Op::Lte,
+            ">" => Op::Gt,
+            ">=" => Op::Gte,
+            _ => panic!("Unknown operator: {}", s),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -220,12 +254,13 @@ pub enum Expr {
     },
     Assignment {
         lhs: Box<Expr>, 
-        op: String, 
+        op: Op,
         rhs: Box<Expr>
     },
     ExprList {
         exprs: Vec<Expr>,
     },
+    RegionInit
 }
 
 #[derive(Debug, Clone, PartialEq)]
