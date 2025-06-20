@@ -40,17 +40,16 @@ impl<'a> IrCompiler<'a> {
                 if let ast::Stmt::ClassDecl(c) = stmt { Some(c.clone()) } else { None })
             .collect::<Vec<ast::ClassDecl>>();
         
-        self.compile(main, functions, classes);
+        self.compile(functions, classes);
     }
     
-    pub fn compile(&mut self, main: ast::FuncDecl, functions: Vec<ast::FuncDecl>, classes: Vec<ast::ClassDecl>) {
+    pub fn compile(&mut self, functions: Vec<ast::FuncDecl>, classes: Vec<ast::ClassDecl>) {
         for class in classes {
             self.compile_class(&class);
         }
         for func in functions {
             self.compile_func(&func);
         }
-        self.compile_func(&main);
     }
     
     fn compile_class(&mut self, class: &ast::ClassDecl) {
