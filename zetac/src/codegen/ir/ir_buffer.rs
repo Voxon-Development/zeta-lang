@@ -35,9 +35,8 @@ impl ByteWriter {
 
     #[inline]
     pub fn write_string(&mut self, value: &str) {
-        let bytes = value.as_bytes();
-        self.write_u16(bytes.len() as u16); // allows up to 65535-byte names
-        self.buffer.extend_from_slice(bytes);
+        self.write_u16(value.len() as u16); // allows up to 65535-byte names
+        self.buffer.extend_from_slice(value.as_bytes());
     }
 
     #[inline]
