@@ -612,25 +612,25 @@ impl StmtCompiler {
                     let rhs_val: Value = self.compile_expr(builder, rhs, module)?;
 
                     // Handle compound assignments
-                    let final_val = match op.as_str() {
-                        "=" => rhs_val,
-                        "+=" => {
+                    let final_val = match op {
+                        Op::Assign => rhs_val,
+                        Op::AddAssign => {
                             let current_val = builder.use_var(var);
                             builder.ins().iadd(current_val, rhs_val)
                         }
-                        "-=" => {
+                        Op::SubAssign => {
                             let current_val = builder.use_var(var);
                             builder.ins().isub(current_val, rhs_val)
                         }
-                        "*=" => {
+                        Op::MulAssign => {
                             let current_val = builder.use_var(var);
                             builder.ins().imul(current_val, rhs_val)
                         }
-                        "/=" => {
+                        Op::DivAssign => {
                             let current_val = builder.use_var(var);
                             builder.ins().sdiv(current_val, rhs_val)
                         }
-                        _ => anyhow::bail!("Unsupported assignment operator: {}", op),
+                        _ => anyhow::bail!("Unsupported assignment operator: {:?}", op),
                     };
 
                     builder.def_var(var, final_val);
@@ -650,13 +650,13 @@ impl StmtCompiler {
                     let var_type = builder.func.dfg.value_type(rhs_val);
                     let current_val = builder.ins().load(var_type, MemFlags::new(), field_addr, 0);
 
-                    let final_val = match op.as_str() {
-                        "=" => rhs_val,
-                        "+=" => builder.ins().iadd(current_val, rhs_val),
-                        "-=" => builder.ins().isub(current_val, rhs_val),
-                        "*=" => builder.ins().imul(current_val, rhs_val),
-                        "/=" => builder.ins().sdiv(current_val, rhs_val),
-                        _ => anyhow::bail!("Unsupported assignment operator: {}", op),
+                    let final_val = match op {
+                        Op::Assign => rhs_val,
+                        Op::AddAssign => builder.ins().iadd(current_val, rhs_val),
+                        Op::SubAssign => builder.ins().isub(current_val, rhs_val),
+                        Op::MulAssign => builder.ins().imul(current_val, rhs_val),
+                        Op::DivAssign => builder.ins().sdiv(current_val, rhs_val),
+                        _ => anyhow::bail!("Unsupported assignment operator: {:?}", op),
                     };
 
                     builder.ins().store(MemFlags::new(), final_val, field_addr, 0);
