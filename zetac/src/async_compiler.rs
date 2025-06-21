@@ -24,6 +24,15 @@ pub enum AsyncCompileError {
 /// Compiles multiple files asynchronously and returns a single ZetaModule containing all the compiled code.
 /// Files are compiled in parallel, and the results are merged into a single module.
 pub async fn compile_files_async(files: Vec<PathBuf>) -> Result<ZetaModule, AsyncCompileError> {
+    // Validate files before checking them
+    let invalid_files: Vec<String> = files.iter()
+        .filter_map(|path| if path.exists() { None } else { Some(path.file_name().unwrap().to_string_lossy().to_string()) })
+        .collect::<Vec<String>>();
+
+    if !invalid_files.is_empty() {
+        return Err(AsyncCompileError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, format!("Files not found: {:?}", invalid_files))));
+    }
+
     let module = Arc::new(Mutex::new(ZetaModule::new()));
     
     // Create a stream of compilation tasks
