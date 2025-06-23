@@ -1,4 +1,5 @@
-# zeta-lang
+# ALPHA STAGES
+# zeta-lang 
 New generation of JIT like you've never seen.
 
 Example:
@@ -16,20 +17,17 @@ main() {
 }
 ```
 
-Visibility modifiers are optional.
+A memory-safe, low-level, JIT-compiled, to be made in a new generation of languages like you've never seen, with extremely fast compilation.
 
-Current stuff to be done:
-- [x] OOP (Fully customizable)
-- [x] Functions (Return values too)
-- [x] Type inference
-- [ ] Extensive FFI and Importing (Being implemented)
-- [ ] SDK (Dependent on Extensive FFI and Importing and memory management)
-- [ ] Optimizations for generated IR
-- [x] If statements
-- [x] While statements
-- [x] For statements
-- [x] Match statements
-- [x] Arrays
-- [ ] Memory management
-- [x] Pointers
-- [ ] Casting (Partially done)
+A language made to **touch the realms of possibility** in JIT, memory management and performance
+
+# Why Zeta?
+- JIT compilation: JIT compilation of zeta empowers many aspects of the language, such as long uptime performance, automatic profiling and no need to compile for every platform
+
+- Performant: Incredibly fast language, there's no garbage collection, no class loading, no dynamic typing, no type erasure (runtime monomorphization), no reflection (there's compile time meta programming)
+
+- Memory safe: Memory safe language using lifetime sets, considerably safer than other languages like C without garbage collection like java, c#, go, python, javascript and typescript, while being relatively easy to learn
+
+- Extremely versatile: Once even alpha stages hits, versatility in the language will be on top of many major languages (You'll see 😉)
+
+I might be making insane claims, but the language development has been promising these results ^^
