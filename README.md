@@ -26,8 +26,8 @@ A language made to **touch the realms of possibility** in JIT, memory management
 
 - Performant: Incredibly fast language, there's no garbage collection, no class loading, no dynamic typing, no type erasure (runtime monomorphization), no reflection (there's compile time meta programming)
 
-- Memory safe: Memory safe language using lifetime sets, considerably safer than other languages like C without garbage collection like java, c#, go, python, javascript and typescript, while being relatively easy to learn
+- Memory Safety: Memory safe language using lifetime sets, considerably safer than other languages like C without garbage collection like java, c#, go, python, javascript and typescript, while being relatively easy to learn
 
-- Extremely versatile: Once even alpha stages hits, versatility in the language will be on top of many major languages (You'll see 😉)
+- Extremely Versatile: Once alpha stages hits, versatility in the language will be on top of many major languages (You'll see 😉)
 
 I might be making insane claims, but the language development has been promising these results ^^
