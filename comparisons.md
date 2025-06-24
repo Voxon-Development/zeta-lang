@@ -1,25 +1,23 @@
 
 # 🔍 Zeta Language: Comparison with Modern Languages
+| Feature                     | **Zeta**                                                             | Rust                                         | Go                                | C/C++                                        | Python                                        | JavaScript                    |
+| --------------------------- | -------------------------------------------------------------------- | -------------------------------------------- | --------------------------------- | -------------------------------------------- | --------------------------------------------- | ----------------------------- |
+| **Level**                   | Mid-level (high-level syntax, low-level control)                     | Low-to-mid                                   | Mid                               | Low                                          | High                                          | High                          |
+| **Purpose**                 | Systems & application programming, with JIT, fibers, and safety      | Safe systems programming                     | Scalable backend & concurrency    | Systems, embedded, performance-critical code | Scripting, automation, ML                     | Web dev, async apps           |
+| **Performance**             | Near-native (JIT via Cranelift)                                      | Native                                       | Native                            | Native                                       | Slow (interpreted/bytecode)                   | Moderate (JIT)                |
+| **Memory Control**          | Region-based, opt-in lifetime & pointer safety                       | Ownership/borrowing                          | GC (non-configurable)             | Manual (raw pointers)                        | GC                                            | GC                            |
+| **Metaprogramming**         | ✅ Supported (non-reflective)                                         | ❌ (limited macros)                           | ❌                                 | ✅ (macros/preproc)                           | ✅ (runtime)                                   | ✅ (runtime)                   |
+| **Reflection**              | ❌ Not supported                                                      | ❌                                            | ✅                                 | ❌                                            | ✅                                             | ✅                             |
+| **Concurrency**             | Fibers (`work` keyword), multithreaded VM, Rayon-style parallelism   | Threads, async/await, message passing        | Goroutines (green threads)        | Threads (manual)                             | Async/await, threads via `concurrent.futures` | Promises, event loop          |
+| **Async IO**                | Planned/fiber-aware                                                  | ✅                                            | ✅                                 | ❌ (manual/select/poll)                       | ✅                                             | ✅                             |
+| **Safety**                  | Pointer & region safety model                                        | Strong memory safety                         | Limited (GC prevents many errors) | Unsafe                                       | Safe but dynamic                              | Safe but dynamic              |
+| **FFI**                     | ✅ Easy (`import`-based)                                              | ✅ (`extern`, `bindgen`)                      | ✅ (Cgo)                           | ✅                                            | ✅ (via C extensions)                          | ✅ (via WASM or native addons) |
+| **Typing**                  | Static (function params), inferred locals                            | Full static                                  | Static (but loose)                | Manual, static                               | Dynamic                                       | Dynamic                       |
+| **Compilation Model**       | Custom bytecode + JIT (Cranelift)                                    | LLVM AOT                                     | Native binary                     | Native binary                                | Interpreted / Bytecode                        | JIT                           |
+| **Use Cases**               | JIT-compiled VMs, low-latency apps, embedded scripting, game engines | OS kernels, CLI tools, web servers, embedded | Network services, cloud backends  | Kernels, drivers, AAA games                  | Prototyping, scripting                        | Web, tooling, UIs             |
+| **Tooling**                 | None (yet)     | Cargo, Clippy, rust-analyzer                 | Go toolchain, pprof               | Make, CMake, gdb                             | Pip, Jupyter                                  | NPM, Webpack, Deno            |
+| **Memory Allocation Model** | Explicit regions, bump allocator, fiber-aware memory shaping         | RAII, allocator APIs                         | GC                                | malloc/free or allocators                    | GC                                            | GC                            |
 
-| Feature | **Zeta** | **Zig** | **Mojo** | **Rust** | **Go** | **Java** | **C#** | **C** | **C++** |
-|--------|---------|--------|---------|--------|------|--------|------|------|--------|
-| **Level** | Mid-level | Low-level | Low-to-mid | Low-to-mid | Mid | High | High | Low | Low-to-mid |
-| **Purpose** | Safe systems + JIT + fibers + metaprogramming | Systems, bare-metal | High-performance AI, Python interop | Safe systems | Concurrency & cloud | Enterprise apps | Windows, games, enterprise | OS dev, embedded | Games, performance apps |
-| **Performance** | Near-native (Cranelift JIT) | Native | Native | Native | Native | JIT-optimized | JIT-optimized | Native | Native |
-| **Memory Control** | Region-based (explicit), fiber-aware | Manual + optional safety | Region sets + safety | Ownership + lifetimes | GC | GC | GC | Manual | Manual + allocators |
-| **Safety** | Region & pointer safety | Manual or opt-in safety | Mojo-style region safety | Strong guarantees | Basic safety (via GC) | Safe runtime | Safe runtime | None | Optional (RAII, smart pointers) |
-| **Metaprogramming** | ✅ Yes (non-reflective, AST-level) | ✅ `comptime` | ✅ Macros & staged compilation | ⚠️ Limited macros | ❌ | ❌ | ❌ | ✅ Preprocessor/macros | ✅ Templates/macros |
-| **Reflection** | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ |
-| **FFI** | ✅ (`import`-based) | ✅ (C ABI) | ✅ Python interop | ✅ (`extern`) | ✅ (`Cgo`) | ✅ JNI | ✅ P/Invoke | Native | Native |
-| **Concurrency** | Fibers (`work`), multithreaded, core affinity | Threads, manual control | Planned (hardware parallelism) | Async + threads | Goroutines + channels | Threads + pools | `async`, tasks | POSIX threads | Threads, OpenMP |
-| **Async IO** | Planned, fiber-aware | Manual or libraries | Not yet clear | Yes | Yes | Yes | Yes | Manual (select/poll) | Partial (libs) |
-| **Typing** | Static (params), inferred locals | Static | Static (inferred) | Static | Static (loose) | Static | Static | Static | Static |
-| **Compilation Model** | Bytecode → Cranelift JIT | Native AOT | Staged AOT (MLIR) | LLVM AOT | Native AOT | JIT (HotSpot) | JIT (CLR) | Native | Native |
-| **Syntax** | Newline-sensitive, minimal | C-like | Pythonic + ML | C-like | C-like | Java-like | C-like | C | C++ (multi-paradigm) |
-| **Tooling** | Custom JIT, VM, profiler-aware | Zig build, LSP | Modular toolchain | Cargo, rust-analyzer | Go tools | Gradle/Maven | .NET SDK | Make, GDB | CMake, Clang, GDB |
-| **Memory Model** | Regions, bump allocators | Manual/arena | Region sets | Borrow checker | GC | GC | GC | Manual | Manual/RAII |
-| **Null Safety** | Region validity guarantees | Optional `?` | Region + linear types | `Option<T>` | Runtime nil checks | Optional (runtime) | Nullable types | None | Optional |
-| **Use Cases** | Embedded VMs, JIT, high control | OS dev, embedded | ML/AI, compute | OS, CLI, embedded | Backend services | Web, enterprise | Desktop, enterprise | Kernels, firmware | Game engines, HPC apps |
 
 
 ## 🧠 What Makes Zeta Unique?
