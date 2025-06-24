@@ -21,13 +21,10 @@ A memory-safe, low-level, JIT-compiled, to be made in a new generation of langua
 
 A language made to **touch the realms of possibility** in JIT, memory management and performance
 
-# Why Zeta?
-- JIT compilation: JIT compilation of zeta empowers many aspects of the language, such as long uptime performance, automatic profiling and no need to compile for every platform
-
-- Performant: Incredibly fast language, there's no garbage collection, no class loading, no dynamic typing, no type erasure (runtime monomorphization), no reflection (there's compile time meta programming)
-
-- Memory Safety: Memory safe language using lifetime sets, considerably safer than other languages like C without garbage collection like java, c#, go, python, javascript and typescript, while being relatively easy to learn
-
-- Extremely Versatile: Once alpha stages hits, versatility in the language will be on top of many major languages (You'll see 😉)
-
-I might be making insane claims, but the language development has been promising these results ^^
+| Category | **Zeta’s Uniqueness** |
+|---------|----------------------|
+| **Concurrency** | Combines simplicity with fine-grained control (fiber-level scheduling, profiling) |
+| **Performance Tuning** | Explicit memory regions, no GC, JIT profile-directed optimizations |
+| **Memory Safety** | Combines region sets with typed pointer rules |
+| **Metaprogramming** | AST-level, powerful compile-time capabilities without runtime overhead |
+| **Embeddability** | JIT-executed, modular VM is suitable for embedding in games, tools, and kernels |
