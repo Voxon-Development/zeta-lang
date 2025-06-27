@@ -1,4 +1,5 @@
-# zeta-lang
+# ALPHA STAGES
+# zeta-lang 
 New generation of JIT like you've never seen.
 
 Example:
@@ -16,20 +17,14 @@ main() {
 }
 ```
 
-Visibility modifiers are optional.
+A memory-safe, low-level, JIT-compiled, to be made in a new generation of languages like you've never seen, with extremely fast compilation.
 
-Current stuff to be done:
-- [x] OOP (Fully customizable)
-- [x] Functions (Return values too)
-- [x] Type inference
-- [ ] Extensive FFI and Importing (Being implemented)
-- [ ] SDK (Dependent on Extensive FFI and Importing and memory management)
-- [ ] Optimizations for generated IR
-- [x] If statements
-- [x] While statements
-- [x] For statements
-- [x] Match statements
-- [x] Arrays
-- [ ] Memory management
-- [x] Pointers
-- [ ] Casting (Partially done)
+A language made to **touch the realms of possibility** in JIT, memory management and performance
+
+| Category | **Zeta’s Uniqueness** |
+|---------|----------------------|
+| **Concurrency** | Combines simplicity with fine-grained control (fiber-level scheduling, profiling) |
+| **Performance Tuning** | Explicit memory regions, no GC, JIT profile-directed optimizations |
+| **Memory Safety** | Combines region sets with typed pointer rules |
+| **Metaprogramming** | AST-level, powerful compile-time capabilities without runtime overhead |
+| **Embeddability** | JIT-executed, modular VM is suitable for embedding in games, tools, and kernels |
