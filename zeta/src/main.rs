@@ -1,17 +1,12 @@
 mod vm;
 
+use crate::vm::virtualmachine::VirtualMachine;
+use clap::{Parser, Subcommand};
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use std::{fs, process};
-use std::any::Any;
 use std::time::Instant;
-use clap::{Parser, Subcommand};
-use zetac::{compile_to_ir, frontend, BackendModule, Codegen, compile_files_async};
-use zetac::ast::{ClassDecl, FuncDecl, Stmt};
-use zetac::codegen::ir::ir_compiler::IrCompiler;
-use zetac::codegen::ir::module::ZetaModule;
-use crate::vm::virtualmachine::VirtualMachine;
-use zetac::AsyncCompileError;
+use std::{fs, process};
+use zetac::{compile_files_async, compile_to_ir, BackendModule};
 
 #[derive(Parser)]
 #[command(name = "zeta")]
@@ -41,10 +36,83 @@ enum Commands {
     },
     Aot {
         file: PathBuf,
-
         #[arg(short, long)]
         output: Option<PathBuf>
     },
+}
+
+fn ensure_dir(path: &Path) -> std::io::Result<()> {
+    if !path.exists() {
+        fs::create_dir_all(path)?;
+    }
+    Ok(())
+}
+
+fn clean_target_dir(target_dir: &Path, verbose: bool) -> std::io::Result<()> {
+    if target_dir.exists() {
+        if verbose {
+            println!("Cleaning target directory: {}", target_dir.display());
+        }
+        std::fs::remove_dir_all(target_dir)?;
+    }
+    Ok(())
+}
+
+async fn build_project(verbose: bool) -> Result<(), Box<dyn Error>> {
+    let src_dir = Path::new("src");
+    let target_dir = Path::new("target");
+
+    if !src_dir.exists() {
+        return Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "src directory not found",
+        )));
+    }
+
+    // Ensure target directory exists
+    ensure_dir(target_dir)?;
+
+    // Find all .zeta files in src directory
+    let mut files = Vec::new();
+    for entry in walkdir::WalkDir::new(src_dir)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file())
+    {
+        if let Some(ext) = entry.path().extension() {
+            if ext == "zeta" {
+                files.push(entry.path().to_path_buf());
+            }
+        }
+    }
+
+    if files.is_empty() {
+        return Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "No .zeta files found in src directory",
+        )));
+    }
+
+    if verbose {
+        println!("Found {} source files", files.len());
+    }
+
+    // Compile all files
+    let (module, class_table) = compile_files_async(files.clone())
+        .await
+        .map_err(|e| {
+            eprintln!("Compilation failed: {}", e);
+            std::process::exit(1);
+        })?;
+
+    // Save the compiled module to target/
+    let output_path = target_dir.join("module.zb");
+
+    if verbose {
+        println!("Compilation successful. Output: {}", output_path.display());
+    }
+
+    Ok(())
 }
 
 #[tokio::main]
@@ -56,13 +124,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             run_files_async(vec![file], verbose).await?;
         },
         Some(Commands::Aot { file, output }) => {
-            // For AOT compilation, we'll still use the old synchronous version
-            // since we need to generate object files
             run_file(file, true, false, output)?;
         },
         None => {
             if let Some(file) = cli.file {
-                // For single file, use the async version for consistency
                 run_files_async(vec![file], cli.verbose).await?;
             } else {
                 eprintln!("No file specified. Use --help for usage information.");
@@ -81,11 +146,11 @@ async fn run_files_async(files: Vec<PathBuf>, verbose: bool) -> Result<(), Box<d
     
     let start_time = Instant::now();
     
-    let module = compile_files_async(files.clone())
+    let (module, class_table) = compile_files_async(files.clone())
         .await
         .map_err(|e| {
             eprintln!("Async compilation failed: {}", e);
-            std::process::exit(1);
+            process::exit(1);
         })?;
     
     let duration = start_time.elapsed();
@@ -96,7 +161,7 @@ async fn run_files_async(files: Vec<PathBuf>, verbose: bool) -> Result<(), Box<d
     }
     
     // Run the compiled code
-    let mut vm = VirtualMachine::new(module);
+    let mut vm = VirtualMachine::new(module, class_table.compressed);
     vm.run();
     
     Ok(())
@@ -105,7 +170,7 @@ async fn run_files_async(files: Vec<PathBuf>, verbose: bool) -> Result<(), Box<d
 pub fn run_file(file: PathBuf, native: bool, verbose: bool, native_output: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     let instant = Instant::now();
 
-    let module = compile_to_ir(file, native, native_output);
+    let module = compile_to_ir(file, false, native_output);
 
     match module {
         BackendModule::JIT(module, codegen) => {

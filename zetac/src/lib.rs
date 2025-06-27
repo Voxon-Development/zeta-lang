@@ -1,10 +1,12 @@
+
+
 use crate::ast::{ClassDecl, FuncDecl, Stmt};
 pub use crate::codegen::cranelift::compiler::Codegen;
-use cranelift::prelude::{types, AbiParam};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+
+use cranelift::prelude::{types, AbiParam};
 
 use crate::println::*;
 use cranelift_object::{ObjectBuilder, ObjectModule};

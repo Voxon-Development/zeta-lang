@@ -1,11 +1,11 @@
-use std::mem::{align_of, size_of};
-use ir::{VMValue, VmString};
-use crate::vm::memory::frames::StackFrame;
+pub(crate) use crate::vm::memory::frames::StackFrame;
+use ir::VMValue;
 
 #[derive(Debug, Clone, Default)]
 pub struct BumpStack {
     buffer: Vec<VMValue>,
     frames: Vec<StackFrame>,
+    class_initialization: Vec<ir::Class>
 }
 
 impl BumpStack {
@@ -13,6 +13,7 @@ impl BumpStack {
         Self {
             buffer: Vec::with_capacity(size),
             frames: Vec::new(),
+            class_initialization: Vec::new(),
         }
     }
 
@@ -34,6 +35,10 @@ impl BumpStack {
 
     pub fn offset(&self) -> usize {
         self.buffer.len()
+    }
+
+    pub fn push_class(&mut self, class: ir::Class) {
+        self.class_initialization.push(class);
     }
 
     pub fn get_frame(&self) -> Option<&StackFrame> {

@@ -1,12 +1,12 @@
 use crate::ast;
-use crate::codegen::ir::ir_compiler::IrCompiler;
+use crate::codegen::ir::ir_compiler::{ClassTable, IrCompiler};
 use crate::codegen::ir::module::ZetaModule;
 use crate::frontend::{self, lexer::Lexer, tokens};
 use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs;
-use tokio::sync::{Mutex, MutexGuard};
+use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 #[derive(Debug, thiserror::Error)]
@@ -23,7 +23,7 @@ pub enum AsyncCompileError {
 
 /// Compiles multiple files asynchronously and returns a single ZetaModule containing all the compiled code.
 /// Files are compiled in parallel, and the results are merged into a single module.
-pub async fn compile_files_async(files: Vec<PathBuf>) -> Result<ZetaModule, AsyncCompileError> {
+pub async fn compile_files_async(files: Vec<PathBuf>) -> Result<(ZetaModule, ClassTable), AsyncCompileError> {
     // Validate files before checking them
     let invalid_files: Vec<String> = files.iter()
         .filter_map(|path| if path.exists() { None } else { Some(path.file_name().unwrap().to_string_lossy().to_string()) })
@@ -32,6 +32,8 @@ pub async fn compile_files_async(files: Vec<PathBuf>) -> Result<ZetaModule, Asyn
     if !invalid_files.is_empty() {
         return Err(AsyncCompileError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, format!("Files not found: {:?}", invalid_files))));
     }
+    
+    let class_table = Arc::new(Mutex::new(ClassTable::new()));
 
     let module = Arc::new(Mutex::new(ZetaModule::new()));
     
@@ -40,14 +42,18 @@ pub async fn compile_files_async(files: Vec<PathBuf>) -> Result<ZetaModule, Asyn
     
     for file_path in files {
         let module: Arc<Mutex<ZetaModule>> = module.clone();
+        let class_table: Arc<Mutex<ClassTable>> = class_table.clone();
 
         let task: JoinHandle<Result<(), AsyncCompileError>> = tokio::spawn(async move {
             let content: String = fs::read_to_string(&file_path).await.map_err(AsyncCompileError::from)?;
-
-            if let Ok((_, functions, classes)) = process_file(content.as_str()).await {
+            if let Ok((_, functions, classes)) = 
+                    process_file(content.as_str()).await {
                 let mut lock = module.lock().await;
                 let mut compiler = IrCompiler::new(&mut lock);
                 compiler.compile(functions, classes);
+
+                let mut lock = class_table.lock().await;
+                lock.compressed.layouts.extend(compiler.classes.compressed.layouts);
             }
 
             Ok(())
@@ -57,11 +63,20 @@ pub async fn compile_files_async(files: Vec<PathBuf>) -> Result<ZetaModule, Asyn
         tasks.push(task);
     }
     
+    let mut failed = false;
     // Wait for all tasks to complete
     for task in tasks {
-        if let Err(e) = task.await {
-            eprintln!("Task failed: {}", e);
+        match task.await {
+            Err(e) => {
+                eprintln!("Task failed: {}", e);
+                failed = true;
+            },
+            _ => {}
         }
+    }
+    
+    if failed {
+        return Err(AsyncCompileError::Io(std::io::Error::new(std::io::ErrorKind::Other, "Compilation failed")));
     }
     
     // Extract the final module
@@ -69,7 +84,11 @@ pub async fn compile_files_async(files: Vec<PathBuf>) -> Result<ZetaModule, Asyn
         .expect("Failed to get inner Arc value")
         .into_inner();
     
-    Ok(module_guard)
+    let class_table_guard = Arc::into_inner(class_table)
+        .expect("Failed to get inner Arc value")
+        .into_inner();
+    
+    Ok((module_guard, class_table_guard))
 }
 
 /// Processes a single file's content and returns its compilation units
@@ -78,6 +97,8 @@ async fn process_file(content: &str) -> Result<(ast::FuncDecl, Vec<ast::FuncDecl
     let mut lexer = Lexer::new(content.to_string());
     let tokens = lexer.tokenize()
         .map_err(|_| AsyncCompileError::Lexer(lexer.errors))?;
+    
+    println!("Tokens: {:#?}", tokens);
     
     // Parse the tokens
     let stmts = frontend::parser::parse_program(tokens)

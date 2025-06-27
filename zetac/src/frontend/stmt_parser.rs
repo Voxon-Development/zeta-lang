@@ -48,7 +48,7 @@ impl<I: Iterator<Item = Token> + Clone> StmtParser<I> {
                     Some(expr) => statements.push(Stmt::ExprStmt(InternalExprStmt {
                         expr: Box::new(expr),
                     })),
-                    None => panic!("Unexpected token: {}", token.value),
+                    None => panic!("Unexpected token: {}", token),
                 }
             }
         }
@@ -318,7 +318,11 @@ impl<I: Iterator<Item = Token> + Clone> StmtParser<I> {
             let name = token.value;
             self.expect_token(TokenType::Colon, "Expected `:` in `for` loop"); // consume `:`
             let type_name = match self.tokens.next() {
-                Some(token) if token.value_type == TokenType::Identifier => token,
+                Some(token) if token.value_type == TokenType::Identifier  => token,
+                Some(token) if token.value_type == TokenType::Int || token.value_type == TokenType::I8
+                    || token.value_type == TokenType::I16 || token.value_type == TokenType::I32 || token.value_type == TokenType::I64
+                    || token.value_type == TokenType::U8 || token.value_type == TokenType::U16 || token.value_type == TokenType::U32 || token.value_type == TokenType::U64
+                    || token.value_type == TokenType::F32 || token.value_type == TokenType::F64 => token,
                 Some(token) => panic!("Expected identifier after `:` in param, got `{}`", token),
                 None => panic!("Unexpected end of input after `:` in param"),
             };
@@ -388,7 +392,15 @@ impl<I: Iterator<Item = Token> + Clone> StmtParser<I> {
     fn expect_token(&mut self, token_type: TokenType, error_message: &str) -> Token {
         match self.tokens.next() {
             Some(token) if token.value_type == token_type => token,
-            Some(token) => panic!("{}, got `{}`", error_message, token.value),
+            Some(token) => {
+                self.errors.push(ParserError {
+                    message: format!("{}, got `{}`", error_message, token.value),
+                    token
+                });
+                panic!("{}", error_message);
+
+
+            },
             None => panic!("{}", error_message),
         }
     }
@@ -433,8 +445,45 @@ impl<I: Iterator<Item = Token> + Clone> StmtParser<I> {
         }
     }
 
-    pub fn parse_expr(&mut self) -> Option<Expr> {
+    pub fn parse_expr_internal(&mut self) -> Option<Expr> {
         match self.tokens.next() {
+            Some(token) if token.value_type == TokenType::Identifier && self.tokens.peek().map_or(false, |t| t.value_type == TokenType::LBrace) => {
+                let ident = token.value;
+                self.expect_token(TokenType::LBrace, "Expected `{` after class name");
+
+                let mut arguments = Vec::new();
+                if self.tokens.peek().map_or(false, |t| t.value_type != TokenType::RBrace) {
+                    loop {
+                        arguments.push(self.parse_expr()?);
+                        if self.tokens.peek().map_or(false, |t| t.value_type == TokenType::Comma) {
+                            self.expect_token(TokenType::Comma, "Expected `,` after class init argument");
+                        } else {
+                            break;
+                        }
+                    }
+                }
+
+                self.expect_token(TokenType::RBrace, "Expected `}` after class init arguments");
+
+                Some(Expr::ClassInit {
+                    callee: Box::new(Expr::Ident(ident)),
+                    arguments
+                })
+            }
+
+            // binary
+
+            Some(token) if token.value_type.is_number() && self.tokens.peek().map_or(false, |t| t.value_type == TokenType::Plus) => {
+                let lhs = Expr::Number(token.value.parse().unwrap());
+                self.expect_token(TokenType::Plus, "Expected `+` after expression");
+                let rhs = self.parse_expr().expect("Expected expression after `+`");
+                Some(Expr::Binary {
+                    left: Box::new(lhs),
+                    op: Op::Add,
+                    right: Box::new(rhs)
+                })
+            }
+
             Some(token) if token.value_type == TokenType::LParen => {
                 let expr = self.parse_expr();
                 self.expect_token(TokenType::RParen, "Expected `)` after expression");
@@ -516,8 +565,7 @@ impl<I: Iterator<Item = Token> + Clone> StmtParser<I> {
             Some(token) if token.value_type == TokenType::Identifier && self.tokens.peek().map_or(false, |t| t.value_type == TokenType::LParen) => {
                 let ident = token.value;
                 self.expect_token(TokenType::LParen, "Expected `(` after identifier");
-                // make a loop to parse arguments
-                // arguments, but no trailing comma and no errors if there are no arguments
+                // make a loop to parse arguments, but no trailing comma and no errors if there are no arguments
                 let mut arguments = Vec::new();
                 if self.tokens.peek().map_or(false, |t| t.value_type != TokenType::RParen) {
                     loop {
@@ -640,7 +688,7 @@ impl<I: Iterator<Item = Token> + Clone> StmtParser<I> {
                 match self.tokens.next() {
                     Some(ident) if ident.value == "Region" => {},
                     Some(token) => self.errors.push(ParserError { message: format!("Expected \"Region\" got {}", token.value), token }),
-                    None => self.errors.push(ParserError { 
+                    None => self.errors.push(ParserError {
                         message: "Expected `Ident` after `@` but token list ended.".to_string(), token
                     })
                 }
@@ -651,9 +699,84 @@ impl<I: Iterator<Item = Token> + Clone> StmtParser<I> {
             Some(token) if token.value_type == TokenType::String => Some(Expr::String(token.value)),
             Some(token) if token.value_type == TokenType::Identifier => Some(Expr::Ident(token.value)),
 
-            _ => None,
+            Some(token) => {
+                self.errors.push(ParserError {
+                    message: format!("Unexpected token: Type: {:?}, Value: {}", token.value_type, token.value),
+                    token,
+                });
+                None
+            }
+            None => None,
         }
     }
+
+    pub fn parse_expr(&mut self) -> Option<Expr> {
+        let mut expr = self.parse_expr_internal()?;
+
+        // postfix loop (e.g. `.field`)
+        loop {
+            let peek_token = self.tokens.peek()?.clone();
+
+            if peek_token.value_type == TokenType::Dot {
+                self.tokens.next(); // consume `.`
+                match self.tokens.next() {
+                    Some(field_token) if field_token.value_type == TokenType::Identifier => {
+                        expr = Expr::FieldAccess {
+                            object: Box::new(expr),
+                            field: field_token.value,
+                        };
+                    }
+                    Some(other) => {
+                        self.errors.push(ParserError {
+                            message: "Expected field name after `.`".to_string(),
+                            token: other,
+                        });
+                        return None;
+                    }
+                    None => {
+                        self.errors.push(ParserError {
+                            message: "Unexpected end after `.`".to_string(),
+                            token: peek_token,
+                        });
+                        return None;
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+
+        // assignment detection
+        let peek_token = self.tokens.peek().cloned();
+        if let Some(token) = peek_token {
+            let op = match token.value_type {
+                TokenType::Equal => Op::Assign,
+                TokenType::AddAssign => Op::AddAssign,
+                TokenType::SubAssign => Op::SubAssign,
+                TokenType::MulAssign => Op::MulAssign,
+                TokenType::DivAssign => Op::DivAssign,
+                TokenType::ModAssign => Op::ModAssign,
+                TokenType::PowAssign => Op::PowAssign,
+                TokenType::BitAndAssign => Op::BitAndAssign,
+                TokenType::BitOrAssign => Op::BitOrAssign,
+                TokenType::BitXorAssign => Op::BitXorAssign,
+                TokenType::ShlAssign => Op::ShlAssign,
+                TokenType::ShrAssign => Op::ShrAssign,
+                _ => return Some(expr),
+            };
+
+            self.tokens.next(); // consume the assign token
+            let rhs = self.parse_expr()?;
+            return Some(Expr::Assignment {
+                lhs: Box::new(expr),
+                op,
+                rhs: Box::new(rhs),
+            });
+        }
+
+        Some(expr)
+    }
+
 
     pub fn parse_visibility(&mut self) -> Option<Visibility> {
         match self.tokens.peek() {

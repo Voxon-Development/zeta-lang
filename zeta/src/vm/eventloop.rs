@@ -1,3 +1,4 @@
+use std::io::Read;
 use crate::vm::{virtualmachine::VirtualMachine, fibers::Fiber};
 use crossbeam::deque::{Injector, Stealer, Worker};
 use rayon::ThreadPoolBuilder;
@@ -50,5 +51,9 @@ impl FiberScheduler {
                 !self.injector.is_empty() || !self.local.is_empty()
             }
         }
+    }
+    
+    pub fn shutdown(&self) {
+        
     }
 }

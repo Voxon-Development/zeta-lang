@@ -15,7 +15,10 @@ pub struct StackFrame {
     pub stack: BumpStack,
     
     // The owning function of this stack frame
-    pub function_id: u64
+    pub function_id: u64,
+    
+    // Current opcode being executed (used by instruction handlers)
+    pub current_opcode: u8,
 }
 
 impl StackFrame {
@@ -28,8 +31,15 @@ impl StackFrame {
             regions: HashMap::default(),
             local_count: 0,
             stack: BumpStack::new(2048),
-            function_id
+            function_id,
+            current_opcode: 0,
         }
+    }
+    
+    /// Create a new stack frame with default values for testing
+    #[cfg(test)]
+    pub fn new_test() -> Self {
+        Self::new(0, 0, 0)
     }
 
     pub fn push(&mut self, name: String, value: VMValue) {

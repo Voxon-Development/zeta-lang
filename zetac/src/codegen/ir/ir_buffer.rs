@@ -29,6 +29,11 @@ impl ByteWriter {
     }
 
     #[inline]
+    pub fn write_u64(&mut self, value: u64) {
+        self.buffer.extend_from_slice(&value.to_le_bytes());
+    }
+
+    #[inline]
     pub fn write_i64(&mut self, value: i64) {
         self.buffer.extend_from_slice(&value.to_le_bytes());
     }

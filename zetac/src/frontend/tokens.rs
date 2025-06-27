@@ -98,9 +98,21 @@ impl Token {
     }
 }
 
+impl TokenType {
+    #[inline]
+    pub fn is_number(&self) -> bool {
+        match self {
+            TokenType::U8 | TokenType::U16 | TokenType::U32 | TokenType::U64 | TokenType::U128 |
+            TokenType::I8 | TokenType::I16 | TokenType::I32 | TokenType::I64 | TokenType::I128 |
+            TokenType::F32 | TokenType::F64 | TokenType::Int => true,
+            _ => false
+        }
+    }
+}
+
 impl std::fmt::Display for Token {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.value)
+        write!(f, "Type: {:?}, Value: {}", self.value_type, self.value)
     }
 }
 

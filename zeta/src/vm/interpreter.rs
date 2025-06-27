@@ -52,6 +52,7 @@ pub const RETURN: u8 = Bytecode::Return as u8;
 pub const HALT: u8 = Bytecode::Halt as u8;
 pub const CALL: u8 = Bytecode::Call as u8;
 pub const TAIL_CALL: u8 = Bytecode::TailCall as u8;
+pub const CALL_IN_FIBER: u8 = Bytecode::CallInFiber as u8;
 pub const ARRAY_GET: u8 = Bytecode::ArrayGet as u8;
 pub const ARRAY_SET: u8 = Bytecode::ArraySet as u8;
 pub const GET_ARRAY_MUT: u8 = Bytecode::GetArrayMut as u8;
@@ -60,6 +61,7 @@ pub const GET_FIELD: u8 = Bytecode::GetField as u8;
 pub const ARRAY_ALLOC: u8 = Bytecode::ArrayAlloc as u8;
 pub const ARRAY_LEN: u8 = Bytecode::ArrayLen as u8;
 
+pub const PUSH_INT: u8 = Bytecode::PushInt as u8;
 pub const PUSH_I64: u8 = Bytecode::PushI64 as u8;
 pub const PUSH_F64: u8 = Bytecode::PushF64 as u8;
 pub const PUSH_U8: u8 = Bytecode::PushU8 as u8;
@@ -95,6 +97,7 @@ pub const ADDRESS_OF: u8 = Bytecode::AddressOf as u8;
 pub const DEREF: u8 = Bytecode::Deref as u8;
 pub const DEREF_MUT: u8 = Bytecode::DerefMut as u8;
 pub const CAST: u8 = Bytecode::Cast as u8;
+pub const CLASS_INIT: u8 = Bytecode::ClassInit as u8;
 
 #[macro_export] 
 macro_rules! binary_op_int {
@@ -109,7 +112,7 @@ macro_rules! binary_op_int {
 
         let lhs = match lhs_option {
             Some(vm_value) => vm_value,
-            None => panic!("RHS is None")
+            None => panic!("LHS is None")
         };
 
 
@@ -191,15 +194,35 @@ pub fn fetch_u16(function: &Vec<u8>, instruction_counter: &mut usize) -> u16 {
 }
 
 pub fn fetch_u32(code: &Vec<u8>, instruction_counter: &mut usize) -> u32 {
-    let bytes = &code[*instruction_counter..*instruction_counter + 3];
+    if *instruction_counter + 3 >= code.len() {
+        panic!("fetch_u32 out of bounds");
+    }
+    let bytes: [u8; 4] = [
+        code[*instruction_counter],
+        code[*instruction_counter + 1],
+        code[*instruction_counter + 2],
+        code[*instruction_counter + 3],
+    ];
     *instruction_counter += 4;
     u32::from_ne_bytes(bytes.try_into().unwrap())
 }
 
 pub fn fetch_u64(code: &Vec<u8>, instruction_counter: &mut usize) -> u64 {
-    let bytes = &code[*instruction_counter..*instruction_counter + 7];
+    if *instruction_counter + 7 >= code.len() {
+        panic!("fetch_u32 out of bounds");
+    }
+    let bytes: [u8; 8] = [
+        code[*instruction_counter],
+        code[*instruction_counter + 1],
+        code[*instruction_counter + 2],
+        code[*instruction_counter + 3],
+        code[*instruction_counter + 4],
+        code[*instruction_counter + 5],
+        code[*instruction_counter + 6],
+        code[*instruction_counter + 7],
+    ];
     *instruction_counter += 8;
-    u64::from_ne_bytes(bytes.try_into().unwrap())
+    u64::from_ne_bytes(bytes)
 }
 
 pub fn fetch_i8(code: &Vec<u8>, instruction_counter: &mut usize) -> i8 {

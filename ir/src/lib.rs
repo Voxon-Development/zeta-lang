@@ -112,6 +112,10 @@ pub enum Bytecode {
     PowAssign = 0x56,
     NewRegion = 0x57,
     StoreRegion = 0x58,
+    CallInFiber = 0x59,
+    LoadField = 0x5A,
+    StoreField = 0x5B,
+    ClassInit = 0x5C
 }
 
 impl TryFrom<u8> for Bytecode {
@@ -149,15 +153,24 @@ pub enum VMValue {
     Char(char),
     Ptr(usize),
     Str(VmString),
-    Array(usize, Box<VMValue>),
+    ResolvedStr(String),
+    Array(usize, *const VMValue),
     Region(usize),
     Void
+}
+
+unsafe impl Send for VMValue {}
+unsafe impl Sync for VMValue {}
+
+#[derive(Debug, Clone)]
+pub struct Class {
+    pub fields: Vec<VMValue>
 }
 
 impl Eq for VMValue {}
 
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u8)]
 pub enum BytecodeType {
     U8 = 0x60,
@@ -180,6 +193,12 @@ pub enum BytecodeType {
     Array = 0x71,
     Class = 0x72,
     Region = 0x73,
+}
+
+impl From<u8> for BytecodeType {
+    fn from(byte: u8) -> Self {
+        unsafe { std::mem::transmute(byte) }
+    }
 }
 
 impl fmt::Display for BytecodeType {

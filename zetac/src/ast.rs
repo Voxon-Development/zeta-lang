@@ -239,6 +239,10 @@ pub enum Expr {
         object: Box<Expr>,
         field: String
     },
+    Get {
+        object: Box<Expr>,
+        field: String
+    },
     Binary {
         left: Box<Expr>,
         op: Op,
@@ -247,10 +251,6 @@ pub enum Expr {
     Call {
         callee: Box<Expr>,
         arguments: Vec<Expr>,
-    },
-    Get {
-        object: Box<Expr>,
-        field: String
     },
     Assignment {
         lhs: Box<Expr>, 

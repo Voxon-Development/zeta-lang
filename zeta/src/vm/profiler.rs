@@ -7,7 +7,7 @@ pub struct Profiler {
     call_counts: HashMap<u64, FunctionCall>
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Default)]
 pub struct FunctionCall {
     pub count: u64,
     pub time_taken: TimeTaken
@@ -52,7 +52,7 @@ impl Profiler {
         &mut self.call_counts
     }
 
-    pub fn get_func_call_count(&self, index: u64) -> &FunctionCall {
-        self.call_counts.get(&index).unwrap()
+    pub fn get_func_call_count(&self, index: u64) -> FunctionCall {
+        self.call_counts.get(&index).cloned().unwrap_or(FunctionCall::default())
     }
 }
