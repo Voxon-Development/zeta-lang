@@ -1,24 +1,35 @@
-use crate::vm::memory::frames::{OptimizationFrame, StackFrame};
-use crate::vm::{functions, println, profiler};
-use ir::{Bytecode, VMValue};
-use std::sync::Arc;
-use parking_lot::Mutex;
-use crossbeam::channel::{unbounded, Receiver, Sender};
+use std::cell::LazyCell;
+// Core VM components
 use crate::vm::eventloop::FiberScheduler;
 use crate::vm::fibers::Fiber;
-use crate::vm::memory::heap;
-use crate::vm::memory::string_pool::StringPool;
-use zetac::codegen::ir::module::ZetaModule;
-
-use mimalloc;
-use zetac::ast::Visibility;
-use zetac::codegen::ir::module::Function;
-use zetac::codegen::ir::optimization::pass::OptimizationPassPriority;
-use zetac::codegen::ir::optimization::pass_manager::PassManager;
-use crate::{binary_op_cmp, binary_op_int};
+use crate::vm::instruction_handlers::{
+    arithmetic::ArithmeticHandler,
+    array_ops::ArrayOpsHandler,
+    class_ops::ClassInitHandler,
+    control_flow::ControlFlowHandler,
+    memory::MemoryHandler,
+    pointer_ops::PointerOpsHandler,
+    stack_ops::StackOpsHandler,
+    type_ops::TypeOpsHandler,
+    InstructionDispatcher
+};
 use crate::vm::interpreter::*;
-use crate::vm::memory::regions::RegionAllocator;
-use crate::vm::memory::stack;
+use crate::vm::memory::frames::{OptimizationFrame, StackFrame};
+use crate::vm::memory::heap;
+use crate::vm::memory::stack::BumpStack;
+use crate::vm::memory::string_pool::StringPool;
+use crate::vm::{functions, println, profiler};
+
+// External dependencies
+use crossbeam::channel::{unbounded, Receiver, Sender};
+use ir::VMValue;
+use mimalloc;
+use parking_lot::Mutex;
+use trc::SharedTrc;
+use zetac::codegen::ir::ir_compiler::CompressedClassTable;
+use zetac::codegen::ir::module::Function;
+use zetac::codegen::ir::module::ZetaModule;
+use zetac::codegen::ir::optimization::pass_manager::PassManager;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -27,86 +38,179 @@ unsafe impl Send for VirtualMachine {}
 unsafe impl Sync for VirtualMachine {}
 
 pub struct VirtualMachine {
-    pub(crate) stack: stack::BumpStack,
+    pub(crate) stack: BumpStack,
     pub(crate) heap: heap::HeapMemory,
     pub(crate) profiler: profiler::Profiler,
-    pub(crate) function_module: Arc<Mutex<ZetaModule>>,
-    pub(crate) pass_manager: Arc<Mutex<PassManager>>,
-    pub(crate) event_loop: FiberScheduler,
-    pub(crate) string_pool: StringPool,
+    pub(crate) function_module: SharedTrc<Mutex<ZetaModule>>,
+    pub(crate) pass_manager: SharedTrc<Mutex<PassManager>>,
+    pub(crate) event_loop: LazyCell<FiberScheduler>,
+    pub(crate) string_pool: SharedTrc<Mutex<StringPool>>,
     pub(crate) optimization_receiver: Receiver<OptimizationFrame>,
     pub(crate) optimization_sender: Sender<OptimizationFrame>,
-    pub(crate) region_allocator: RegionAllocator
+    pub(crate) instruction_dispatcher: InstructionDispatcher,
+    pub call_stack: Vec<StackFrame>,
+    pub(crate) max_stack_depth: usize,
+    pub(crate) current_stack_depth: usize
 }
 
 impl VirtualMachine {
-    #[inline]
-    pub fn new(mut function_module: ZetaModule) -> VirtualMachine {
-        // Let's add some native methods, like println_str
-        let println_str_function = Function {
-            name: "println_str".to_string(),
-            id: 2,
-            params: vec![],
-            return_type: None,
-            visibility: Some(Visibility::Public),
-            is_method: false,
-            is_main: false,
-            is_native: true,
-            native_pointer: Some(Box::new(println::println_str as *const u8)),
-            locals: vec![],
-            code: vec![],
-            optimization_level: OptimizationPassPriority::Max // To prevent the virtual machine from optimizing this function
-        };
-
-        function_module.add_function(println_str_function);
+    pub fn new(mut function_module: ZetaModule, class_table: CompressedClassTable) -> VirtualMachine {
+        // Register native methods
+        use zetac::codegen::ir::module::NativeFnPtr;
+        
+        let string_pool = Mutex::new(StringPool::new());
+        let string_pool = SharedTrc::new(string_pool);
+        
+        let println_fn = Function::new_native(
+            "println".to_string(),
+            println::println as NativeFnPtr
+        );
+        function_module.add_function(println_fn);
 
         let (optimization_sender, optimization_receiver) = unbounded();
+        
+        let mut instruction_dispatcher = InstructionDispatcher::new();
+        instruction_dispatcher.register_many_opcodes(
+            &[
+                ADD, SUB, MUL, DIV, MOD,
+                AND, OR, XOR, NOT, SHL, SHR,
+                EQ, NEQ, LT, LTE, GT, GTE,
+                ASSIGN, ADD_ASSIGN, SUB_ASSIGN, MUL_ASSIGN, DIV_ASSIGN, MOD_ASSIGN,
+                BIT_AND_ASSIGN, BIT_OR_ASSIGN, BIT_XOR_ASSIGN, SHL_ASSIGN, SHR_ASSIGN, POW_ASSIGN
+            ],
+            ArithmeticHandler,
+        );
+        
+        instruction_dispatcher.register(CAST, TypeOpsHandler);
+        
+        // Control flow
+        instruction_dispatcher.register_many_opcodes(
+            &[ 
+                BRANCH, RETURN, HALT
+            ],
+            ControlFlowHandler,
+        );
+        
+        instruction_dispatcher.register_many_opcodes(
+            &[ 
+                GET_FIELD, GET_ARRAY_MUT, SET_ARRAY_MUT, ARRAY_ALLOC, ARRAY_LEN, ARRAY_GET, ARRAY_SET
+            ],
+            PointerOpsHandler,
+        );
+        
+        instruction_dispatcher.register_many_opcodes(
+            &[ 
+                LOAD, STORE, LOAD_VAR, STORE_VAR, LOAD_GLOBAL, STORE_GLOBAL, LOAD_LOCAL, STORE_LOCAL
+            ],
+            MemoryHandler::new(),
+        );
+        
+        // Register class operations
+        instruction_dispatcher.register(
+            CLASS_INIT,
+            ClassInitHandler { class_table },
+        );
+
+        instruction_dispatcher.register_many_opcodes(
+            &[ 
+                GET_PTR, SET_PTR, GET_PTR_MUT, SET_PTR_MUT, ADDRESS_OF, DEREF, DEREF_MUT, CAST
+            ],
+            PointerOpsHandler,
+        );
+
+        instruction_dispatcher.register_many_opcodes(
+            &[ 
+                DUP, SWAP, POP, PUSH_BOOL, PUSH_STR, PUSH_INT,
+                PUSH_I8, PUSH_I16, PUSH_I32, PUSH_I64, PUSH_U8, PUSH_U16, PUSH_U32, PUSH_U64, PUSH_F32, PUSH_F64
+            ],
+            StackOpsHandler::new(string_pool.clone()),
+        );
+
+        instruction_dispatcher.register_many_opcodes(
+            &[
+                ARRAY_ALLOC, ARRAY_LEN, ARRAY_GET, ARRAY_SET, GET_ARRAY_MUT, SET_ARRAY_MUT
+            ],
+            ArrayOpsHandler,
+        );
+        
         VirtualMachine {
-            stack: stack::BumpStack::new(1024),
+            stack: BumpStack::new(1024),
             heap: heap::HeapMemory::new(),
             profiler: profiler::Profiler::new(),
-            function_module: Arc::new(Mutex::new(function_module)),
-            pass_manager: Arc::new(Mutex::new(PassManager::new())),
-            event_loop: FiberScheduler::new(),
-            string_pool: StringPool::new(),
+            function_module: SharedTrc::new(Mutex::new(function_module)),
+            pass_manager: SharedTrc::new(Mutex::new(PassManager::new())),
+            event_loop: LazyCell::new(|| FiberScheduler::new()),
+            string_pool,
             optimization_receiver,
             optimization_sender,
-            region_allocator: RegionAllocator::new()
+            instruction_dispatcher,
+            call_stack: Vec::new(),
+            max_stack_depth: 1024 * 1024, // 1MB stack
+            current_stack_depth: 0
         }
     }
 
     /// Run a function but in a fiber
     pub fn run_function_in_fiber(&mut self, function_id: u64) {
+        // Check stack depth before spawning new fiber
+        if self.current_stack_depth >= self.max_stack_depth {
+            panic!("Stack overflow: Maximum call stack depth of {} exceeded", self.max_stack_depth);
+        }
+        self.current_stack_depth += 1;
         self.event_loop.spawn(Fiber::new(function_id));
     }
 
     pub fn run_function(&mut self, function_id: u64, vm_args: Vec<VMValue>) {
-        let function_module = self.function_module.clone();
-
-        let function = {
-            function_module.lock().get_function(function_id).unwrap().clone()
+        // Check stack depth before calling function
+        if self.current_stack_depth >= self.max_stack_depth {
+            panic!("Stack overflow: Maximum call stack depth of {} exceeded", self.max_stack_depth);
+        }
+        
+        let mut function = {
+            let mut module = self.function_module.lock();
+            module.get_function_mut(function_id).cloned().unwrap() 
         };
 
-        if function.is_native && function.optimization_level == OptimizationPassPriority::Max {
-            functions::run_native_function(&function, &vm_args, &self.string_pool);
+        if function.is_native {
+            // For native functions, we need to pass the arguments as a raw pointer and length
+            let result = unsafe {
+                let resolved_args: Vec<VMValue> = vm_args.into_iter()
+                    .map(|arg| match arg {
+                        VMValue::Str(vm_str) => {
+                            println!("Resolving string: {}", vm_str);
+                            println!("String pool: {:#?}", self.string_pool);
+                            let lock = self.string_pool.lock();
+                            let resolved = lock.resolve_string(&vm_str);
+                            VMValue::ResolvedStr(resolved.to_owned())
+                        }
+                        other => other,
+                    })
+                    .collect();
+                if !resolved_args.is_empty() {
+                    functions::run_native_function(&function, resolved_args.as_ptr(), resolved_args.len())
+                } else {
+                    functions::run_native_function(&function, std::ptr::null(), 0)
+                }
+            };
+            
+            // If the function returns a value, push it to the stack
+            if let VMValue::Void = result {
+                // No return value
+            } else {
+                self.stack.push_vm(result);
+            }
             return;
         }
 
-        let now = std::time::Instant::now();
-        if function.is_native {
-            functions::run_native_function(&function, &vm_args, &self.string_pool);
-        } else {
-            let mut frame = StackFrame::new(0, 0, function_id);
-            // For non-native functions, push arguments to the stack
-            for arg in vm_args.into_iter().rev() {
-                frame.stack.push_vm(arg);
-            }
-            self.interpret_function(&mut frame, &mut function.code.clone());
+        let mut frame = StackFrame::new(0, 0, function_id);
+        for arg in vm_args.into_iter().rev() {
+            frame.stack.push_vm(arg);
         }
+        
+        let mut frame = StackFrame::new(0, 0, function_id);
+        self.interpret_function(&mut frame, &mut function.code);
+        self.current_stack_depth += 1;
 
-        self.profiler.record_call(function_id, now.elapsed().as_nanos());
-
-        // Offload optimization to a queue
         let call_count = self.profiler.get_func_call_count(function_id);
         let optimization_frame = OptimizationFrame {
             function_id,
@@ -114,6 +218,30 @@ impl VirtualMachine {
         };
         self.optimization_sender.send(optimization_frame).unwrap();
     }
+
+    /*pub fn execute(&mut self) {
+        while let Some(frame) = self.call_stack.last_mut() {
+            let function_code = {
+                let module = self.function_module.lock();
+                module.get_function(frame.function_id).cloned().unwrap()
+            };
+            
+            let code = &function_code.code;
+
+            while frame.program_counter < code.len() {
+                let instr = code[frame.program_counter];
+                frame.program_counter += 1;
+
+                if instr == RETURN {
+                    self.call_stack.pop();
+                    break;
+                }
+
+                self.interpret_instruction(instr, frame, code);
+            }
+        }
+    }*/
+
 
     pub fn run(&mut self) {
         // Pre program
@@ -124,7 +252,7 @@ impl VirtualMachine {
             while self.tick() {}
 
             // Post program
-            self.heap.free_all();
+            self.halt()
         } else {
             eprintln!("No entry point found, please add a main function like the following:");
             eprintln!("fun main() {{\n    println_str(\"Hello World!\");\n}}");
@@ -133,7 +261,8 @@ impl VirtualMachine {
     }
 
     pub fn tick(&mut self) -> bool {
-        let event_loop = std::mem::replace(&mut self.event_loop, FiberScheduler::new());
+        
+        let event_loop = std::mem::replace(&mut self.event_loop, LazyCell::new(|| FiberScheduler::new()));
         let work_left = event_loop.tick(self);
         self.event_loop = event_loop;
 
@@ -161,385 +290,100 @@ impl VirtualMachine {
         }
     }
 
-    pub fn interpret_instruction(&mut self, instr: u8, frame: &mut StackFrame, function: &Vec<u8>) -> bool {
-        match instr {
-            ADD => binary_op_int!(frame.stack, +),
-            SUB => binary_op_int!(frame.stack, -),
-            MUL => binary_op_int!(frame.stack, *),
-            DIV => binary_op_int!(frame.stack, /),
-            MOD => binary_op_int!(frame.stack, %),
-            AND => binary_op_int!(frame.stack, &),
-            OR => binary_op_int!(frame.stack, |),
-            XOR => binary_op_int!(frame.stack, ^),
-            NOT => {
-                let val = frame.stack.pop_vm();
-                match val {
-                    Some(VMValue::Bool(val)) => {
-                        frame.stack.push_vm(VMValue::Bool(!val));
-                    }
-                    _ => panic!("Invalid type for NOT")
-                }
+    /// Interpret a single instruction.
+    ///
+    /// Returns `true` if execution should continue, or `false` if the current function should return.
+    pub fn interpret_instruction(&mut self, instr: u8, frame: &mut StackFrame, function: &[u8]) {
+        // Set the current opcode in the frame for handlers to access
+        frame.current_opcode = instr;
+
+        if instr == HALT {
+            self.halt();
+            return;
+        }
+        
+        // Handle RETURN instruction to properly decrement stack depth
+        if instr == RETURN {
+            if self.current_stack_depth > 0 {
+                self.current_stack_depth -= 1;
             }
-            SHL => binary_op_int!(frame.stack, <<),
-            SHR => binary_op_int!(frame.stack, >>),
-
-            EQ => binary_op_cmp!(frame.stack, ==),
-            NEQ => binary_op_cmp!(frame.stack, !=),
-            LT => binary_op_cmp!(frame.stack, <),
-            LTE => binary_op_cmp!(frame.stack, <=),
-            GT => binary_op_cmp!(frame.stack, >),
-            GTE => binary_op_cmp!(frame.stack, >=),
-
-            PUSH_U8 => {
-                let v = fetch_u8(function, &mut frame.program_counter);
-                frame.stack.push_vm(VMValue::U8(v));
-            }
-
-            PUSH_I8 => {
-                let v = fetch_i8(function, &mut frame.program_counter);
-                frame.stack.push_vm(VMValue::I8(v));
-            }
-
-            PUSH_U16 => {
-                let v = fetch_u16(function, &mut frame.program_counter);
-                frame.stack.push_vm(VMValue::U16(v))
-            }
-
-            PUSH_I16 => {
-                let v = fetch_i16(function, &mut frame.program_counter);
-                frame.stack.push_vm(VMValue::I16(v))
-            }
-
-            PUSH_U32 => {
-                let v = fetch_u32(function, &mut frame.program_counter);
-                frame.stack.push_vm(VMValue::U32(v))
-            }
-
-            PUSH_I32 => {
-                let v = fetch_i32(function, &mut frame.program_counter);
-                frame.stack.push_vm(VMValue::I32(v))
-            }
-
-            PUSH_F32 => {
-                let v = fetch_f32(function, &mut frame.program_counter);
-                frame.stack.push_vm(VMValue::F32(v))
-            }
-
-            PUSH_F64 => {
-                let v = fetch_f64(function, &mut frame.program_counter);
-                frame.stack.push_vm(VMValue::F64(v))
-            }
-
-            PUSH_U64 => {
-                let v = fetch_u64(function, &mut frame.program_counter);
-                frame.stack.push_vm(VMValue::U64(v))
-            }
-
-            PUSH_I64 => {
-                let v = fetch_i64(function, &mut frame.program_counter);
-                frame.stack.push_vm(VMValue::I64(v))
-            }
-
-
-            PUSH_BOOL => {
-                let b = fetch_u8(function, &mut frame.program_counter) != 0;
-                frame.stack.push_vm(VMValue::Bool(b))
-            }
-
-            PUSH_STR => {
-                let offset = fetch_u16(function, &mut frame.program_counter);
-                let s = fetch_string(offset, function, &mut frame.program_counter);
-
-                let id = self.string_pool.intern(&s);
-                frame.stack.push_vm(VMValue::Str(id))
-            }
-
-            POP => {
-                frame.stack.pop_vm();
-            }
-
-            DUP => {
-                let v = frame.stack.peek_vm().cloned();
-                frame.stack.push_vm(v.unwrap());
-            }
-
-            SWAP => {
-                let v1 = frame.stack.pop_vm().unwrap();
-                let v2 = frame.stack.pop_vm().unwrap();
-                frame.stack.push_vm(v1);
-                frame.stack.push_vm(v2);
-            }
-
-            RETURN => {
-                return false;
-            }
-
-            HALT => {
-                std::process::exit(0);
-            }
-
-            // Jumps
-            JUMP => {
-                frame.program_counter += 1;
-                let offset = fetch_i16(function, &mut frame.program_counter) as usize;
-                frame.program_counter += offset;
-            }
-
-            JUMP_IF_TRUE => {
-                frame.program_counter += 1;
-                let offset = fetch_i16(function, &mut frame.program_counter) as usize;
-                let condition = frame.stack.pop_vm();
-                match condition {
-                    Some(VMValue::Bool(condition)) => {
-                        if condition {
-                            frame.program_counter += offset;
-                        }
-                    }
-                    _ => panic!("Invalid type for JUMP_IF_TRUE")
-                }
-            }
-
-            JUMP_IF_FALSE => {
-                frame.program_counter += 1;
-                let offset = fetch_i16(function, &mut frame.program_counter) as usize;
-                let condition = frame.stack.pop_vm();
-                match condition {
-                    Some(VMValue::Bool(condition)) => {
-                        if condition {
-                            frame.program_counter += offset;
-                        }
-                    }
-                    _ => panic!("Invalid type for JUMP_IF_TRUE")
-                }
-            }
-
-            BRANCH => {
-                todo!("BRANCH");
-            }
-
-            // Regions
-            NEW_REGION => {
-                frame.program_counter += 1;
-                let offset = fetch_u16(function, &mut frame.program_counter);
-                let name_as_string = fetch_string(offset, function, &mut frame.program_counter);
-                let name = name_as_string.trim();
-                frame.push_region(
-                    self.string_pool.intern(name),
-                    self.region_allocator.new_region()
-                );
-            }
-
-            CALL => {
-                let name = fetch_string_u16_len(function, &mut frame.program_counter);
-
-                let arity = fetch_u8(function, &mut frame.program_counter);
-
-                // Pop arguments in reverse order (or leave on stack if callee expects to read)
-                let mut arguments = Vec::with_capacity(arity as usize);
-                for _ in 0..arity {
-                    arguments.push(frame.stack.pop_vm().unwrap());
-                }
-                arguments.reverse(); // preserve original order
-
-                let func = {
-                    self.function_module.lock().get_function_by_name(&name)
-                };
-                if let Some(func) = func {
-                    self.run_function(func.id, arguments);
-                } else {
-                    eprintln!("Function {} not found", name);
-                    std::process::exit(1);
-                }
-            }
-
-            ASSIGN => {
-                let value = frame.stack.pop_vm().expect("Stack underflow on Assign");
-                frame.stack.push_vm(value);
-            }
-
-            ADD_ASSIGN => binary_op_int!(frame.stack, +),
-
-            SUB_ASSIGN => binary_op_int!(frame.stack, -),
-
-            MUL_ASSIGN => binary_op_int!(frame.stack, *),
-
-            DIV_ASSIGN => binary_op_int!(frame.stack, /),
-
-            MOD_ASSIGN => binary_op_int!(frame.stack, %),
-
-            SHL_ASSIGN => binary_op_int!(frame.stack, <<),
-            SHR_ASSIGN => binary_op_int!(frame.stack, >>),
-
-            BIT_AND_ASSIGN => binary_op_int!(frame.stack, &),
-
-            BIT_OR_ASSIGN => binary_op_int!(frame.stack, |),
-
-            BIT_XOR_ASSIGN => binary_op_int!(frame.stack, ^),
-
-            POW_ASSIGN => {
-                let rhs_option = frame.stack.pop_vm();
-                let lhs_option = frame.stack.pop_vm();
-
-                let rhs = match rhs_option {
-                    Some(vm_value) => vm_value,
-                    None => panic!("RHS is None")
-                };
-
-                let lhs = match lhs_option {
-                    Some(vm_value) => vm_value,
-                    None => panic!("RHS is None")
-                };
-
-                match (lhs.clone(), rhs.clone()) {
-                    (VMValue::I32(lhs), VMValue::I32(rhs)) => {
-                        frame.stack.push_vm(VMValue::I32(lhs.pow(rhs as u32)));
-                    }
-                    (VMValue::I64(lhs), VMValue::I64(rhs)) => {
-                        frame.stack.push_vm(VMValue::I64(lhs.pow(rhs as u32)));
-                    }
-                    (VMValue::U32(lhs), VMValue::U32(rhs)) => {
-                        frame.stack.push_vm(VMValue::U32(lhs.pow(rhs)));
-                    }
-                    (VMValue::U64(lhs), VMValue::U64(rhs)) => {
-                        frame.stack.push_vm(VMValue::U64(lhs.pow(rhs as u32)));
-                    }
-                    (VMValue::F32(lhs), VMValue::F32(rhs)) => {
-                        frame.stack.push_vm(VMValue::F32(lhs.powf(rhs)));
-                    }
-                    (VMValue::F64(lhs), VMValue::F64(rhs)) => {
-                        frame.stack.push_vm(VMValue::F64(lhs.powf(rhs)));
-                    }
-                    (VMValue::I8(lhs), VMValue::I8(rhs)) => {
-                        frame.stack.push_vm(VMValue::I8(lhs.pow(rhs as u32)));
-                    }
-                    (VMValue::I16(lhs), VMValue::I16(rhs)) => {
-                        frame.stack.push_vm(VMValue::I16(lhs.pow(rhs as u32)));
-                    }
-                    (VMValue::U8(lhs), VMValue::U8(rhs)) => {
-                        frame.stack.push_vm(VMValue::U8(lhs.pow(rhs as u32)));
-                    }
-                    (VMValue::U16(lhs), VMValue::U16(rhs)) => {
-                        frame.stack.push_vm(VMValue::U16(lhs.pow(rhs as u32)));
-                    }
-                    (VMValue::Ptr(lhs), VMValue::Ptr(rhs)) => {
-                        frame.stack.push_vm(VMValue::Ptr(lhs.pow(rhs as u32)));
-                    }
-
-                    _ => panic!("Invalid types for binary operation: {:?} {:?}", lhs, rhs)
-                }
-            }
-
-            TAIL_CALL => {
-                todo!("TAIL_CALL");
-            }
-
-            LOAD => {
-                todo!("LOAD");
-            }
-
-            STORE => {
-                todo!("STORE");
-            }
-
-            LOAD_VAR => {
-                let offset = fetch_u16(function, &mut frame.program_counter);
-                let name = fetch_string(offset, function, &mut frame.program_counter);
-
-                match frame.locals.get(&name) {
-                    Some(value) => frame.stack.push_vm(value.clone()),
-                    None => panic!("Undefined local variable '{}'", name),
-                }
-            }
-
-            STORE_VAR => {
-                let offset = fetch_u16(function, &mut frame.program_counter);
-                let name = fetch_string(offset, function, &mut frame.program_counter);
-
-                let value = frame.stack.pop_vm().expect("Stack underflow in STORE_VAR");
-                frame.locals.insert(name.to_string(), value);
-            }
-
-            LOAD_GLOBAL => {
-                todo!("LOAD_GLOBAL");
-            }
-
-            STORE_GLOBAL => {
-                todo!("STORE_GLOBAL");
-            }
-
-            LOAD_LOCAL => {
-                todo!("LOAD_LOCAL");
-            }
-
-            STORE_LOCAL => {
-                todo!("STORE_LOCAL");
-            }
-
-            GET_PTR => {
-                todo!("GET_PTR");
-            }
-
-            SET_PTR => {
-                todo!("SET_PTR");
-            }
-
-            GET_PTR_MUT => {
-                todo!("GET_PTR_MUT");
-            }
-
-            SET_PTR_MUT => {
-                todo!("SET_PTR_MUT");
-            }
-
-            ADDRESS_OF => {
-                todo!("ADDRESS_OF");
-            }
-
-            DEREF => {
-                todo!("DEREF");
-            }
-
-            DEREF_MUT => {
-                todo!("DEREF_MUT");
-            }
-
-            CAST => {
-                todo!("CAST");
-            }
-
-            ARRAY_GET => {
-                todo!("ARRAY_GET");
-            }
-
-            ARRAY_SET => {
-                todo!("ARRAY_SET");
-            }
-
-            ARRAY_LEN => {
-                todo!("ARRAY_LEN");
-            }
-
-            ARRAY_ALLOC => {
-                todo!("ARRAY_ALLOC");
-            }
-
-            GET_ARRAY_MUT => {
-                todo!("GET_ARRAY_MUT");
-            }
-
-            SET_ARRAY_MUT => {
-                todo!("SET_ARRAY_MUT");
-            }
-
-            GET_FIELD => {
-                todo!("GET_FIELD");
-            }
-
-            _ => {
-                panic!("Unimplemented opcode: {instr}");
-            }
+            return;
         }
 
-        true
+        if instr == CALL {
+            if self.current_stack_depth >= self.max_stack_depth {
+                panic!("Stack overflow: Maximum call stack depth of {} exceeded", self.max_stack_depth);
+            }
+            self.current_stack_depth += 1;
+
+            let (name, arguments, func) = self.get_function_metadata(frame, &function.to_vec());
+            if let Some(func) = func {
+                self.run_function(func.id, arguments);
+            } else {
+                eprintln!("Function {} not found", name);
+                self.halt();
+            }
+            return;
+        }
+
+        if instr == CALL_IN_FIBER {
+            if self.current_stack_depth >= self.max_stack_depth {
+                panic!("Stack overflow: Maximum call stack depth of {} exceeded", self.max_stack_depth);
+            }
+            self.current_stack_depth += 1;
+
+            let (name, _, func) = self.get_function_metadata(frame, &function.to_vec());
+            if let Some(func) = func {
+                self.run_function_in_fiber(func.id);
+            } else {
+                eprintln!("Function {} not found", name);
+                self.halt();
+            }
+            return;
+        }
+
+        let result = self.instruction_dispatcher.execute(instr, frame, function);
+        match result {
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("Error at instruction {} (0x{:x}): {}", instr, instr, e);
+                if let Some(func) = self.function_module.lock().get_function(frame.function_id) {
+                    eprintln!("In function: {} (ID: {})", func.name, frame.function_id);
+                }
+                eprintln!("Stack trace (depth: {}):", self.current_stack_depth);
+                for (i, frame) in self.call_stack.iter().enumerate() {
+                    if let Some(func) = self.function_module.lock().get_function(frame.function_id) {
+                        eprintln!("  #{}: {} (PC: {})", i, func.name, frame.program_counter);
+                    } else {
+                        eprintln!("  #{}: <unknown> (ID: {}, PC: {})", i, frame.function_id, frame.program_counter);
+                    }
+                }
+                self.halt();
+            }
+        }
+    }
+
+    pub(crate) fn halt(&mut self) {
+        self.event_loop.shutdown();
+        self.heap.free_all();
+        std::process::exit(1);
+    }
+
+    fn get_function_metadata(&mut self, frame: &mut StackFrame, function: &Vec<u8>) -> (String, Vec<VMValue>, Option<Function>) {
+        let name = fetch_string_u16_len(function, &mut frame.program_counter);
+
+        let arity = fetch_u8(function, &mut frame.program_counter);
+
+        // Pop arguments in reverse order (or leave on stack if callee expects to read)
+        let mut arguments = Vec::with_capacity(arity as usize);
+        for _ in 0..arity {
+            arguments.push(frame.stack.pop_vm().unwrap());
+        }
+        arguments.reverse(); // preserve original order
+
+        let func = {
+            self.function_module.lock().get_function_by_name(&name).cloned()
+        };
+        (name, arguments, func)
     }
 }
