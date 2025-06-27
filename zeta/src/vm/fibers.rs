@@ -1,4 +1,5 @@
 use crate::vm::functions;
+use crate::vm::interpreter::{CALL, CALL_IN_FIBER, RETURN};
 use crate::vm::memory::frames;
 use crate::vm::memory::stack::BumpStack;
 use crate::vm::virtualmachine::VirtualMachine;
@@ -35,23 +36,51 @@ impl Fiber {
     pub(crate) fn step(&mut self, vm: &mut VirtualMachine) {
         if self.done {
             self.reset();
+            // Decrement stack depth when fiber completes
+            if vm.current_stack_depth > 0 {
+                vm.current_stack_depth -= 1;
+            }
             return;
         }
-
+        
+        // Check stack depth before executing instruction
+        if vm.current_stack_depth >= vm.max_stack_depth {
+            panic!(
+                "Stack overflow in fiber: Maximum call stack depth of {} exceeded",
+                vm.max_stack_depth
+            );
+        }
+        
         let func = {
             let module = vm.function_module.lock();
-            module.get_function(self.frame.function_id).cloned().unwrap()
+            module.get_function(self.frame.function_id).cloned().unwrap_or_else(|| {
+                panic!("Function with ID {} not found", self.frame.function_id);
+            })
         };
+        
         let function = &func.code;
         
-        // 2. Do the rest (no double borrow now)
-        if let Some(instr) = function.get(self.frame.program_counter) {
-            self.frame.program_counter += 1;
+        if let Some(&instr) = function.get(self.frame.program_counter) {
+            self.frame.program_counter = self.frame.program_counter.wrapping_add(1);
             let frame = &mut self.frame;
-            vm.interpret_instruction(*instr, frame, function);
+            
+            // Handle function calls specially to track stack depth
+            if instr == CALL || instr == CALL_IN_FIBER {
+                vm.current_stack_depth += 1;
+            }
+            
+            vm.interpret_instruction(instr, frame, function);
+            
+            // Handle returns to properly track stack depth
+            if instr == RETURN && vm.current_stack_depth > 0 {
+                vm.current_stack_depth -= 1;
+            }
         } else {
+            // End of function, decrement stack depth
+            if vm.current_stack_depth > 0 {
+                vm.current_stack_depth -= 1;
+            }
             self.done = true;
         }
-
     }
 }

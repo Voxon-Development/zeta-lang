@@ -1,40 +1,44 @@
 use crate::vm::memory::frames::OptimizationFrame;
-use crate::vm::functions;
-use std::sync::Arc;
-use parking_lot::Mutex;
 use ir::VMValue;
+use parking_lot::Mutex;
+use trc::SharedTrc;
+use zetac::codegen::cranelift::compiler_from_ir::IRToCraneliftCompiler;
 pub(crate) use zetac::codegen::ir::module::Function;
 use zetac::codegen::ir::module::ZetaModule;
 use zetac::codegen::ir::optimization::pass::OptimizationPassPriority;
-use zetac::codegen::ir::optimization::pass_manager;
 use zetac::codegen::ir::optimization::pass_manager::PassManager;
-use crate::vm::memory::string_pool::StringPool;
 
-#[allow(dead_code)]
-
-type NativeFn = fn(&[VMValue], &StringPool);
-
-pub(crate) fn run_native_function(function: &Function, args: &[VMValue], string_pool: &StringPool) {
-    let pointer = function.native_pointer.clone().unwrap();
-    let function: NativeFn = unsafe { std::mem::transmute::<*const u8, NativeFn>(*pointer) };
-    function(args, string_pool);
+pub(crate) unsafe fn run_native_function(function: &Function, args: *const VMValue, len: usize) -> VMValue {
+    if let Some(func) = function.native_pointer {
+        unsafe { func(args, len) }
+    } else {
+        panic!("Tried to call native function, but no native pointer was set");
+    }
 }
 
+
 pub(crate) fn compile_function(function: &mut Function) {
+    let mut compiler_from_ir = IRToCraneliftCompiler::new();
+    
+    let name = function.name.as_str();
+    compiler_from_ir.compile_function(name, function.code.as_slice())
+        .expect("Failed to compile the function.");
+    
+    function.native_pointer = compiler_from_ir.create_vm_function_wrapper(name);
     function.is_native = true;
 }
 
-pub(crate) fn optimize_function_with_priority(priority: OptimizationPassPriority, function: &mut Function, pass_manager: &mut pass_manager::PassManager, module: &ZetaModule) {
+pub(crate) fn optimize_function_with_priority(priority: OptimizationPassPriority, function: &mut Function, pass_manager: &mut PassManager, module: &ZetaModule) {
     pass_manager.run_passes_with_priority(priority, &mut function.code, module).unwrap()
 }
 
 #[inline]
 pub(crate) async fn optimize_function_async(
-    function_module: Arc<Mutex<ZetaModule>>,
-    pass_manager: Arc<Mutex<PassManager>>,
+    function_module: SharedTrc<Mutex<ZetaModule>>,
+    pass_manager: SharedTrc<Mutex<PassManager>>,
     task: OptimizationFrame,
 ) {
-    let mut function = {
+    let mut function: Function = {
         function_module.lock()
             .get_function(task.function_id)
             .cloned()
@@ -52,7 +56,7 @@ pub(crate) async fn optimize_function_async(
 }
 
 #[inline]
-pub(crate) fn optimize_function(function: &mut Function, function_call: OptimizationFrame, pass_manager: &mut pass_manager::PassManager, module: &ZetaModule) {
+pub(crate) fn optimize_function(function: &mut Function, function_call: OptimizationFrame, pass_manager: &mut PassManager, module: &ZetaModule) {
     if function.optimization_level == OptimizationPassPriority::Max {
         return;
     }
