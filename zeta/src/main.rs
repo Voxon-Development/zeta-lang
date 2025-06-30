@@ -6,6 +6,8 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use std::{fs, process};
+use parking_lot::Mutex;
+use trc::SharedTrc;
 use zetac::{compile_files_async, compile_to_ir, BackendModule};
 
 #[derive(Parser)]
@@ -161,11 +163,28 @@ async fn run_files_async(files: Vec<PathBuf>, verbose: bool) -> Result<(), Box<d
     }
     
     // Run the compiled code
-    let mut vm = VirtualMachine::new(module, class_table.compressed);
-    vm.run();
-    
+    let vm = VirtualMachine::new(module, class_table.compressed);
+    let vm = boot(vm);
+    let optional_main_function_id = vm.lock().function_module.lock().entry;
+    if let Some(main_function_id) = optional_main_function_id {
+        vm.lock().run_function(main_function_id, Vec::new());
+        vm.lock().halt();
+    } else {
+        eprintln!("No entry point found, please add a main function like the following:");
+        eprintln!("fun main() {{\n    println_str(\"Hello World!\");\n}}");
+        std::process::exit(1);
+    }
+
     Ok(())
 }
+
+pub fn boot(vm: VirtualMachine) -> SharedTrc<Mutex<VirtualMachine>> {
+    let shared = SharedTrc::new(Mutex::new(vm));
+    //shared.lock().event_loop.run(shared.clone());
+
+    shared
+}
+
 
 pub fn run_file(file: PathBuf, native: bool, verbose: bool, native_output: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     let instant = Instant::now();
