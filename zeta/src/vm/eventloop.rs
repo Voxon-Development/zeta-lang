@@ -1,22 +1,36 @@
-use std::io::Read;
 use crate::vm::{virtualmachine::VirtualMachine, fibers::Fiber};
 use crossbeam::deque::{Injector, Stealer, Worker};
-use rayon::ThreadPoolBuilder;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::Duration;
+use parking_lot::Mutex;
+use trc::SharedTrc;
 
-#[derive(Debug)]
+#[derive(Default)]
 pub struct FiberScheduler {
-    injector: Arc<Injector<Fiber>>,
-    local: Worker<Fiber>, // local worker queue for this thread
+    injector: SharedTrc<Injector<Fiber>>,
+    stealers: Vec<Stealer<Fiber>>,
+    workers: Vec<Worker<Fiber>>,
+    shutdown_flag: SharedTrc<AtomicBool>,
 }
 
 impl FiberScheduler {
-    pub fn new() -> Self {
+    pub fn new(num_threads: usize) -> Self {
+        let injector = SharedTrc::new(Injector::new());
+        let mut workers = Vec::new();
+        let mut stealers = Vec::new();
+
+        for _ in 0..num_threads {
+            let worker = Worker::new_fifo();
+            stealers.push(worker.stealer());
+            workers.push(worker);
+        }
+
         Self {
-            injector: Arc::new(Injector::new()),
-            local: Worker::new_fifo(),
+            injector,
+            stealers,
+            workers,
+            shutdown_flag: SharedTrc::new(AtomicBool::new(false))
         }
     }
 
@@ -24,36 +38,65 @@ impl FiberScheduler {
         self.injector.push(fiber);
     }
 
-    /// Tick the scheduler once: process 1 fiber (or batch-steal from global queue).
-    /// Returns `true` if there are still fibers to run.
-    pub fn tick(&self, vm: &mut VirtualMachine) -> bool {
-        let fiber = self
-            .local
-            .pop()
-            .or_else(|| self.injector.steal_batch_and_pop(&self.local).success());
+    /// Tick one step of the fiber scheduler for the thread with given ID.
+    /// Returns `true` if any work was done.
+    pub fn run(&mut self, vm: SharedTrc<Mutex<VirtualMachine>>) {
+        let injector = self.injector.clone();
+        let stealers = self.stealers.clone();
+        let shutdown_flag = self.shutdown_flag.clone();
 
-        match fiber {
-            Some(mut fiber) => {
-                fiber.step(vm);
+        for (_, local) in self.workers.drain(..).enumerate() {
+            let stealers = stealers.clone();
+            let injector = injector.clone();
+            let shutdown_flag = shutdown_flag.clone();
+            let vm = vm.clone();
 
-                if !fiber.done && !fiber.yielded {
-                    self.local.push(fiber);
-                } else if fiber.yielded {
-                    self.injector.push(fiber);
-                } else {
-                    fiber.reset(); // optional: clean-up/reset
+            thread::spawn(move || {
+                loop {
+                    if shutdown_flag.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let fiber = local.pop()
+                        .or_else(|| injector.steal_batch_and_pop(&local).success())
+                        .or_else(|| {
+                            for stealer in &stealers {
+                                if let Some(fiber) = stealer.steal().success() {
+                                    return Some(fiber);
+                                }
+                            }
+                            None
+                        });
+
+                    match fiber {
+                        Some(mut fiber) => {
+                            let mut vm_guard = vm.lock();
+                            fiber.step(&mut *vm_guard);
+                            drop(vm_guard);
+
+                            if !fiber.done && !fiber.yielded {
+                                local.push(fiber);
+                            } else if fiber.yielded {
+                                injector.push(fiber);
+                            }
+                        }
+                        None => {
+                            thread::yield_now();
+                        }
+                    }
                 }
-
-                true
-            }
-            None => {
-                // No work found
-                !self.injector.is_empty() || !self.local.is_empty()
-            }
+            });
         }
     }
-    
-    pub fn shutdown(&self) {
-        
+
+    pub fn shutdown(&mut self) {
+        self.shutdown_flag.store(true, Ordering::Relaxed);
+    }
+
+    pub fn thread_count(&self) -> usize {
+        self.workers.len()
+    }
+
+    pub fn get_worker(&self, thread_id: usize) -> &Worker<Fiber> {
+        &self.workers[thread_id]
     }
 }
