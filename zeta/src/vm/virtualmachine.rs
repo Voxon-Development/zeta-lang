@@ -25,6 +25,7 @@ use crossbeam::channel::{unbounded, Receiver, Sender};
 use ir::VMValue;
 use mimalloc;
 use parking_lot::Mutex;
+use rayon::max_num_threads;
 use trc::SharedTrc;
 use zetac::codegen::ir::ir_compiler::CompressedClassTable;
 use zetac::codegen::ir::module::Function;
@@ -43,7 +44,7 @@ pub struct VirtualMachine {
     pub(crate) profiler: profiler::Profiler,
     pub(crate) function_module: SharedTrc<Mutex<ZetaModule>>,
     pub(crate) pass_manager: SharedTrc<Mutex<PassManager>>,
-    pub(crate) event_loop: LazyCell<FiberScheduler>,
+    pub(crate) event_loop: FiberScheduler,
     pub(crate) string_pool: SharedTrc<Mutex<StringPool>>,
     pub(crate) optimization_receiver: Receiver<OptimizationFrame>,
     pub(crate) optimization_sender: Sender<OptimizationFrame>,
@@ -139,7 +140,7 @@ impl VirtualMachine {
             profiler: profiler::Profiler::new(),
             function_module: SharedTrc::new(Mutex::new(function_module)),
             pass_manager: SharedTrc::new(Mutex::new(PassManager::new())),
-            event_loop: LazyCell::new(|| FiberScheduler::new()),
+            event_loop: FiberScheduler::new(max_num_threads()),
             string_pool,
             optimization_receiver,
             optimization_sender,
@@ -174,20 +175,8 @@ impl VirtualMachine {
         if function.is_native {
             // For native functions, we need to pass the arguments as a raw pointer and length
             let result = unsafe {
-                let resolved_args: Vec<VMValue> = vm_args.into_iter()
-                    .map(|arg| match arg {
-                        VMValue::Str(vm_str) => {
-                            println!("Resolving string: {}", vm_str);
-                            println!("String pool: {:#?}", self.string_pool);
-                            let lock = self.string_pool.lock();
-                            let resolved = lock.resolve_string(&vm_str);
-                            VMValue::ResolvedStr(resolved.to_owned())
-                        }
-                        other => other,
-                    })
-                    .collect();
-                if !resolved_args.is_empty() {
-                    functions::run_native_function(&function, resolved_args.as_ptr(), resolved_args.len())
+                if !vm_args.is_empty() {
+                    functions::run_native_function(&function, vm_args.as_ptr(), vm_args.len())
                 } else {
                     functions::run_native_function(&function, std::ptr::null(), 0)
                 }
@@ -216,7 +205,11 @@ impl VirtualMachine {
             function_id,
             call_count: call_count.count,
         };
-        self.optimization_sender.send(optimization_frame).unwrap();
+        tokio::spawn(functions::optimize_function_async(
+            self.function_module.clone(),
+            self.pass_manager.clone(),
+            optimization_frame,
+        ));
     }
 
     /*pub fn execute(&mut self) {
@@ -242,34 +235,7 @@ impl VirtualMachine {
         }
     }*/
 
-
-    pub fn run(&mut self) {
-        // Pre program
-        let optional_main_function_id = self.function_module.lock().entry;
-        if let Some(main_function_id) = optional_main_function_id {
-            self.run_function_in_fiber(main_function_id);
-
-            while self.tick() {}
-
-            // Post program
-            self.halt()
-        } else {
-            eprintln!("No entry point found, please add a main function like the following:");
-            eprintln!("fun main() {{\n    println_str(\"Hello World!\");\n}}");
-            std::process::exit(1);
-        }
-    }
-
     pub fn tick(&mut self) -> bool {
-        
-        let event_loop = std::mem::replace(&mut self.event_loop, LazyCell::new(|| FiberScheduler::new()));
-        let work_left = event_loop.tick(self);
-        self.event_loop = event_loop;
-
-        if !work_left {
-            return false;
-        }
-
         // Throttle optimization (e.g., 1 per tick)
         if let Ok(task) = self.optimization_receiver.try_recv() {
             tokio::spawn(functions::optimize_function_async(
@@ -284,6 +250,7 @@ impl VirtualMachine {
     pub fn interpret_function(&mut self, call_frame: &mut StackFrame, function: &mut Vec<u8>) {
         call_frame.program_counter = 0;
         while call_frame.program_counter < function.len() {
+            println!("PC: {}", call_frame.program_counter);
             let opcode = function[call_frame.program_counter];
             call_frame.program_counter += 1;
             self.interpret_instruction(opcode, call_frame, function);
