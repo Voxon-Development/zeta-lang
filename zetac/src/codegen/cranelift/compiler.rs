@@ -235,7 +235,7 @@ impl Codegen {
                     }
                 }
 
-                for stmt in &func.body.block {
+                for stmt in &func.body.clone().unwrap().block {
                     self.stmt_compiler.compile_stmt(&mut builder, stmt, module)?;
                 }
 
