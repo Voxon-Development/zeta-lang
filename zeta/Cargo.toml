@@ -8,7 +8,7 @@ opt-level = 3
 
 [dependencies]
 zetac = { path = "../zetac" }
-ir = { path = "../ir" }
+ir = { path = "../commons" }
 tokio = { version = "1.45.1", features = ["full"] }
 
 ahash = "0.8.12"
@@ -19,7 +19,9 @@ clap = { version = "4.5.40", features = ["derive"] }
 radix_trie = "0.2.1"
 rayon = "1.10.0"
 crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
-mimalloc = "0.1.46"
+snmalloc-rs = "0.3.8"
 parking_lot = "0.12.1"
 lazy_static = "1.5.0"
 walkdir = "2.5.0"
+dashmap = "7.0.0-rc2"
+rand = "0.9.1"

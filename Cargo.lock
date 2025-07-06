@@ -127,7 +127,7 @@ checksum = "6806a6321ec58106fea15becdad98371e28d92ccbc7c8f1b3b6dd724fe8f1002"
 dependencies = [
  "addr2line",
  "cfg-if",
- "libc",
+ "libc 0.2.172",
  "miniz_oxide",
  "object",
  "rustc-demangle",
@@ -148,9 +148,9 @@ checksum = "1b8e56985ec62d17e9c1001dc89c88ecd7dc08e47eba5ec7c29c7b5eeecde967"
 
 [[package]]
 name = "bumpalo"
-version = "3.17.0"
+version = "3.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1628fb46dfa0b37568d12e5edd512553eccf6a22a78e8bde00bb4aed84d5bdbf"
+checksum = "46c5e41b57b8bba42a04676d81cb89e9ee8e859a1a66f80a5a72e1cb76b34d43"
 dependencies = [
  "allocator-api2",
 ]
@@ -248,6 +248,15 @@ name = "clap_lex"
 version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f46ad14479a25103f283c0f10005961cf086d8dc42205bb44c46ac563475dca6"
+
+[[package]]
+name = "cmake"
+version = "0.1.54"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e7caa3f9de89ddbe2c607f4101924c5abec803763ae9534e4f4d7d8f84aa81f0"
+dependencies = [
+ "cc",
+]
 
 [[package]]
 name = "colorchoice"
@@ -390,7 +399,7 @@ dependencies = [
  "cranelift-entity",
  "cranelift-module",
  "cranelift-native",
- "libc",
+ "libc 0.2.172",
  "log",
  "region",
  "target-lexicon",
@@ -416,7 +425,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75a9b63edea46e013fce459c46e500462cb03a0490fdd9c18fe42b1dd7b93aa1"
 dependencies = [
  "cranelift-codegen",
- "libc",
+ "libc 0.2.172",
  "target-lexicon",
 ]
 
@@ -546,6 +555,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "43da5946c66ffcc7745f48db692ffbb10a83bfe0afd96235c5c2a4fb23994929"
 
 [[package]]
+name = "dashmap"
+version = "7.0.0-rc2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4a1e35a65fe0538a60167f0ada6e195ad5d477f6ddae273943596d4a1a5730b"
+dependencies = [
+ "cfg-if",
+ "crossbeam-utils",
+ "equivalent",
+ "hashbrown",
+ "lock_api",
+ "parking_lot_core",
+]
+
+[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -622,7 +645,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "26145e563e54f2cadc477553f1ec5ee650b00862f0a58bcd12cbdc5f0ea2d2f4"
 dependencies = [
  "cfg-if",
- "libc",
+ "libc 0.2.172",
  "r-efi",
  "wasi 0.14.2+wasi-0.2.4",
 ]
@@ -679,6 +702,8 @@ version = "0.1.0"
 dependencies = [
  "enum-ordinalize",
  "enum-ordinalize-derive",
+ "libc 1.0.0-alpha.1",
+ "trc",
 ]
 
 [[package]]
@@ -734,20 +759,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d750af042f7ef4f724306de029d18836c26c1765a54a6a3f094cbd23a7267ffa"
 
 [[package]]
+name = "libc"
+version = "1.0.0-alpha.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7222002e5385b4d9327755661e3847c970e8fbf9dea6da8c57f16e8cfbff53a8"
+
+[[package]]
 name = "libm"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9fbbcab51052fe104eb5e5d351cf728d30a5be1fe14d9be8a3b097481fb97de"
-
-[[package]]
-name = "libmimalloc-sys"
-version = "0.1.42"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec9d6fac27761dabcd4ee73571cdb06b7022dc99089acbe5435691edffaac0f4"
-dependencies = [
- "cc",
- "libc",
-]
 
 [[package]]
 name = "lock_api"
@@ -771,7 +792,7 @@ version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b955cdeb2a02b9117f121ce63aa52d08ade45de53e48fe6a38b39c10f6f709"
 dependencies = [
- "libc",
+ "libc 0.2.172",
 ]
 
 [[package]]
@@ -779,15 +800,6 @@ name = "memchr"
 version = "2.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "78ca9ab1a0babb1e7d5695e3530886289c18cf2f87ec19a575a0abdce112e3a3"
-
-[[package]]
-name = "mimalloc"
-version = "0.1.46"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "995942f432bbb4822a7e9c3faa87a695185b0d09273ba85f097b54f4e458f2af"
-dependencies = [
- "libmimalloc-sys",
-]
 
 [[package]]
 name = "miniz_oxide"
@@ -804,7 +816,7 @@ version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "78bed444cc8a2160f01cbcf811ef18cac863ad68ae8ca62092e8db51d51c761c"
 dependencies = [
- "libc",
+ "libc 0.2.172",
  "wasi 0.11.1+wasi-snapshot-preview1",
  "windows-sys 0.59.0",
 ]
@@ -874,7 +886,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc838d2a56b5b1a6c25f55575dfc605fabb63bb2365f6c2353ef9159aa69e4a5"
 dependencies = [
  "cfg-if",
- "libc",
+ "libc 0.2.172",
  "redox_syscall",
  "smallvec",
  "windows-targets",
@@ -1065,7 +1077,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6b6ebd13bc009aef9cd476c1310d49ac354d36e240cf1bd753290f3dc7199a7"
 dependencies = [
  "bitflags 1.3.2",
- "libc",
+ "libc 0.2.172",
  "mach2",
  "windows-sys 0.52.0",
 ]
@@ -1153,7 +1165,7 @@ version = "1.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9203b8055f63a2a00e2f593bb0510367fe707d7ff1e5c872de2f537b339e5410"
 dependencies = [
- "libc",
+ "libc 0.2.172",
 ]
 
 [[package]]
@@ -1163,12 +1175,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8917285742e9f3e1683f0a9c4e6b57960b7314d0b08d30d1ecd426713ee2eee9"
 
 [[package]]
+name = "snmalloc-rs"
+version = "0.3.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb317153089fdfa4d8a2eec059d40a5a23c3bde43995ea23b19121c3f621e74a"
+dependencies = [
+ "snmalloc-sys",
+]
+
+[[package]]
+name = "snmalloc-sys"
+version = "0.3.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "065fea53d32bb77bc36cca466cb191f2e5216ebfd0ed360b1d64889ee6e559ea"
+dependencies = [
+ "cmake",
+]
+
+[[package]]
 name = "socket2"
 version = "0.5.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e22376abed350d73dd1cd119b57ffccad95b4e585a7cda43e286245ce23c0678"
 dependencies = [
- "libc",
+ "libc 0.2.172",
  "windows-sys 0.52.0",
 ]
 
@@ -1239,7 +1269,7 @@ checksum = "75ef51a33ef1da925cea3e4eb122833cb377c61439ca401b770f54902b806779"
 dependencies = [
  "backtrace",
  "bytes",
- "libc",
+ "libc 0.2.172",
  "mio",
  "parking_lot",
  "pin-project-lite",
@@ -1379,7 +1409,7 @@ checksum = "2eedc0324e37cf39b049f4dca0c30997eaab49f09006d5f4c1994e64e7b7dba8"
 dependencies = [
  "anyhow",
  "cfg-if",
- "libc",
+ "libc 0.2.172",
  "windows-sys 0.59.0",
 ]
 
@@ -1529,12 +1559,14 @@ dependencies = [
  "ahash",
  "clap",
  "crossbeam",
+ "dashmap",
  "ir",
  "lazy_static",
- "mimalloc",
  "parking_lot",
  "radix_trie",
+ "rand",
  "rayon",
+ "snmalloc-rs",
  "tokio",
  "trc",
  "walkdir",
@@ -1547,6 +1579,8 @@ version = "0.1.0"
 dependencies = [
  "bumpalo",
  "criterion",
+ "ir",
+ "rand",
 ]
 
 [[package]]
@@ -1559,11 +1593,14 @@ dependencies = [
  "cranelift-module",
  "cranelift-native",
  "cranelift-object",
+ "dashmap",
  "enum-map",
  "ir",
  "lazy_static",
+ "parking_lot",
  "rand",
  "rayon",
  "thiserror",
  "tokio",
+ "trc",
 ]

@@ -11,9 +11,11 @@ target-cpu = "native"
 
 [workspace]
 members = [
-    "zetac", "zeta", "ir"
+    "zetac", "zeta", "commons"
 ]
 
 [dependencies]
-bumpalo = "3.17.0"
+bumpalo = "3.19.0"
+ir = { path = "commons" }
 criterion = "0.6.0"
+rand = "0.9.1"
