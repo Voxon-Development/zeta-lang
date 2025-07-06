@@ -1,16 +1,16 @@
+#![feature(allocator_api)]
+#![feature(sized_hierarchy)]
+
 use std::fmt;
+
+pub mod bump;
+pub mod atomic_utils;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VmString {
     pub offset: usize,
     pub length: usize,
     pub hash: u64, // Storing hash here is crucial for collision resolution
-}
-
-impl fmt::Display for VmString {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "offset: {}, length: {}, hash: {}", self.offset, self.length, self.hash)
-    }
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -115,14 +115,15 @@ pub enum Bytecode {
     CallInFiber = 0x59,
     LoadField = 0x5A,
     StoreField = 0x5B,
-    ClassInit = 0x5C
+    ClassInit = 0x5C,
+    CallMethod = 0x5D
 }
 
 impl TryFrom<u8> for Bytecode {
     type Error = ();
 
     fn try_from(byte: u8) -> Result<Self, Self::Error> {
-        if byte < 1 || byte > 0x58 {
+        if byte < 1 || byte > 0x60 {
             Err(())
         } else {
             Ok(unsafe { std::mem::transmute(byte) })
@@ -136,7 +137,6 @@ impl From<Bytecode> for u8 {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
 pub enum VMValue {
     Int(usize),
     U8(u8),
@@ -153,22 +153,33 @@ pub enum VMValue {
     Char(char),
     Ptr(usize),
     Str(VmString),
-    ResolvedStr(String),
+    U128(u128),
+    I128(i128),
+    UF32(f32),
+    UF64(f64),
+    USize(usize),
+    ISize(isize),
     Array(usize, *const VMValue),
     Region(usize),
+    ClassInstance(usize),
     Void
 }
+
+impl Clone for VMValue {
+    fn clone(&self) -> Self { *self }
+}
+
+impl Copy for VMValue {}
 
 unsafe impl Send for VMValue {}
 unsafe impl Sync for VMValue {}
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Class {
-    pub fields: Vec<VMValue>
+    pub fields: Vec<VMValue>,
+    pub region_id: Option<usize>,
+    pub class_id: usize
 }
-
-impl Eq for VMValue {}
-
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u8)]
@@ -198,32 +209,5 @@ pub enum BytecodeType {
 impl From<u8> for BytecodeType {
     fn from(byte: u8) -> Self {
         unsafe { std::mem::transmute(byte) }
-    }
-}
-
-impl fmt::Display for BytecodeType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            BytecodeType::U8 => write!(f, "u8"),
-            BytecodeType::I8 => write!(f, "i8"),
-            BytecodeType::U16 => write!(f, "u16"),
-            BytecodeType::I16 => write!(f, "i16"),
-            BytecodeType::I32 => write!(f, "i32"),
-            BytecodeType::F32 => write!(f, "f32"),
-            BytecodeType::F64 => write!(f, "f64"),
-            BytecodeType::I64 => write!(f, "i64"),
-            BytecodeType::String => write!(f, "string"),
-            BytecodeType::Boolean => write!(f, "bool"),
-            BytecodeType::UF32 => write!(f, "uf32"),
-            BytecodeType::U32 => write!(f, "u32"),
-            BytecodeType::U64 => write!(f, "u64"),
-            BytecodeType::I128 => write!(f, "i128"),
-            BytecodeType::UF64 => write!(f, "uf64"),
-            BytecodeType::U128 => write!(f, "u128"),
-            BytecodeType::Void => write!(f, "void"),
-            BytecodeType::Array => write!(f, "array"),
-            BytecodeType::Class => write!(f, "class"),
-            BytecodeType::Region => write!(f, "region"),
-        }
     }
 }
