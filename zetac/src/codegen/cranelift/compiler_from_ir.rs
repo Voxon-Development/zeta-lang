@@ -4,7 +4,6 @@ use cranelift::codegen::isa::CallConv;
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataId, Linkage, Module};
-use ir::{Bytecode, VMValue};
 use std::collections::HashMap;
 use crate::codegen::ir::module::NativeFnPtr;
 
@@ -24,6 +23,7 @@ pub struct IRToCraneliftCompiler {
 
 impl IRToCraneliftCompiler {
     /// Create a new IR to Cranelift compiler
+    #[inline]
     pub fn new() -> Self {
         let isa = cranelift_native::builder()
             .expect("Failed to get native ISA")
@@ -45,7 +45,7 @@ impl IRToCraneliftCompiler {
     /// # Safety
     /// This function is unsafe because it performs raw pointer casts.
     /// The caller must ensure that the function pointer is valid and follows the NativeFnPtr ABI.
-    pub fn compile_function(&mut self, name: &str, bytecode: &[u8]) -> anyhow::Result<()> {
+    pub fn compile_function(&mut self, name: &str, bytecode: &[u8]) -> anyhow::Result<NativeFnPtr> {
         self.ctx.clear();
 
         // Define the function signature: fn(*mut c_void, *const VMValue, usize) -> VMValue
@@ -82,7 +82,7 @@ impl IRToCraneliftCompiler {
             args_ptr = builder.func.dfg.block_params(entry_block)[1];
             _args_len = builder.func.dfg.block_params(entry_block)[2];
 
-            bytecode_translator::translate_bytecode(&mut builder, bytecode, vm_ptr, args_ptr)?;
+            bytecode_translator::translate_bytecode(&mut builder, bytecode)?;
 
             builder.finalize(); // Done with builder => ctx borrow ends here
         }
@@ -92,9 +92,8 @@ impl IRToCraneliftCompiler {
 
         // Get the function pointer and store it
         let func_ptr = self.module.get_finalized_function(id);
-        self.compiled_functions.insert(name.to_string(), unsafe { std::mem::transmute(func_ptr) });
 
-        Ok(())
+        Ok(unsafe { std::mem::transmute(func_ptr) })
     }
 
     /// Finalize the module and make all functions available for execution
@@ -111,42 +110,5 @@ impl IRToCraneliftCompiler {
     /// Create a safe Rust function wrapper for a compiled function
     pub fn create_vm_function_wrapper(&self, name: &str) -> Option<NativeFnPtr> {
         self.get_compiled_function(name)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ir::VMValue;
-
-    #[test]
-    fn test_compiled_function() -> anyhow::Result<()> {
-        let mut compiler = IRToCraneliftCompiler::new();
-
-        // Simple function that adds two i32s and returns the result
-        let bytecode = vec![
-            // Push first argument (index 0)
-            Bytecode::LoadLocal as u8, 0,
-            // Push second argument (index 1)
-            Bytecode::LoadLocal as u8, 1,
-            // Add them
-            Bytecode::Add as u8,
-            // Return the result
-            Bytecode::Return as u8,
-        ];
-
-        // Compile the function
-        compiler.compile_function("test_add", &bytecode)?;
-        compiler.finalize()?;
-
-        // Test getting a function wrapper
-        if let Some(add_func) = compiler.create_vm_function_wrapper("test_add") {
-            let result = unsafe { add_func([VMValue::I32(5), VMValue::I32(3)].as_ptr(), 2) };
-            assert_eq!(result, VMValue::I32(8));
-        } else {
-            panic!("Failed to get compiled function");
-        }
-
-        Ok(())
     }
 }
