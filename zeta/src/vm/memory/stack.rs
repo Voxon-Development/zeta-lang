@@ -28,6 +28,16 @@ impl BumpStack {
     pub fn peek_vm(&self) -> Option<&VMValue> {
         self.buffer.last()
     }
+    
+    #[inline(always)]
+    pub fn get_class(&self, id: usize) -> Option<&ir::Class> {
+        self.class_initialization.get(id)
+    }
+    
+    #[inline(always)]
+    pub fn get_class_mut(&mut self, id: usize) -> Option<&mut ir::Class> {
+        self.class_initialization.get_mut(id)
+    }
 
     pub fn reset(&mut self) {
         self.buffer.clear();
