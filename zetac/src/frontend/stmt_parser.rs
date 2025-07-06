@@ -1,17 +1,20 @@
+use std::collections::HashMap;
 use std::iter::Peekable;
+use std::vec::IntoIter;
+use ir::bump::{AtomicBump};
 use crate::ast::*;
+use crate::frontend::macros::{MacroDef, MacroPatternNode};
 use crate::frontend::tokens::{ParserError, Token, TokenType};
 
-pub struct StmtParser<I: Iterator<Item = Token> + Clone> {
-    tokens: Peekable<I>,
+pub struct StmtParser {
+    tokens: Peekable<IntoIter<Token, AtomicBump>>,
     errors: Vec<ParserError>
 }
 
-impl<I: Iterator<Item = Token> + Clone> StmtParser<I> {
-    #[inline]
-    pub fn new(tokens: I) -> StmtParser<I> {
+impl StmtParser {
+    pub fn new(tokens: Vec<Token, AtomicBump>) -> StmtParser {
         StmtParser {
-            tokens: tokens.peekable(),
+            tokens: tokens.into_iter().peekable(),
             errors: Vec::new()
         }
     }
@@ -20,6 +23,7 @@ impl<I: Iterator<Item = Token> + Clone> StmtParser<I> {
         self.tokens.peek().cloned()
     }
 
+    #[inline]
     pub(crate) fn is_at_end(&mut self) -> bool {
         self.tokens.peek().is_none()
     }
@@ -28,11 +32,21 @@ impl<I: Iterator<Item = Token> + Clone> StmtParser<I> {
         self.tokens.next()
     }
 
-    pub fn parse_stmt(&mut self, statements: &mut Vec<Stmt>, token: &Token, visibility: Option<Visibility>) {
+    pub fn parse_stmt(&mut self, statements: &mut Vec<Stmt, AtomicBump>, token: &Token, visibility: Option<Visibility>) {
+        if let Some(expanded_stmt) = self.try_expand_macro() {
+            statements.push(expanded_stmt);
+            return;
+        }
+
         match token.value.as_str() {
-            "fun" => statements.push(self.parse_fun_decl(visibility)),
             "class" => statements.push(self.parse_class_decl(visibility)),
-            "let" => statements.push(self.parse_let_stmt()),
+            "let" => statements.push(self.parse_let_stmt()), // allow `let` for inference
+            "const" => statements.push(self.parse_let_stmt()),
+            "interface" => {
+                let interface_decl = self.parse_interface_decl(visibility);
+                statements.push(interface_decl);
+            },
+
             "return" => statements.push(self.parse_return_stmt()),
             "while" => statements.push(self.parse_while_stmt()),
             "if" => statements.push(self.parse_if_stmt()),
@@ -42,95 +56,183 @@ impl<I: Iterator<Item = Token> + Clone> StmtParser<I> {
             "import" => statements.push(self.parse_import_stmt()),
             "match" => statements.push(self.parse_match_stmt()),
             "effect" => statements.push(self.parse_effect_stmt()),
+
             _ => {
-                let expr = self.parse_expr();
-                match expr {
-                    Some(expr) => statements.push(Stmt::ExprStmt(InternalExprStmt {
+                // At this point, it's either:
+                // 1. A function declaration like `public void main() {...}`
+                // 2. A variable declaration like `mut Type name = ...`
+                // 3. An expression statement
+
+                if let Some(stmt) = self.try_parse_fun_decl(visibility) {
+                    statements.push(stmt);
+                } else if let Some(stmt) = self.try_parse_typed_var_decl() {
+                    statements.push(stmt);
+                } else {
+                    let expr = self.parse_expr().expect("Expected expression");
+                    statements.push(Stmt::ExprStmt(InternalExprStmt {
                         expr: Box::new(expr),
-                    })),
-                    None => panic!("Unexpected token: {}", token),
+                    }));
                 }
             }
         }
     }
 
-    pub(crate) fn parse_fun_decl(&mut self, visibility: Option<Visibility>) -> Stmt {
-        self.expect_token(TokenType::Keyword, "Expected `fun` in function declaration"); // consume `fun`
-        // The thing to parse:
-        // functionName(arg1: type1, arg2: type2, ...): returnType {
-        //     body
-        // }
+    pub fn try_parse_fun_decl(&mut self, visibility: Option<Visibility>) -> Option<Stmt> {
+        let return_type_token = self.tokens.peek()?.clone();
 
-        let mut params: Vec<Param> = Vec::new();
-
-
-        // Step 2: Function name
-        let name = match self.tokens.next() {
-            Some(token) if token.value_type == TokenType::Identifier => token.value,
-            Some(token) => panic!("Expected identifier after `fun`, got {:?}", token),
-            None => panic!("Unexpected end of input after `fun`"),
-        };
-
-        // Step 3: Parameters
-        match self.tokens.next() {
-            Some(token) if token.value_type == TokenType::LParen => {} // continue
-            Some(token) => panic!("Expected `(` after function name, got `{}`", token.value),
-            None => panic!("Unexpected end of input after function name"),
+        if return_type_token.value_type != TokenType::Identifier {
+            return None;
         }
 
+        let return_type = parse_type(self.tokens.next()?); // consume return type
+
+        let name_token = self.tokens.next()?;
+        if name_token.value_type != TokenType::Identifier {
+            return None;
+        }
+        let name = name_token.value;
+
+        self.expect_token(TokenType::LParen, "Expected `(` after function name");
+
+        let mut params = Vec::new();
         while let Some(token) = self.tokens.next() {
             if token.value_type == TokenType::RParen {
                 break;
             }
+
             if token.value_type != TokenType::Identifier {
-                panic!("Expected identifier after `(`, got `{}`", token.value);
+                panic!("Expected parameter name, got `{}`", token.value);
             }
+
             let param_name = token.value;
-            match self.tokens.next() {
-                Some(token) if token.value_type == TokenType::Colon => {} // continue
-                Some(token) => panic!("Expected `:` after parameter name, got `{}`", token.value),
-                None => panic!("Unexpected end of input after parameter name"),
-            }
-            let param_type = parse_type(self.tokens.next().unwrap());
+
+            self.expect_token(TokenType::Colon, "Expected `:` after parameter name");
+
+            let param_type_token = self.tokens.next().expect("Expected type after `:`");
+            let param_type = parse_type(param_type_token);
+
             params.push(Param {
                 name: param_name,
-                type_annotation: Some(param_type)
+                type_annotation: Some(param_type),
             });
-            if let Some(token) = self.tokens.peek() {
-                if token.value_type == TokenType::Comma {
-                    self.tokens.next(); // consume comma
-                } else if token.value_type != TokenType::RParen {
-                    panic!("Expected `,` or `)` after parameter, got `{}`", token.value);
+
+            if let Some(peek) = self.tokens.peek() {
+                if peek.value_type == TokenType::Comma {
+                    self.tokens.next();
+                } else if peek.value_type != TokenType::RParen {
+                    panic!("Expected `,` or `)` after parameter");
                 }
             }
         }
 
-        // Step 4: Return type (OPTIONAL)
-        let return_type = if self.check_next_token(TokenType::Colon) {
-            self.expect_token(TokenType::Colon, "Expected `:` before return type");
+        let body = Some(self.parse_block());
 
-            let return_type = match self.tokens.next() {
-                Some(token) if token.value_type == TokenType::Identifier => token,
-                Some(token) => panic!("Expected identifier after `:` in return type, got `{}`", token.value),
-                None => panic!("Unexpected end of input after `:` in return type"),
-            };
-            Some(parse_type(return_type))
-        } else {
-            None // Return type is optional
-        };
-
-        // Step 6: Body
-        let body = self.parse_block();
-
-        Stmt::FuncDecl(FuncDecl { visibility, name, params, return_type, effects: None, body })
+        Some(Stmt::FuncDecl(FuncDecl {
+            visibility,
+            name,
+            params,
+            return_type: Some(return_type),
+            effects: None,
+            body,
+        }))
     }
 
-    pub(crate) fn parse_let_stmt(&mut self) -> Stmt
-    where
-        I: Iterator<Item=Token>,
-    {
-        self.expect_token(TokenType::Keyword, "Expected `let` in `let` statement"); // consume `let`
+    pub fn parse_let_stmt(&mut self) -> Stmt {
+        // Optional `mut` before `let`
+        let mutability = self.check_token("mut", "Expected `mut` before `let` or a type");
 
+        self.expect_token_str("let", "Expected `let` in variable declaration"); // consume `let`
+
+        // Try to parse a type (optional for inference)
+        let peek = self.tokens.peek().expect("Expected type or identifier after `let`");
+        let (type_annotation, ident) = if peek.value_type == TokenType::Identifier {
+            // Try to parse type and then variable name
+            let type_token = self.tokens.next().unwrap(); // type
+            let ident_token = self.tokens.next().expect("Expected identifier after type name");
+
+            if ident_token.value_type != TokenType::Identifier {
+                panic!("Expected identifier after type, got `{}`", ident_token.value);
+            }
+
+            (Some(parse_type(type_token)), ident_token.value)
+        } else {
+            panic!("Expected type and identifier after `let`");
+        };
+
+        // Expect `=`
+        self.expect_token(TokenType::Equal, "Expected `=` after variable declaration");
+
+        // Parse expression
+        let value = self.parse_expr().expect("Expected expression after `=`");
+
+        Stmt::Let(LetStmt {
+            mutability,
+            ident,
+            type_annotation,
+            value: Box::new(value),
+        })
+    }
+
+    pub fn try_parse_typed_var_decl(&mut self) -> Option<Stmt> {
+        // Parse optional `mut`
+        let mut_token = self.check_token("mut", "Expected `mut` before `let` or a type");
+        let type_token = self.tokens.peek()?.clone();
+        if type_token.value_type != TokenType::Identifier {
+            return None;
+        }
+        let type_ = parse_type(self.tokens.next()?);
+
+        // Expect variable name
+        let name_token = self.tokens.next()?;
+        if name_token.value_type != TokenType::Identifier {
+            panic!("Expected variable name after type");
+        }
+        let ident = name_token.value;
+
+        self.expect_token(TokenType::Equal, "Expected `=` after variable declaration");
+
+        let value = self.parse_expr().expect("Expected expression after `=`");
+
+        Some(Stmt::Let(LetStmt {
+            mutability: mut_token,
+            ident,
+            type_annotation: Some(type_),
+            value: Box::new(value),
+        }))
+    }
+
+    pub(crate) fn parse_const_stmt(&mut self) -> Stmt {
+        self.expect_token(TokenType::Keyword, "Expected `const` in `const` statement"); // consume `let`
+
+        let (mutability, ident) = self.get_variable_metadata();
+
+        // Step 3: Optional `: type`
+        let type_annotation: Type = if self.check_next_token(TokenType::Colon) {
+            self.tokens.next(); // consume `:`
+            let type_token = self.tokens.next().expect("Expected type after `:`");
+            parse_type(type_token)
+        } else {
+            panic!("Expected `:` after identifier");
+        };
+
+        // Step 4: Expect `=`
+        match self.tokens.next() {
+            Some(token) if token.value_type == TokenType::Equal => {} // continue
+            Some(token) => panic!("Expected `=` after identifier, got {:?}", token),
+            None => panic!("Unexpected end of input after identifier"),
+        }
+
+        let expr = self.parse_expr().expect("Expected expression after `=`");
+
+        Stmt::Const(ConstStmt {
+            mutability,
+            ident,
+            type_annotation,
+            value: Box::new(expr),
+        })
+    }
+
+    fn get_variable_metadata(&mut self) -> (bool, String) {
         // Step 1: Optional `mut`
         let mut mutability = false;
         if let Some(next) = self.tokens.peek() {
@@ -146,30 +248,7 @@ impl<I: Iterator<Item = Token> + Clone> StmtParser<I> {
             Some(token) => panic!("Expected identifier after `let`, got {:?}", token),
             None => panic!("Unexpected end of input after `let`"),
         };
-
-        // Step 3: Optional `: type`
-        let mut type_annotation: Option<Type> = None;
-        if self.check_next_token(TokenType::Colon) {
-            self.tokens.next(); // consume `:`
-            let type_token = self.tokens.next().expect("Expected type after `:`");
-            type_annotation = Some(parse_type(type_token));
-        }
-
-        // Step 4: Expect `=`
-        match self.tokens.next() {
-            Some(token) if token.value_type == TokenType::Equal => {} // continue
-            Some(token) => panic!("Expected `=` after identifier, got {:?}", token),
-            None => panic!("Unexpected end of input after identifier"),
-        }
-
-        let expr = self.parse_expr().expect("Expected expression after `=`");
-
-        Stmt::Let(LetStmt {
-            mutability,
-            ident,
-            type_annotation,
-            value: Box::new(expr),
-        })
+        (mutability, ident)
     }
 
     pub(crate) fn parse_return_stmt(&mut self) -> Stmt {
@@ -307,6 +386,57 @@ impl<I: Iterator<Item = Token> + Clone> StmtParser<I> {
         Stmt::ClassDecl(ClassDecl { visibility, name, params, body })
     }
 
+    pub(crate) fn parse_interface_decl(&mut self, visibility: Option<Visibility>) -> Stmt {
+        self.expect_token_str("interface", "Expected `interface`");
+
+        let name = match self.tokens.next() {
+            Some(token) if token.value_type == TokenType::Identifier => token.value,
+            Some(token) => panic!("Expected identifier after `interface`, got `{}`", token.value),
+            None => panic!("Unexpected end of input after `interface`"),
+        };
+
+        let mut methods: Vec<FuncDecl> = Vec::new();
+        let mut const_stmts: Vec<ConstStmt> = Vec::new();
+
+        // Expect `{`
+        match self.tokens.next() {
+            Some(token) if token.value_type == TokenType::LBrace => {},
+            Some(token) => panic!("Expected '{{', found {}", token.value),
+            None => panic!("Unexpected end of input, expected '{{'"),
+        }
+
+        // Parse until `}`
+        while let Some(token) = self.tokens.peek() {
+            if token.value_type == TokenType::RBrace {
+                self.tokens.next(); // consume `}`
+                break;
+            }
+            
+            // Expect an optional visibility
+            let visibility = self.parse_visibility();
+            
+            // Parse function or const declaration directly
+            if let Some(stmt) = self.try_parse_fun_decl(visibility) {
+                if let Stmt::FuncDecl(func_decl) = stmt {
+                    methods.push(func_decl);
+                    continue;
+                }
+            }
+
+            if let Some(stmt) = self.try_parse_typed_var_decl() {
+                if let Stmt::Const(const_stmt) = stmt {
+                    const_stmts.push(const_stmt);
+                    continue;
+                }
+            }
+            
+            // If we get here, we couldn't parse a valid interface member
+            panic!("Expected function or const declaration in interface, found {:?}", token);
+        }
+
+        Stmt::InterfaceDecl(InterfaceDecl { visibility, name, methods, const_stmts })
+    }
+
     fn parse_params(&mut self) -> Option<Vec<Param>> {
         let mut params: Vec<Param> = Vec::new();
 
@@ -364,7 +494,7 @@ impl<I: Iterator<Item = Token> + Clone> StmtParser<I> {
     }
 
     pub(crate) fn parse_block(&mut self) -> Block {
-        let mut statements = Vec::new();
+        let mut statements: Vec<Stmt, AtomicBump> = Vec::new_in(AtomicBump::new());
 
         // Expect `{`
         match self.tokens.next() {
@@ -402,6 +532,39 @@ impl<I: Iterator<Item = Token> + Clone> StmtParser<I> {
 
             },
             None => panic!("{}", error_message),
+        }
+    }
+    
+    #[inline]
+    fn expect_token_str(&mut self, token_expected: &str, error_message: &str) -> Token {
+        match self.tokens.next() {
+            Some(token) if token.value == token_expected => token,
+            Some(token) => {
+                self.errors.push(ParserError {
+                    message: format!("{}, got `{}`", error_message, token.value),
+                    token
+                });
+                panic!("{}", error_message);
+            },
+            None => panic!("{}", error_message),
+        }
+    }
+    
+    #[inline]
+    fn check_token(&mut self, token_type: &str, error_message: &str) -> bool {
+        match self.tokens.peek() {
+            Some(token) if token.value == token_type => {
+                self.tokens.next();
+                true
+            },
+            Some(token) => {
+                self.errors.push(ParserError {
+                    message: format!("{}, got `{}`", error_message, token.value),
+                    token: token.clone()
+                });
+                false
+            },
+            None => false,
         }
     }
 
@@ -473,8 +636,12 @@ impl<I: Iterator<Item = Token> + Clone> StmtParser<I> {
 
             // binary
 
-            Some(token) if token.value_type.is_number() && self.tokens.peek().map_or(false, |t| t.value_type == TokenType::Plus) => {
-                let lhs = Expr::Number(token.value.parse().unwrap());
+            Some(token) if self.tokens.peek().map_or(false, |t| t.value_type == TokenType::Plus) => {
+                let lhs = match token.value_type {
+                    TokenType::Identifier => Expr::Ident(token.value),
+                    TokenType::Int | TokenType::I8 | TokenType::I16 | TokenType::I32 | TokenType::I64 | TokenType::U8 | TokenType::U16 | TokenType::U32 | TokenType::U64 => Expr::Number(token.value.parse::<i64>().unwrap()),
+                    _ => panic!("Expected identifier or number"),
+                };
                 self.expect_token(TokenType::Plus, "Expected `+` after expression");
                 let rhs = self.parse_expr().expect("Expected expression after `+`");
                 Some(Expr::Binary {
@@ -798,6 +965,63 @@ impl<I: Iterator<Item = Token> + Clone> StmtParser<I> {
 
     fn check_next_token(&mut self, expected_type: TokenType) -> bool {
         self.tokens.peek().map_or(false, |t| t.value_type == expected_type)
+    }
+
+    pub fn try_expand_macro(&mut self) -> Option<Stmt> {
+        let checkpoint = self.tokens.clone();
+
+        for m in all_macros() {
+            if let Some(bindings) = self.match_macro(&m.pattern) {
+                return Some((m.expansion_ast)(bindings));
+            } else {
+                self.tokens = checkpoint.clone();
+            }
+        }
+
+        None
+    }
+
+    fn match_macro(&mut self, pattern: &MacroPatternNode) -> Option<HashMap<String, Expr>> {
+        let mut bindings = HashMap::new();
+
+        match pattern {
+            MacroPatternNode::Sequence(seq) => {
+                for part in seq {
+                    match part {
+                        MacroPatternNode::Ident(name) => {
+                            if let Some(token) = self.next() {
+                                if token.token_type == TokenType::Identifier {
+                                    bindings.insert(name.clone(), Expr::Ident(token.lexeme.clone()));
+                                } else {
+                                    return None;
+                                }
+                            } else {
+                                return None;
+                            }
+                        }
+                        MacroPatternNode::Expr(name) => {
+                            if let Some(expr) = self.parse_expr() {
+                                bindings.insert(name.clone(), expr);
+                            } else {
+                                return None;
+                            }
+                        }
+                        MacroPatternNode::Token(expected) => {
+                            if let Some(token) = self.next() {
+                                if &token.lexeme != expected {
+                                    return None;
+                                }
+                            } else {
+                                return None;
+                            }
+                        }
+                        _ => return None,
+                    }
+                }
+                Some(bindings)
+            }
+            _ => None,
+        }
     }
 }
 
