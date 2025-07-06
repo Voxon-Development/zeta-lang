@@ -8,6 +8,9 @@ use std::sync::Arc;
 use tokio::fs;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+use ir::bump::{AtomicBump, Bump};
+use crate::ast::{ClassDecl, FuncDecl};
+use crate::frontend::tokens::Token;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AsyncCompileError {
@@ -26,11 +29,18 @@ pub enum AsyncCompileError {
 pub async fn compile_files_async(files: Vec<PathBuf>) -> Result<(ZetaModule, ClassTable), AsyncCompileError> {
     // Validate files before checking them
     let invalid_files: Vec<String> = files.iter()
-        .filter_map(|path| if path.exists() { None } else { Some(path.file_name().unwrap().to_string_lossy().to_string()) })
+        .filter_map(|path| if path.exists() { 
+            None 
+        } else { 
+            Some(path.file_name().unwrap().to_string_lossy().to_string()) 
+        })
         .collect::<Vec<String>>();
 
     if !invalid_files.is_empty() {
-        return Err(AsyncCompileError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, format!("Files not found: {:?}", invalid_files))));
+        return Err(AsyncCompileError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound, 
+            format!("Files not found: {:?}", invalid_files)
+        )));
     }
     
     let class_table = Arc::new(Mutex::new(ClassTable::new()));
@@ -38,14 +48,14 @@ pub async fn compile_files_async(files: Vec<PathBuf>) -> Result<(ZetaModule, Cla
     let module = Arc::new(Mutex::new(ZetaModule::new()));
     
     // Create a stream of compilation tasks
-    let mut tasks: Vec<JoinHandle<Result<(), AsyncCompileError>>> = Vec::with_capacity(files.len());
+    let mut tasks: Vec<JoinHandle<Result<(), AsyncCompileError>>, Bump> = Vec::with_capacity_in(files.len(), Bump::new());
     
     for file_path in files {
         let module: Arc<Mutex<ZetaModule>> = module.clone();
         let class_table: Arc<Mutex<ClassTable>> = class_table.clone();
 
         let task: JoinHandle<Result<(), AsyncCompileError>> = tokio::spawn(async move {
-            let content: String = fs::read_to_string(&file_path).await.map_err(AsyncCompileError::from)?;
+            let content: String = fs::read_to_string(file_path).await.map_err(AsyncCompileError::from)?;
             if let Ok((_, functions, classes)) = 
                     process_file(content.as_str()).await {
                 let mut lock = module.lock().await;
@@ -92,17 +102,19 @@ pub async fn compile_files_async(files: Vec<PathBuf>) -> Result<(ZetaModule, Cla
 }
 
 /// Processes a single file's content and returns its compilation units
-async fn process_file(content: &str) -> Result<(ast::FuncDecl, Vec<ast::FuncDecl>, Vec<ast::ClassDecl>), AsyncCompileError> {
+async fn process_file(content: &str) -> Result<(FuncDecl, Vec<FuncDecl>, Vec<ClassDecl>), AsyncCompileError> {
     // Create lexer and tokenize
     let mut lexer = Lexer::new(content.to_string());
-    let tokens = lexer.tokenize()
+    let tokens: Vec<Token, AtomicBump> = lexer.tokenize()
         .map_err(|_| AsyncCompileError::Lexer(lexer.errors))?;
-    
+
     println!("Tokens: {:#?}", tokens);
     
     // Parse the tokens
-    let stmts = frontend::parser::parse_program(tokens)
+    let stmts: Vec<ast::Stmt, AtomicBump> = frontend::parser::parse_program(tokens)
         .map_err(|e| AsyncCompileError::Parser(e.to_string()))?;
+
+    println!("AST: {:#?}", stmts);
     
     // Extract functions and classes
     let functions: Vec<_> = stmts.iter()
@@ -121,7 +133,7 @@ async fn process_file(content: &str) -> Result<(ast::FuncDecl, Vec<ast::FuncDecl
             AsyncCompileError::Parser("No 'main' function found in file".to_string())
         )?;
         
-    let classes: Vec<_> = stmts.iter()
+    let classes: Vec<ClassDecl> = stmts.iter()
         .filter_map(|stmt| 
             if let ast::Stmt::ClassDecl(c) = stmt { 
                 Some(c.clone()) 
