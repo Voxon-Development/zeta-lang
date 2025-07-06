@@ -1,10 +1,10 @@
 use crate::vm::{virtualmachine::VirtualMachine, fibers::Fiber};
 use crossbeam::deque::{Injector, Stealer, Worker};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use parking_lot::Mutex;
 use trc::SharedTrc;
+use crate::vm::fibers::FiberState;
+use ir::atomic_utils::UnsafeArc;
 
 #[derive(Default)]
 pub struct FiberScheduler {
@@ -38,9 +38,7 @@ impl FiberScheduler {
         self.injector.push(fiber);
     }
 
-    /// Tick one step of the fiber scheduler for the thread with given ID.
-    /// Returns `true` if any work was done.
-    pub fn run(&mut self, vm: SharedTrc<Mutex<VirtualMachine>>) {
+    pub fn run(&mut self, vm: UnsafeArc<VirtualMachine>) {
         let injector = self.injector.clone();
         let stealers = self.stealers.clone();
         let shutdown_flag = self.shutdown_flag.clone();
@@ -49,7 +47,7 @@ impl FiberScheduler {
             let stealers = stealers.clone();
             let injector = injector.clone();
             let shutdown_flag = shutdown_flag.clone();
-            let vm = vm.clone();
+            let mut vm = vm.clone();
 
             thread::spawn(move || {
                 loop {
@@ -69,11 +67,9 @@ impl FiberScheduler {
 
                     match fiber {
                         Some(mut fiber) => {
-                            let mut vm_guard = vm.lock();
-                            fiber.step(&mut *vm_guard);
-                            drop(vm_guard);
+                            fiber.step(unsafe { vm.get_mut_unchecked() });
 
-                            if !fiber.done && !fiber.yielded {
+                            if fiber.state != FiberState::Done && !fiber.yielded {
                                 local.push(fiber);
                             } else if fiber.yielded {
                                 injector.push(fiber);
