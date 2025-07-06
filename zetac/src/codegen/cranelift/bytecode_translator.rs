@@ -7,8 +7,6 @@ use ir::Bytecode;
 pub fn translate_bytecode(
     builder: &mut FunctionBuilder,
     bytecode: &[u8],
-    vm_ptr: Value,
-    args_ptr: Value,
 ) -> anyhow::Result<()> {
     use ir::Bytecode::*;
 
