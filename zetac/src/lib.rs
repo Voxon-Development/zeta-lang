@@ -1,4 +1,5 @@
-
+#![feature(allocator_api)]
+#![feature(slice_ptr_get)]
 
 use crate::ast::{ClassDecl, FuncDecl, Stmt};
 pub use crate::codegen::cranelift::compiler::Codegen;
@@ -8,7 +9,6 @@ use std::path::{Path, PathBuf};
 
 use cranelift::prelude::{types, AbiParam};
 
-use crate::println::*;
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::process;
 
@@ -16,7 +16,6 @@ pub mod async_compiler;
 pub use async_compiler::{compile_files_async, AsyncCompileError};
 pub mod frontend;
 pub mod ast;
-pub mod println;
 pub mod codegen;
 
 /*fn main() {
@@ -119,7 +118,7 @@ pub fn compile_to_ir(file: PathBuf, native: bool, native_output: Option<PathBuf>
         BackendModule::Native(module, native_output, codegen)
     } else {
         // JIT backend
-        let mut builder = JITBuilder::new(cranelift_module::default_libcall_names()).expect("Unable to create JIT builder");
+        let builder = JITBuilder::new(cranelift_module::default_libcall_names()).expect("Unable to create JIT builder");
         let mut module = JITModule::new(builder);
 
         let mut sig = module.make_signature();
