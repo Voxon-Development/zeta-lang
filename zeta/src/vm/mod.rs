@@ -5,9 +5,3 @@ pub mod eventloop;
 mod fibers;
 pub mod memory;
 mod println;
-mod interpreter;
-pub mod instruction_handlers;
-
-// Re-export commonly used types
-pub use instruction_handlers::class_ops::ClassInitHandler;
-pub use zetac::codegen::ir::ir_compiler::{ClassTable, CompressedClassTable, ClassLayout};
