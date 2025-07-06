@@ -1,15 +1,15 @@
-use std::collections::HashMap;
-use std::time;
-use std::ptr;
 use crate::ast;
-use ir::{Bytecode, VMValue};
-use crate::ast::{FuncDecl, Visibility};
+use crate::ast::Visibility;
 use crate::codegen::ir::optimization::pass::OptimizationPassPriority;
+use ir::VMValue;
+use std::collections::HashMap;
+use dashmap::DashMap;
+use ir::bump::{AtomicBump, Bump};
 
 /// Type alias for native function pointers
 pub type NativeFnPtr = unsafe extern "C" fn(*const VMValue, usize) -> VMValue;
 
-#[derive(Default, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct Function {
     pub name: String,
     pub id: u64,
@@ -18,10 +18,8 @@ pub struct Function {
     pub visibility: Option<Visibility>,
     pub is_method: bool,
     pub is_main: bool,
-    pub is_native: bool,
-    pub native_pointer: Option<NativeFnPtr>,
-    pub locals: Vec<String>,
-    pub code: Vec<u8>,
+    pub native_pointer: NativeFnPtr,
+    pub code: Vec<u8, AtomicBump>,
     pub optimization_level: OptimizationPassPriority,
 }
 
@@ -35,10 +33,8 @@ impl Function {
             visibility: Some(Visibility::Public),
             is_method: false,
             is_main: false,
-            is_native: true,
-            native_pointer: Some(native_pointer),
-            locals: Vec::new(),
-            code: Vec::new(),
+            native_pointer,
+            code: Vec::new_in(AtomicBump::new()),
             optimization_level: OptimizationPassPriority::Max,
         }
     }
@@ -52,10 +48,8 @@ impl Function {
             visibility: None,
             is_method: false,
             is_main: false,
-            is_native: true,
-            native_pointer: Some(native_pointer),
-            locals: Vec::new(),
-            code: Vec::new(),
+            native_pointer,
+            code: Vec::new_in(AtomicBump::new()),
             optimization_level: OptimizationPassPriority::Min,
         }
     }
@@ -69,10 +63,8 @@ impl Function {
             visibility: None,
             is_method: false,
             is_main: false,
-            is_native: true,
-            native_pointer: Some(native_pointer),
-            locals: Vec::new(),
-            code: Vec::new(),
+            native_pointer,
+            code: Vec::new_in(AtomicBump::new()),
             optimization_level: OptimizationPassPriority::Min,
         }
     }
@@ -82,43 +74,52 @@ unsafe impl Send for Function {}
 unsafe impl Sync for Function {}
 
 pub struct ZetaModule {
-    pub functions: HashMap<u64, Function>,
-    pub functions_by_name: HashMap<String, u64>,
-    pub entry: Option<u64>,
+    pub functions: Vec<Function, AtomicBump>,
+    pub functions_by_name: DashMap<String, u64>,
+    pub entry: Option<NativeFnPtr>,
 }
+
+unsafe impl Send for ZetaModule {}
+unsafe impl Sync for ZetaModule {}
 
 impl ZetaModule {
     pub fn new() -> ZetaModule {
         ZetaModule {
-            functions: HashMap::new(),
-            functions_by_name: HashMap::new(),
+            functions: Vec::new_in(AtomicBump::new()),
+            functions_by_name: DashMap::new(),
             entry: None,
         }
     }
     
     pub fn add_function(&mut self, function: Function) {
         self.functions_by_name.insert(function.name.clone(), function.id);
-        self.functions.insert(function.id, function);
+        self.functions.insert(function.id as usize, function);
+    }
+    
+    pub fn clear(&mut self) {
+        self.functions.clear();
+        self.functions_by_name.clear();
+        self.entry = None;
     }
     
     pub fn get_function_by_name(&self, name: &String) -> Option<&Function> {
-        let id = self.functions_by_name.get(name).cloned();
+        let id = self.functions_by_name.get(name);
         match id {
-            Some(id) => self.functions.get(&id),
+            Some(id) => self.functions.get(*id as usize),
             None => None
         }
     }
     
     pub fn replace_function(&mut self, function: Function) {
-        self.functions.insert(function.id, function);
+        self.functions.insert(function.id as usize, function);
     }
     
     pub fn get_function(&self, id: u64) -> Option<&Function> {
-        self.functions.get(&id)
+        self.functions.get(id as usize)
     }
     
     #[inline]
     pub fn get_function_mut(&mut self, id: u64) -> Option<&mut Function> {
-        self.functions.get_mut(&id)
+        self.functions.get_mut(id as usize)
     }
 }
