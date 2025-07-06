@@ -9,6 +9,7 @@ use std::{fs, process};
 use parking_lot::Mutex;
 use trc::SharedTrc;
 use zetac::{compile_files_async, compile_to_ir, BackendModule};
+use crate::vm::functions;
 
 #[derive(Parser)]
 #[command(name = "zeta")]
@@ -123,7 +124,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     
     match cli.command {
         Some(Commands::Jit { file, verbose }) => {
-            run_files_async(vec![file], verbose).await?;
+            run_files_async(vec![file], true).await?;
         },
         Some(Commands::Aot { file, output }) => {
             run_file(file, true, false, output)?;
@@ -145,34 +146,33 @@ async fn run_files_async(files: Vec<PathBuf>, verbose: bool) -> Result<(), Box<d
     if verbose {
         println!("Compiling {} files asynchronously...", files.len());
     }
-    
+
     let start_time = Instant::now();
-    
+
     let (module, class_table) = compile_files_async(files.clone())
         .await
         .map_err(|e| {
             eprintln!("Async compilation failed: {}", e);
             process::exit(1);
         })?;
-    
+
     let duration = start_time.elapsed();
-    
+
     if verbose {
         println!("Compilation completed in {:.2?}", duration);
         println!("Module contains {} functions", module.functions.len());
     }
-    
-    // Run the compiled code
+
     let vm = VirtualMachine::new(module, class_table.compressed);
     let vm = boot(vm);
-    let optional_main_function_id = vm.lock().function_module.lock().entry;
-    if let Some(main_function_id) = optional_main_function_id {
-        vm.lock().run_function(main_function_id, Vec::new());
-        vm.lock().halt();
+
+    let maybe_main = vm.lock().function_module.lock().entry;
+    if let Some(main_id) = maybe_main {
+        unsafe { functions::run_native_ptr(main_id, std::ptr::null(), 0); }
+        vm.lock().shutdown();
     } else {
-        eprintln!("No entry point found, please add a main function like the following:");
-        eprintln!("fun main() {{\n    println_str(\"Hello World!\");\n}}");
-        std::process::exit(1);
+        eprintln!("No entry point found. Expected: `void main() {{ println(\"Hello World!\"); }}`");
+        vm.lock().shutdown();
     }
 
     Ok(())
