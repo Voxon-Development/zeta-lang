@@ -21,6 +21,9 @@ pub struct StackFrame {
     pub current_opcode: u8,
 }
 
+unsafe impl Send for StackFrame {}
+unsafe impl Sync for StackFrame {}
+
 impl StackFrame {
     #[inline]
     pub fn new(pc: usize, return_address: usize, function_id: u64) -> StackFrame {
@@ -53,6 +56,11 @@ impl StackFrame {
     
     pub fn get(&self, name: &str) -> Option<&VMValue> {
         self.locals.get(name)
+    }
+    
+    #[inline(always)]
+    pub fn get_class(&self, id: usize) -> Option<&ir::Class> {
+        self.stack.get_class(id)
     }
     
     pub fn reset(&mut self) {
