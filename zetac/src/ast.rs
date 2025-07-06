@@ -1,7 +1,10 @@
+use ir::bump::AtomicBump;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     Import(ImportStmt),
     Let(LetStmt),
+    Const(ConstStmt),
     Return(ReturnStmt),
     If(IfStmt),
     While(WhileStmt),
@@ -12,8 +15,38 @@ pub enum Stmt {
     ClassDecl(ClassDecl),
     ExprStmt(InternalExprStmt),
     EffectDecl(EffectDecl),
+    InterfaceDecl(InterfaceDecl),
+    ImplementInterfaceDecl(ImplementInterfaceDecl),
+    EnumDecl(EnumDecl),
     Break,
     Continue,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InterfaceDecl {
+    pub visibility: Option<Visibility>,
+    pub name: String,
+    pub methods: Vec<FuncDecl>,
+    pub const_stmts: Vec<ConstStmt>
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImplementInterfaceDecl {
+    pub name: String,
+    pub methods: Vec<FuncDecl>
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumDecl {
+    pub visibility: Option<Visibility>,
+    pub name: String,
+    pub variants: Vec<EnumVariant>
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumVariant {
+    pub name: String,
+    pub value: Option<Expr>
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -34,6 +67,14 @@ pub struct LetStmt {
     pub mutability: bool,
     pub ident: String,
     pub type_annotation: Option<Type>,
+    pub value: Box<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConstStmt {
+    pub mutability: bool,
+    pub ident: String,
+    pub type_annotation: Type,
     pub value: Box<Expr>,
 }
 
@@ -164,7 +205,7 @@ pub struct FuncDecl {
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
     pub effects: Option<Effects>,
-    pub body: Block,
+    pub body: Option<Block>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -189,12 +230,12 @@ pub struct Param {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Block {
-    pub block: Vec<Stmt>,
+    pub block: Vec<Stmt, AtomicBump>,
 }
 
 impl IntoIterator for Block {
     type Item = Stmt;
-    type IntoIter = std::vec::IntoIter<Stmt>;
+    type IntoIter = std::vec::IntoIter<Stmt, AtomicBump>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.block.into_iter()
