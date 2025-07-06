@@ -1,20 +1,25 @@
+public interface Drawable {
+    void draw()
+}
+
 public class Vec3f(x: i32, y: i32, z: i32) {
-    fun multiply(other: Vec3f) {
+    void multiply(other: Vec3f) {
         this.x *= other.x
         this.y *= other.y
         this.z *= other.z
     }
 }
 
-fun main() {
-    let x: Vec3f = Vec3f { 1, 2, 3 }
-    let y: Vec3f = Vec3f { 2, 3, 4 }
-    x.multiply(y)
+implement Drawable for Vec3f {
+    void draw() {
+        println("a")
+    }
+}
 
-    println_str(x.x)
+void main() {
     hello_world()
 }
 
-fun hello_world() {
+void hello_world() {
     println("a")
 }
