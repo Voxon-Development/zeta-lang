@@ -1,10 +1,51 @@
-use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use dashmap::DashMap;
 use lazy_static::lazy_static;
+use ir::VmString;
+use ir::bump::AtomicBump;
 
-#[derive(Debug, Clone)]
+pub struct AppendBuffer {
+    data: AtomicBump,
+    index: AtomicUsize,
+    capacity: usize,
+}
+
+unsafe impl Sync for AppendBuffer {}
+unsafe impl Send for AppendBuffer {}
+
+impl AppendBuffer {
+    pub fn with_capacity(cap: usize) -> Self {
+        Self {
+            data: AtomicBump::with_capacity(cap),
+            index: AtomicUsize::new(0),
+            capacity: cap,
+        }
+    }
+
+    pub fn append(&self, bytes: &[u8]) -> Option<usize> {
+        let len = bytes.len();
+        let start = self.index.fetch_add(len, Ordering::Relaxed);
+        if start + len > self.capacity {
+            return None; // Trigger resize
+        }
+
+        for (i, &b) in bytes.iter().enumerate() {
+            unsafe {
+                *self.data[start + i].get() = b;
+            }
+        }
+
+        Some(start)
+    }
+
+    pub fn get_slice(&self, offset: usize, length: usize) -> &[u8] {
+        self.data.get_slice(offset, length)
+    }
+}
+
 pub struct StringPool {
-    pub(crate) data_buffer: Vec<u8>,
-    interned_strings: HashMap<u64, Vec<ir::VmString>>,
+    data_buffer: AppendBuffer,
+    interned_strings: DashMap<u64, Vec<VmString>>,
 }
 
 lazy_static! {
@@ -15,48 +56,40 @@ impl StringPool {
     #[inline(always)]
     pub fn new() -> Self {
         StringPool {
-            data_buffer: Vec::new(),
-            interned_strings: HashMap::new(),
+            data_buffer: AppendBuffer::with_capacity(64),
+            interned_strings: DashMap::new(),
         }
     }
 
-    #[inline(always)]
-    pub fn intern(&mut self, s: &str) -> ir::VmString {
-        let s_hash = HASHER.hash_one(s);
+    pub fn intern(&self, s: &str) -> VmString {
+        let hash = HASHER.hash_one(s);
 
-        if let Some(collision_list) = self.interned_strings.get(&s_hash) {
-            // Hash collision: iterate through the list of VmStrings
-            // that share this hash to find an exact content match.
-            for vm_string in collision_list {
-                if self.resolve_string(vm_string) == s {
-                    return *vm_string;
-                }
+        if let Some(vec) = self.interned_strings.get(&hash) {
+            if let Some(existing) = vec.iter().find(|v| self.resolve_string(v) == s) {
+                return *existing;
             }
         }
 
-        let offset = self.data_buffer.len();
-        self.data_buffer.extend_from_slice(s.as_bytes());
-
-        let new_vm_string = ir::VmString {
-            offset,
-            length: s.len(),
-            hash: s_hash,
+        // Slow path: insert new string
+        let bytes = s.as_bytes();
+        let offset = match self.data_buffer.append(bytes) {
+            Some(offset) => offset,
+            None => panic!("Out of memory")
         };
 
-        self.interned_strings.entry(s_hash).or_default().push(new_vm_string);
-        new_vm_string
+        let vm_string = VmString {
+            offset,
+            length: bytes.len(),
+            hash,
+        };
+
+        self.interned_strings.entry(hash).or_default().push(vm_string);
+        vm_string
     }
 
     #[inline(always)]
-    pub fn resolve_string(&self, vm_string: &ir::VmString) -> &str {
-        let start = vm_string.offset;
-        let end = start + vm_string.length;
-
-        assert!(start <= end, "Invalid string offset");
-        assert!(start < self.data_buffer.len(), "String offset out of bounds");
-        assert!(end < self.data_buffer.len(), "String offset out of bounds");
-
-        // SAFETY: We trust the VM to pass valid pointers
-        unsafe { std::str::from_utf8_unchecked(&self.data_buffer[start..end]) }
+    pub fn resolve_string(&self, vm_string: &VmString) -> String {
+        let slice = self.data_buffer.get_slice(vm_string.offset, vm_string.length);
+        unsafe { String::from_utf8_unchecked(slice.to_vec()) }
     }
 }
