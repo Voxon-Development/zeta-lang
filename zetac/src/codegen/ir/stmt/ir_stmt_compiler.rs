@@ -1,29 +1,33 @@
 use std::ops::Deref;
+use ir::bump::AtomicBump;
 use ir::Bytecode;
 use crate::ast::*;
 use crate::codegen::ir::ir_buffer::ByteWriter;
 use crate::codegen::ir::ir_compiler::ClassTable;
+use crate::codegen::ir::stmt::ir_expr_compiler::IRExprCompiler;
+
+static EXPR_COMPILER: IRExprCompiler = IRExprCompiler;
 
 pub struct IRStmtCompiler;
 
 impl IRStmtCompiler {
-    pub fn compile_stmts(&self, stmts: &Vec<Stmt>, classes: &ClassTable) -> Vec<u8> {
-        let mut bytecode = Vec::new();
+    pub fn compile_stmts(&self, stmts: &Vec<Stmt, AtomicBump>, classes: &ClassTable) -> Vec<u8, AtomicBump> {
+        let mut bytecode: Vec<u8, AtomicBump> = Vec::new_in(AtomicBump::new());
         for stmt in stmts {
-            let stmt_ir: Vec<u8> = self.compile_stmt(stmt, classes);
+            let stmt_ir: Vec<u8, AtomicBump> = self.compile_stmt(stmt, classes);
             bytecode.extend(stmt_ir);
         }
         bytecode
     }
 
-    pub fn compile_stmt(&self, stmt: &Stmt, classes: &ClassTable) -> Vec<u8> {
+    pub fn compile_stmt(&self, stmt: &Stmt, classes: &ClassTable) -> Vec<u8, AtomicBump> {
         match stmt {
-            Stmt::ExprStmt(InternalExprStmt { expr }) => self.compile_expr(expr, classes),
+            Stmt::ExprStmt(InternalExprStmt { expr }) => EXPR_COMPILER.compile_expr(expr, classes),
             Stmt::Return(ReturnStmt { value }) => {
                 let mut w = ByteWriter::new();
                 w.write_u8(Bytecode::Return as u8);
                 if let Some(v) = value {
-                    w.extend(self.compile_expr(v, classes));
+                    w.extend(EXPR_COMPILER.compile_expr(v, classes));
                 }
                 w.into_bytes()
             }
@@ -32,169 +36,17 @@ impl IRStmtCompiler {
             Stmt::For(for_stmt) => self.compile_for_stmt(for_stmt, classes),
             Stmt::Match(match_stmt) => self.compile_match_stmt(match_stmt, classes),
             Stmt::Let(let_stmt) => self.compile_let_stmt(let_stmt, classes),
+            Stmt::Const(const_stmt) => self.compile_const_stmt(const_stmt, classes),
             Stmt::UnsafeBlock(UnsafeBlock { block }) => self.compile_stmts(&block.block, classes),
             _ => {
                 eprintln!("Unsupported statement: {:#?}", stmt);
-                vec![]
+                Vec::new_in(AtomicBump::new())
             },
         }
     }
 
-    fn compile_expr(&self, expr: &Expr, classes: &ClassTable) -> Vec<u8> {
-        let mut ir = ByteWriter::new();
-        match expr {
-            Expr::Binary { left, op, right } => {
-                ir.extend(self.compile_expr(left, classes));
-                ir.extend(self.compile_expr(right, classes));
-                ir.write_u8(parse_ast_op_to_ir(op));
-            }
-            Expr::ClassInit { callee, arguments } => {
-                for arg in arguments {
-                    ir.extend(self.compile_expr(arg, classes)); // Push args first
-                }
-
-                ir.write_u8(Bytecode::ClassInit as u8);
-
-                match callee.deref() {
-                    Expr::Ident(ident) => {
-                        ir.write_u64(classes.name_to_id[ident] as u64); // Write class ID
-                    }
-                    _ => panic!("Unsupported class init expression: {:#?}", callee),
-                }
-
-                ir.write_u8(arguments.len() as u8); // Write arity (if required)
-            }
-            Expr::Array { elements } => {
-                for el in elements {
-                    ir.extend(self.compile_expr(el, classes));
-                }
-                ir.write_u8(Bytecode::ArrayAlloc as u8);
-                ir.write_u16(elements.len() as u16);
-            }
-            Expr::Assignment { lhs, op, rhs } => {
-                match (&**lhs, op) {
-                    (Expr::Ident(ident), Op::Assign) => {
-                        ir.extend(self.compile_expr(rhs, classes)); // compute RHS
-                        ir.write_u8(Bytecode::StoreVar as u8);
-                        ir.write_string(ident);
-                    }
-                    (Expr::FieldAccess { object, field }, Op::Assign) => {
-                        ir.extend(self.compile_expr(object, classes));
-                        ir.extend(self.compile_expr(rhs, classes));
-                        ir.write_u8(Bytecode::StoreField as u8);
-                        ir.write_string(field);
-                    }
-                    (Expr::FieldAccess { object, field }, compound_op) => {
-                        // Compound assignment: load field, apply op, store back
-                        ir.extend(self.compile_expr(&*object.clone(), classes)); // clone object for load
-                        ir.write_u8(Bytecode::LoadField as u8);
-                        ir.write_string(field);
-
-                        ir.extend(self.compile_expr(rhs, classes));
-                        ir.write_u8(parse_ast_op_to_ir(compound_op)); // e.g. Mul
-
-                        ir.extend(self.compile_expr(object, classes)); // re-evaluate object
-                        ir.write_u8(Bytecode::Swap as u8); // put object before result
-                        ir.write_u8(Bytecode::StoreField as u8);
-                        ir.write_string(field);
-                    }
-                    (Expr::Ident(ident), compound_op) => {
-                        // For compound assignments like `+=`, `-=`, etc.
-                        ir.write_u8(Bytecode::LoadVar as u8);
-                        ir.write_string(ident); // load existing value
-                        ir.extend(self.compile_expr(rhs, classes)); // compute RHS
-                        ir.write_u8(parse_ast_op_to_ir(compound_op)); // apply binary op
-                        ir.write_u8(Bytecode::StoreVar as u8);
-                        ir.write_string(ident); // re-store
-                    }
-                    (Expr::ArrayIndex { array, index }, Op::Assign) => {
-                        ir.extend(self.compile_expr(array, classes));
-                        ir.extend(self.compile_expr(index, classes));
-                        ir.extend(self.compile_expr(rhs, classes));
-                        ir.write_u8(Bytecode::ArraySet as u8);
-                    }
-                    _ => unimplemented!("Unsupported assignment LHS: {:?}", lhs),
-                }
-            }
-            Expr::ArrayIndex { array, index } => {
-                ir.extend(self.compile_expr(array, classes));
-                ir.extend(self.compile_expr(index, classes));
-                ir.write_u8(Bytecode::ArrayGet as u8);
-            }
-            Expr::ArrayInit { .. } => {
-                ir.write_u8(Bytecode::ArrayAlloc as u8);
-            }
-            Expr::ExprList { exprs } => {
-                for e in exprs {
-                    ir.extend(self.compile_expr(e, classes));
-                }
-            }
-            Expr::Ident(ident) => {
-                if classes.name_to_id.contains_key(ident) {
-                    // It's a class name, used in a ClassInit
-                    // Don't emit anything — ClassInit will handle it
-                } else {
-                    ir.write_u8(Bytecode::LoadVar as u8);
-                    ir.write_string(ident);
-                }
-            }
-            Expr::FieldAccess { object, field } => {
-                ir.extend(self.compile_expr(object, classes)); // push base object
-                ir.write_u8(Bytecode::LoadField as u8);
-                ir.write_string(field);
-            }
-
-            Expr::Number(num) => {
-                ir.write_u8(Bytecode::PushInt as u8);
-                ir.write_i64(*num);
-            }
-            Expr::String(str) => {
-                ir.write_u8(Bytecode::PushStr as u8);
-                ir.write_string(str);
-            }
-            Expr::Boolean(b) => {
-                ir.write_u8(Bytecode::PushBool as u8);
-                ir.write_u8(*b as u8);
-            }
-            Expr::Call { callee, arguments } => {
-                for arg in arguments {
-                    ir.extend(self.compile_expr(arg, classes));
-                }
-
-                ir.write_u8(Bytecode::Call as u8);
-
-                match &**callee {
-                    Expr::Ident(ident) => {
-                        ir.write_string(ident); // function name
-                    }
-                    _ => {
-                        panic!("Dynamic call targets not supported yet");
-                    }
-                }
-
-                ir.write_u8(arguments.len() as u8); // arity
-            }
-
-            Expr::Comparison { lhs, op, rhs } => {
-                ir.extend(self.compile_expr(lhs, classes));
-                ir.extend(self.compile_expr(rhs, classes));
-                ir.write_u8(match op {
-                    ComparisonOp::Equal => Bytecode::Eq as u8,
-                    ComparisonOp::NotEqual => Bytecode::Ne as u8,
-                    ComparisonOp::GreaterThan => Bytecode::Gt as u8,
-                    ComparisonOp::GreaterThanOrEqual => Bytecode::Ge as u8,
-                    ComparisonOp::LessThan => Bytecode::Lt as u8,
-                    ComparisonOp::LessThanOrEqual => Bytecode::Le as u8,
-                });
-            }
-            _ => {}
-        }
-        let ir = ir.into_bytes();
-        ir
-    }
-
-    fn compile_if_stmt(&self, if_stmt: &IfStmt, classes: &ClassTable) -> Vec<u8> {
-        let mut ir = self.compile_expr(&if_stmt.condition, classes);
+    fn compile_if_stmt(&self, if_stmt: &IfStmt, classes: &ClassTable) -> Vec<u8, AtomicBump> {
+        let mut ir = EXPR_COMPILER.compile_expr(&if_stmt.condition, classes);
 
         let jump_if_false_pos = ir.len();
         ir.push(Bytecode::JumpIfFalse as u8);
@@ -219,11 +71,11 @@ impl IRStmtCompiler {
         ir
     }
 
-    fn compile_while_stmt(&self, while_stmt: &WhileStmt, classes: &ClassTable) -> Vec<u8> {
-        let mut ir = Vec::new();
+    fn compile_while_stmt(&self, while_stmt: &WhileStmt, classes: &ClassTable) -> Vec<u8, AtomicBump> {
+        let mut ir: Vec<u8, AtomicBump> = Vec::new_in(AtomicBump::new());
 
         let start_pos = ir.len();
-        ir.extend(self.compile_expr(&while_stmt.condition, classes));
+        ir.extend(EXPR_COMPILER.compile_expr(&while_stmt.condition, classes));
 
         let jump_out_pos = ir.len();
         ir.push(Bytecode::JumpIfFalse as u8);
@@ -245,26 +97,26 @@ impl IRStmtCompiler {
         ir
     }
 
-    fn compile_for_stmt(&self, for_stmt: &ForStmt, classes: &ClassTable) -> Vec<u8> {
-        let mut ir = Vec::new();
+    fn compile_for_stmt(&self, for_stmt: &ForStmt, classes: &ClassTable) -> Vec<u8, AtomicBump> {
+        let mut ir = Vec::new_in(AtomicBump::new());
         if let Some(init) = &for_stmt.let_stmt {
             ir.extend(self.compile_let_stmt(init, classes));
         }
         if let Some(cond) = &for_stmt.condition {
-            ir.extend(self.compile_expr(cond, classes));
+            ir.extend(EXPR_COMPILER.compile_expr(cond, classes));
         }
         if let Some(inc) = &for_stmt.increment {
-            ir.extend(self.compile_expr(inc, classes));
+            ir.extend(EXPR_COMPILER.compile_expr(inc, classes));
         }
         ir.extend(self.compile_stmts(&for_stmt.block.block, classes));
         ir
     }
 
-    fn compile_match_stmt(&self, _match_stmt: &MatchStmt, classes: &ClassTable) -> Vec<u8> {
+    fn compile_match_stmt(&self, _match_stmt: &MatchStmt, classes: &ClassTable) -> Vec<u8, AtomicBump> {
         todo!()
     }
 
-    fn compile_let_stmt(&self, let_stmt: &LetStmt, classes: &ClassTable) -> Vec<u8> {
+    fn compile_let_stmt(&self, let_stmt: &LetStmt, classes: &ClassTable) -> Vec<u8, AtomicBump> {
         let mut ir = ByteWriter::new();
         match &let_stmt.value.deref() {
             Expr::RegionInit => {
@@ -274,7 +126,7 @@ impl IRStmtCompiler {
                 ir.into_bytes()
             },
             _ => {
-                ir.extend(self.compile_expr(&let_stmt.value, classes));
+                ir.extend(EXPR_COMPILER.compile_expr(&let_stmt.value, classes));
                 ir.write_u8(Bytecode::StoreVar as u8);
                 ir.write_string(&let_stmt.ident);
 
@@ -285,10 +137,29 @@ impl IRStmtCompiler {
             }
         }
     }
+
+    fn compile_const_stmt(&self, const_stmt: &ConstStmt, classes: &ClassTable) -> Vec<u8, AtomicBump> {
+        let mut ir = ByteWriter::new();
+        match &const_stmt.value.deref() {
+            Expr::RegionInit => {
+                ir.write_u8(Bytecode::NewRegion as u8);
+                ir.write_string(&const_stmt.ident); // variable name
+
+                ir.into_bytes()
+            },
+            _ => {
+                ir.extend(EXPR_COMPILER.compile_expr(&const_stmt.value, classes));
+                ir.write_u8(Bytecode::StoreVar as u8);
+                ir.write_string(&const_stmt.ident);
+
+                ir.into_bytes()
+            }
+        }
+    }
 }
 
 #[inline]
-fn parse_ast_to_ir(ast_type: Type) -> ir::BytecodeType {
+pub(crate) fn parse_ast_to_ir(ast_type: Type) -> ir::BytecodeType {
     match ast_type {
         Type::U8 => ir::BytecodeType::U8,
         Type::I8 => ir::BytecodeType::I8,
@@ -313,7 +184,7 @@ fn parse_ast_to_ir(ast_type: Type) -> ir::BytecodeType {
 }
 
 #[inline]
-const fn parse_ast_op_to_ir(op: &Op) -> u8 {
+pub(crate) const fn parse_ast_op_to_ir(op: &Op) -> u8 {
     match op {
         Op::Add => Bytecode::Add as u8,
         Op::Sub => Bytecode::Sub as u8,
