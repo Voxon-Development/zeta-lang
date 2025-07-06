@@ -1,4 +1,5 @@
 use std::fs;
+use ir::bump::AtomicBump;
 use crate::frontend::tokens;
 use crate::frontend::tokens::TokenError;
 
@@ -22,6 +23,7 @@ impl Lexer {
     }
 
     pub fn from_file(file_name: &str) -> Lexer {
+        let file_name: String = file_name.to_string();
         Lexer {
             input: fs::read_to_string(file_name).unwrap().chars().collect(),
             index: 0,
@@ -39,8 +41,8 @@ impl Lexer {
     ///
     /// `tokenize` will return an `Err` if any errors occur during tokenization.
     /// The `Err` will contain a string describing the errors.
-    pub fn tokenize(&mut self) -> anyhow::Result<Vec<tokens::Token>> {
-        let mut tokens = Vec::new();
+    pub fn tokenize(&mut self) -> anyhow::Result<Vec<tokens::Token, AtomicBump>> {
+        let mut tokens: Vec<tokens::Token, AtomicBump> = Vec::with_capacity_in(64, AtomicBump::new());
 
         while self.index < self.input.len() {
             let c = self.peek_char(); // Use a helper to peek at the current char
@@ -113,14 +115,14 @@ impl Lexer {
         let identifier: String = self.input[start_index..self.index].iter().collect();
 
         let token_type = match identifier.as_str() {
-            "let" => tokens::TokenType::Keyword,
-            "fun" => tokens::TokenType::Keyword, // Added fun
+            "type" => tokens::TokenType::Keyword,
+            "work" => tokens::TokenType::Keyword,
             "effect" => tokens::TokenType::Keyword,
             "class" => tokens::TokenType::Keyword,
             "interface" => tokens::TokenType::Keyword,
             "public" => tokens::TokenType::Keyword,
             "private" => tokens::TokenType::Keyword,
-            "protected" => tokens::TokenType::Keyword,
+            "internal" => tokens::TokenType::Keyword,
             "if" => tokens::TokenType::Keyword,
             "else" => tokens::TokenType::Keyword,
             "while" => tokens::TokenType::Keyword,
@@ -131,17 +133,18 @@ impl Lexer {
             "continue" => tokens::TokenType::Keyword,
             "true" => tokens::TokenType::Keyword,
             "false" => tokens::TokenType::Keyword,
-            "self" => tokens::TokenType::Keyword,
-            "super" => tokens::TokenType::Keyword,
+            "this" => tokens::TokenType::Keyword,
             "enum" => tokens::TokenType::Keyword,
             "import" => tokens::TokenType::Keyword,
-            "as" => tokens::TokenType::Keyword,
+            "defer" => tokens::TokenType::Keyword,
             "mut" => tokens::TokenType::Keyword,
             "static" => tokens::TokenType::Keyword,
             "const" => tokens::TokenType::Keyword,
-            "impl" => tokens::TokenType::Keyword,
-            "extern" => tokens::TokenType::Keyword,
             "unsafe" => tokens::TokenType::Keyword,
+            "native" => tokens::TokenType::Keyword,
+            "with" => tokens::TokenType::Keyword,
+            "in" => tokens::TokenType::Keyword,
+            "macro" => tokens::TokenType::Keyword,
 
             // types
             "f32" => tokens::TokenType::F32,
