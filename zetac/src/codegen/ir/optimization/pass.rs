@@ -5,9 +5,10 @@ use ir::Bytecode;
 use crate::codegen::ir::module::ZetaModule;
 
 use std::sync::{Arc, Mutex};
+use ir::bump::AtomicBump;
 
 pub trait Pass: Send + Sync + 'static {
-    fn optimize(&self, bytecode: &mut Vec<u8>, module: &ZetaModule) -> anyhow::Result<()>;
+    fn optimize(&self, bytecode: &mut Vec<u8, AtomicBump>, module: &ZetaModule) -> anyhow::Result<()>;
     fn priority(&self) -> OptimizationPassPriority;
     
     /// Create a new boxed instance of the pass (for thread-safe cloning)
@@ -27,6 +28,8 @@ pub enum OptimizationPassPriority {
     Medium,
     Low,
     Min,
+    None,
+    Invisible
 }
 
 impl OptimizationPassPriority {
@@ -37,6 +40,8 @@ impl OptimizationPassPriority {
             OptimizationPassPriority::Medium => "Normal".to_string(),
             OptimizationPassPriority::Low => "Low".to_string(),
             OptimizationPassPriority::Min => "Min".to_string(),
+            OptimizationPassPriority::None => "None".to_string(),
+            OptimizationPassPriority::Invisible => "Invisible".to_string(),
         }
     }
 }
@@ -62,7 +67,7 @@ impl Default for OptimizationPassPriority {
 pub struct ConstantFoldingPass;
 
 impl Pass for ConstantFoldingPass {
-    fn optimize(&self, bytecode: &mut Vec<u8>, _module: &ZetaModule) -> anyhow::Result<()> {
+    fn optimize(&self, bytecode: &mut Vec<u8, AtomicBump>, _module: &ZetaModule) -> anyhow::Result<()> {
         let mut i = 0;
         while i < bytecode.len() {
             // Check if we have a binary operation with two constants before it
@@ -171,7 +176,7 @@ impl ConstantFoldingPass {
 pub struct DeadCodeEliminationPass;
 
 impl Pass for DeadCodeEliminationPass {
-    fn optimize(&self, bytecode: &mut Vec<u8>, _module: &ZetaModule) -> anyhow::Result<()> {
+    fn optimize(&self, bytecode: &mut Vec<u8, AtomicBump>, _module: &ZetaModule) -> anyhow::Result<()> {
         let mut i = 0;
         while i < bytecode.len() {
             match Bytecode::try_from(bytecode[i]).unwrap() {
