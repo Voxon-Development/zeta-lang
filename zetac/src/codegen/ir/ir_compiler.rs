@@ -6,6 +6,9 @@ use crate::frontend;
 use rand::rngs::OsRng;
 use rand::TryRngCore;
 use std::collections::HashMap;
+use dashmap::DashMap;
+use ir::bump::AtomicBump;
+use crate::codegen::cranelift::compiler_from_ir::IRToCraneliftCompiler;
 
 #[derive(Clone, Debug, Default)]
 pub struct ClassLayout {
@@ -13,22 +16,20 @@ pub struct ClassLayout {
     pub field_order: Vec<String>,              // deterministic order
 }
 
-#[derive(Clone, Debug, Default)]
 pub struct ClassTable {
     pub compressed: CompressedClassTable,
-    pub name_to_id: HashMap<String, usize>,
+    pub name_to_id: DashMap<String, usize>,
 }
 
 impl ClassTable {
     #[inline]
     pub fn new() -> ClassTable {
-        ClassTable { compressed: CompressedClassTable { layouts: vec![] }, name_to_id: HashMap::new() }
+        ClassTable { compressed: CompressedClassTable { layouts: Vec::new_in(AtomicBump::new()) }, name_to_id: DashMap::new() }
     }
 }
 
-#[derive(Clone, Debug, Default)]
 pub struct CompressedClassTable {
-    pub layouts: Vec<ClassLayout>,
+    pub layouts: Vec<ClassLayout, AtomicBump>,
 }
 
 pub struct IrCompiler<'a> {
@@ -89,30 +90,36 @@ impl<'a> IrCompiler<'a> {
         self.classes.name_to_id.insert(class.name.clone(), class_id);
 
         for stmt in class.body.clone() {
-            if let Stmt::FuncDecl(func) = stmt {
-                self.compile_func(func);
-            } else {
-                self.ir_stmt_compiler.compile_stmt(&stmt, &self.classes);
+            match stmt {
+                Stmt::FuncDecl(f) => self.compile_func(f),
+                Stmt::ClassDecl(c) => self.compile_class(c),
+                Stmt::Const(_) => {
+                    self.ir_stmt_compiler.compile_stmt(&stmt, &self.classes);
+                },
+                _ => {
+                    eprintln!("Unsupported statement in class: {:#?}", stmt);
+                }
             }
         }
     }
-
-
+    
     fn compile_func(&mut self, func: FuncDecl) {
-        let bytecode = self.ir_stmt_compiler.compile_stmts(&func.body.block, &self.classes);
+        let bytecode = self.ir_stmt_compiler.compile_stmts(&func.body.clone().unwrap().block, &self.classes);
+
+        let mut compiler = IRToCraneliftCompiler::new();
+        let name = func.name.clone();
+        let native_pointer = compiler.compile_function(&name.as_str(), &bytecode).unwrap();
         
         let mut random = OsRng;
 
         let function = Function {
-            name: func.name.clone(),
+            name,
             params: func.params.clone(),
             return_type: func.return_type.clone(),
             visibility: func.visibility.clone(),
             is_method: matches!(func.params.first(), Some(p) if p.name == "self"),
             is_main: func.name == "main",
-            locals: vec![],
-            is_native: false,
-            native_pointer: None,
+            native_pointer,
             id: random.try_next_u64().unwrap(),
             code: bytecode,
             optimization_level: OptimizationPassPriority::Min
@@ -121,10 +128,10 @@ impl<'a> IrCompiler<'a> {
         println!("Function: {:?}", function);
 
         if func.name == "main" {
-            self.module.entry = Some(function.id);
+            self.module.entry = Some(native_pointer);
         }
         
-        if !self.module.functions.contains_key(&function.id) {
+        if self.module.functions.get(function.id as usize).is_some() {
             self.module.add_function(function);
         } else {
             eprintln!("Function {} already exists", func.name);
