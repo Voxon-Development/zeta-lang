@@ -1,0 +1,17 @@
+
+[package]
+name = "zetac"
+version = "0.1.0"
+edition = "2024"
+
+[profile.release]
+opt-level = 3
+
+[dependencies]
+cranelift = "0.121.1"
+cranelift-module = "0.121.1"
+cranelift-jit = "0.121.1"
+lazy_static = "1.5.0"
+pest = "2.8.1"
+pest_derive = "2.8.1"
+anyhow = "1.0.98"

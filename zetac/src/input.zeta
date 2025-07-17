@@ -1,0 +1,60 @@
+public class Vec3f(x: i32, y: i32, z: i32) {
+    public multiply(self, by: Vec3f) {
+        x *= by.x()
+        y *= by.y()
+        z *= by.z()
+    }
+
+    public x(self): i32 {
+        return x
+    }
+
+    public y(self): i32 {
+        return y
+    }
+
+    public z(self): i32 {
+        return z
+    }
+
+    public sum(self): i32 {
+        return x + y + z
+    }
+}
+
+public class Vec9f(x: Vec3f, y: Vec3f, z: Vec3f) {
+    public multiply(self, by: Vec3f) {
+        x.multiply(by)
+        y.multiply(by)
+        z.multiply(by)
+    }
+
+    public x(self): Vec3f {
+        return x
+    }
+
+    public y(self): Vec3f {
+        return y
+    }
+
+    public z(self): Vec3f {
+        return z
+    }
+
+    public sum(self): i32 {
+        return x.sum() + y.sum() + z.sum()
+    }
+}
+
+main() {
+    let firstVec3f = Vec3f { 1, 1, 1 }
+    let secondVec3f = Vec3f { 1, 1, 1 }
+    let thirdVec3f = Vec3f { 1, 1, 1 }
+    let vec9f: Vec9f = Vec9f {
+        firstVec3f,
+        secondVec3f,
+        thirdVec3f
+    }
+    let secondSum = vec9f.sum()
+    println_int(secondSum)
+}
