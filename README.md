@@ -27,4 +27,3 @@ A language made to **touch the realms of possibility** in JIT, memory management
 | **Performance Tuning** | Explicit memory regions, no GC, JIT profile-directed optimizations |
 | **Memory Safety** | Combines region sets with typed pointer rules |
 | **Metaprogramming** | AST-level, powerful compile-time capabilities without runtime overhead |
-| **Embeddability** | JIT-executed, modular VM is suitable for embedding in games, tools, and kernels |
