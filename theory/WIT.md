@@ -35,7 +35,7 @@ It's a bigger delay but the code is usually as fast as unoptimized C with profil
 ```asm
 _ZsomeFunction:
     call profiler_start
-    // instructions
+    ; instructions
     call profiler_end
 ```
 
