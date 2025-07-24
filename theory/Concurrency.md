@@ -1,0 +1,1 @@
+Channel#receive returns a Future.
