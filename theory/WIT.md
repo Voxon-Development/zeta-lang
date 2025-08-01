@@ -1,6 +1,6 @@
 # WIT - When it's time.
 
-This is a new proposal to the way the runtime of languages work, to optimize, accelerate, and improve
+This is a proposal to the way the runtime of languages work, to optimize, accelerate, and improve
 the runtime of programs.
 
 ## JIT
@@ -24,14 +24,14 @@ AOT is more efficient, but JIT is more flexible and easier to debug
 JIT is also sometimes more efficient than AOT in the correct setting
 
 # How WIT works:
-WIT, short for When it's time, is a new way to run programs in the computer.
+WIT, short for When it's time, is a way to run programs in the computer.
 
 Instead of optimizing to the max then compiling to machine code ahead of time,
+
 or using JIT to interpret and optimize at run-time, We take a hybrid approach.
 
-We compile to machine code at run time as SOON as specific functions are needed, but we also include profiler calls inside the machine code, like:
+We compile to machine code at compile time, but we also include profiler calls inside the machine code, like:
 
-It's a bigger delay but the code is usually as fast as unoptimized C with profiling calls.
 ```asm
 _ZsomeFunction:
     call profiler_start
@@ -39,11 +39,17 @@ _ZsomeFunction:
     call profiler_end
 ```
 
+It's a bigger delay for compile time but the code is usually as fast as unoptimized C with profiling calls.
+
 The profiler is a function that is called at the start and end of each function, to record the
 time it took to run, and how many times it ran.
 
+We also store our own IR (which yes, this strictly means more memory usage at the cost of performance) that we can optimize.
+
+and when the profiling hits specific amounts of calls or has very high
+
 Usually if a function is a few instructions then the compiler would max-optimize this function to remove the profiler calls
-since stuff like Math operations are usually fast, we make them faster to reduce profiler overhead
+since stuff like Math operations are usually fast, we make them faster to reduce profiler overhead.
 
 # Why WIT?
 
