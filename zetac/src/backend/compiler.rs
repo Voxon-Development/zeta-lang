@@ -29,9 +29,7 @@ impl<B: Backend> Compiler<B> {
     }
 
     pub fn compile(mut self, hir: &HirModule) {
-        // Lower HIR → SSA
         let ssa_module = lower_module(hir);
-        // Emit through selected backend
         self.backend.emit_module(&ssa_module);
         self.backend.finish();
     }
