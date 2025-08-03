@@ -6,9 +6,8 @@ use pest::Parser;
 use crate::frontend::ast::ElseBranch::If;
 use crate::frontend::ast::Op;
 use crate::frontend::ast::Stmt::ExprStmt;
-use crate::frontend::ast::Type::{Class, Void};
+use crate::frontend::ast::Type::Void;
 use crate::frontend::ast::*;
-use crate::midend::ir::hir::{Hir, HirEnum, HirEnumVariant, HirField, HirImpl, HirInterface};
 
 #[derive(Parser)]
 #[grammar = "grammar.pest"]
