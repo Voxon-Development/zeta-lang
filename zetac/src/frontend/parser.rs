@@ -3,11 +3,11 @@ use pest_derive::Parser;
 use pest::iterators::{Pair, Pairs};
 use pest::Parser;
 
-use crate::ast::ElseBranch::If;
-use crate::ast::Op;
-use crate::ast::Stmt::ExprStmt;
-use crate::ast::Type::{Class, Void};
-use crate::ast::*;
+use crate::frontend::ast::ElseBranch::If;
+use crate::frontend::ast::Op;
+use crate::frontend::ast::Stmt::ExprStmt;
+use crate::frontend::ast::Type::{Class, Void};
+use crate::frontend::ast::*;
 use crate::midend::ir::hir::{Hir, HirEnum, HirEnumVariant, HirField, HirImpl, HirInterface};
 
 #[derive(Parser)]
