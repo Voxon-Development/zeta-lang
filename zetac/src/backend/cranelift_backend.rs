@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::env::var;
-use cranelift::prelude::EntityRef;
+use cranelift::prelude::{EntityRef};
 use cranelift_codegen::ir::{AbiParam, Function as ClifFunction, InstBuilder, Signature, Block as ClifBlock, types, JumpTable, JumpTableData, BlockCall, ValueListPool, BlockArg, Type};
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::isa;
