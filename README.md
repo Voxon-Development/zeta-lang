@@ -1,13 +1,13 @@
 # ALPHA STAGES
 # zeta-lang 
-New generation of JIT like you've never seen.
+New generation of JIT like you've never seen, High-performance, fearless concurrency, and memory safe systems programming without the pain.
 
 Example:
 
 ```
 main() {
-    println_str("Hello, World!!!")
-    println_int(49)
+    println("Hello, World!!!")
+    println(49)
 
     let something: boolean = true
     if (something) {
