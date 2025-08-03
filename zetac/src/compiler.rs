@@ -1,9 +1,13 @@
-use crate::ast::*;
+// ================
+// MARK FOR REMOVAL
+// ================
+
+use crate::frontend::ast::*;
 use cranelift::prelude::*;
 use cranelift_jit::JITModule;
 use cranelift_module::{DataDescription, FuncId, Linkage, Module};
 
-use crate::ast;
+use crate::frontend::ast;
 use cranelift::codegen::{ir, CodegenError, Context};
 use std::collections::{HashMap, HashSet};
 
@@ -72,7 +76,10 @@ impl StmtCompiler {
 
             Stmt::Let(let_stmt) => {
                 let value = self.compile_expr(builder, &let_stmt.value, module)?;
-                let variable = Variable::new(self.variables.len());
+                let variable = builder.declare_var(let_stmt.type_annotation.clone()
+                    .map(parse_type)
+                    .unwrap_or_else(|| builder.func.dfg.value_type(value)));
+
 
                 // Track the class type
                 if let Some(ty) = &let_stmt.type_annotation {
@@ -103,10 +110,6 @@ impl StmtCompiler {
                         _ => {}
                     }
                 }
-
-                builder.declare_var(variable, let_stmt.type_annotation.clone()
-                    .map(parse_type)
-                    .unwrap_or_else(|| builder.func.dfg.value_type(value)));
 
                 builder.def_var(variable, value);
                 self.variables.insert(let_stmt.ident.clone(), variable);
@@ -151,8 +154,7 @@ impl StmtCompiler {
                         }
                         Pattern::Wildcard => builder.ins().iconst(types::I8, 1),
                         Pattern::Ident(name) => {
-                            let var = Variable::new(self.variables.len());
-                            builder.declare_var(var, matched_ty);
+                            let var = builder.declare_var(matched_ty);
                             builder.def_var(var, matched_val);
                             self.variables.insert(name.clone(), var);
                             builder.ins().iconst(types::I8, 1)
@@ -704,28 +706,32 @@ impl Codegen {
             methods: Vec::new()
         };
 
-        for stmt in class.body.clone().into_iter() {
-            match stmt {
-                Stmt::FuncDecl(mut f) => {
-                    if !f.is_static {
-                        f.params.insert(0, Param {
-                            name: "self".to_string(),
-                            type_annotation: ast::Type::Class(class.name.clone()),
+        if class.body.is_some() {
+            for stmt in class.body.clone().unwrap().into_iter() {
+                match stmt {
+                    Stmt::FuncDecl(mut f) => {
+                        if !f.is_static {
+                            f.params.insert(0, Param {
+                                name: "self".to_string(),
+                                type_annotation: ast::Type::Class(class.name.clone()),
+                            });
+                        }
+
+                        compiled_class.methods.push(FuncDecl {
+                            visibility: f.visibility,
+                            is_unsafe: f.is_unsafe,
+                            is_static: f.is_static,
+                            name: class.name.clone() + "_" + &f.name,
+                            generics: f.generics,
+                            regions: f.regions,
+                            params: f.params,
+                            return_type: f.return_type,
+                            body: f.body,
                         });
                     }
 
-                    compiled_class.methods.push(FuncDecl {
-                        visibility: f.visibility,
-                        is_unsafe: f.is_unsafe,
-                        is_static: f.is_static,
-                        name: class.name.clone() + "_" + &f.name,
-                        params: f.params,
-                        return_type: f.return_type,
-                        body: f.body,
-                    });
+                    _ => unimplemented!()
                 }
-
-                _ => unimplemented!()
             }
         }
 
@@ -832,8 +838,7 @@ impl Codegen {
                         parse_type(param.type_annotation.clone())
                     };
 
-                    let var = Variable::new(i);
-                    builder.declare_var(var, ty);
+                    let var = builder.declare_var(ty);
 
                     let block_params = builder.block_params(block);
                     assert_eq!(
@@ -857,8 +862,10 @@ impl Codegen {
                     }
                 }
 
-                for stmt in &func.body.block {
-                    self.stmt_compiler.compile_stmt(&mut builder, stmt, module)?;
+                if func.body.is_some() {
+                    for stmt in &func.body.clone().unwrap().block {
+                        self.stmt_compiler.compile_stmt(&mut builder, stmt, module)?;
+                    }   
                 }
 
                 if !self.stmt_compiler.did_return {

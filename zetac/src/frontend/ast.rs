@@ -1,5 +1,4 @@
-#[derive(Debug, Clone)]
-#[derive(PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     Import(ImportStmt),
     Let(LetStmt),
@@ -11,6 +10,9 @@ pub enum Stmt {
     UnsafeBlock(UnsafeBlock),
     FuncDecl(FuncDecl),
     ClassDecl(ClassDecl),
+    InterfaceDecl(InterfaceDecl),
+    ImplDecl(ImplDecl),
+    EnumDecl(EnumDecl),
     ExprStmt(InternalExprStmt),
     Break,
     Continue,
@@ -23,10 +25,47 @@ pub struct ImportStmt {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LetStmt {
-    pub mutability: Option<MutKeyword>,
+    pub mutability: bool,
     pub ident: String,
     pub type_annotation: Option<Type>,
     pub value: Box<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImplDecl {
+    pub generics: Option<Vec<Generic>>,
+    pub interface: String,
+    pub target: String,
+    pub methods: Option<Vec<FuncDecl>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InterfaceDecl {
+    pub name: String,
+    pub visibility: Visibility,
+    pub methods: Option<Vec<FuncDecl>>,
+    pub generics: Option<Vec<Generic>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumDecl {
+    pub name: String,
+    pub visibility: Visibility,
+    pub generics: Option<Vec<Generic>>,
+    pub variants: Vec<EnumVariant>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumVariant {
+    pub name: String,
+    pub fields: Vec<Field>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Field {
+    pub name: String,
+    pub field_type: Type,
+    pub visibility: Visibility,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -116,18 +155,26 @@ pub struct FuncDecl {
     pub is_static: bool,
     pub is_unsafe: bool,
     pub name: String,
+    pub generics: Option<Vec<Generic>>,
+    pub regions: Option<Vec<RegionParam>>,
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
-    pub body: Block,
+    pub body: Option<Block>,
 }
-
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClassDecl {
     pub visibility: Visibility,
     pub name: String,
+    pub generics: Option<Vec<Generic>>,
+    pub regions: Option<Vec<RegionParam>>,
     pub params: Option<Vec<Param>>,
-    pub body: Block,
+    pub body: Option<Block>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RegionParam {
+    pub name: String
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -158,13 +205,15 @@ impl IntoIterator for Block {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct InternalExprStmt {
-    pub expr: Box<Expr>,
+pub struct Generic {
+    pub const_generic: bool,
+    pub type_name: String,
+    pub type_params: Option<Vec<Type>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum MutKeyword {
-    Mut,
+pub struct InternalExprStmt {
+    pub expr: Box<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -240,6 +289,15 @@ pub enum Type {
     U128,
     UF64,
     Void,
-    Array(Box<Type>, Option<u64>),
+    Array(Box<Type>),
+    Lambda {
+        concurrent: bool,
+        params: Vec<Type>,
+        return_type: Box<Type>,
+    },
+    Pointer {
+        mutable: bool,
+        inner: Box<Type>
+    },
     Class(String),
 }

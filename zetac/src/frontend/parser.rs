@@ -6,8 +6,9 @@ use pest::Parser;
 use crate::ast::ElseBranch::If;
 use crate::ast::Op;
 use crate::ast::Stmt::ExprStmt;
-use crate::ast::Type::Class;
+use crate::ast::Type::{Class, Void};
 use crate::ast::*;
+use crate::midend::ir::hir::{Hir, HirEnum, HirEnumVariant, HirField, HirImpl, HirInterface};
 
 #[derive(Parser)]
 #[grammar = "grammar.pest"]
@@ -108,8 +109,6 @@ fn parse_for_stmt(pair: &Pair<Rule>) -> Stmt {
     })
 }
 
-
-
 fn parse_unsafe_block(pair: &Pair<Rule>) -> Stmt {
     let mut inner = pair.clone().into_inner();
     let block = parse_block(inner.next().unwrap());  // Parse the matched expression
@@ -124,34 +123,64 @@ fn parse_expr_stmt(pair: &Pair<Rule>) -> Stmt {
 fn parse_class_decl(pair: &Pair<Rule>) -> Stmt {
     let mut inner = pair.clone().into_inner();
 
+    // Visibility (public/private/internal)
     let visibility = get_visibility(&mut inner);
 
+    // Optional generic parameters: `<T: Constraint, U: …>`
+    let generics = parse_generic_params(&mut inner);
+
+    // Optional region parameters: `[R1 R2 …]`
+    let regions = parse_region_params(&mut inner);
+
+    // Class keyword already consumed; now the identifier
     let name = inner.next().unwrap().as_str().to_string();
 
-    let params = if let Some(p) = inner.peek() {
-        if p.as_rule() == Rule::param_list {
-            let param_list = inner.next().unwrap();
-            let params = param_list
-                .into_inner()
-                .map(parse_param)
-                .collect::<Vec<_>>();
-            Some(params)
-        } else {
-            // Don't consume if it's not a param_list!
-            None
-        }
+    // Optional constructor parameters `(x: T, …)`
+    let params = if inner.peek().map(|p| p.as_rule()) == Some(Rule::param_list) {
+        let param_list = inner.next().unwrap();
+        Some(param_list.into_inner().map(parse_param).collect())
     } else {
         None
     };
 
-    let body = parse_block(inner.next().unwrap());
+    // The class body `{ … }`
+    let body = Some(parse_block(inner.next().unwrap()));
 
     Stmt::ClassDecl(ClassDecl {
         visibility,
         name,
+        generics,
+        regions,
         params,
         body,
     })
+}
+
+fn parse_region_params(inner: &mut Pairs<Rule>) -> Option<Vec<RegionParam>> {
+    if inner.peek().map(|p| p.as_rule()) == Some(Rule::region_params) {
+        let reg_pair = inner.next().unwrap();
+        let regs = reg_pair.into_inner()
+            .map(|p| RegionParam { name: p.as_str().to_string() })
+            .collect();
+        Some(regs)
+    } else {
+        None
+    }
+}
+
+fn parse_generic_params(inner: &mut Pairs<Rule>) -> Option<Vec<Generic>> {
+    if inner.peek().map(|p| p.as_rule()) == Some(Rule::generic_params) {
+        let gen_pair = inner.next().unwrap();
+        let params = gen_pair.into_inner().map(|p| {
+            let mut parts = p.into_inner();
+            let name = parts.next().unwrap().as_str().to_string();
+            let constraint = parts.next().unwrap().as_str().to_string();
+            Generic { const_generic: false, type_name: name, type_params: None /* or parse nested */ }
+        }).collect();
+        Some(params)
+    } else {
+        None
+    }
 }
 
 fn get_visibility(inner: &mut Pairs<Rule>) -> Visibility {
@@ -175,18 +204,18 @@ fn assert_visibility_modifier(inner: &mut Pairs<Rule>) -> Visibility {
 fn parse_fun_decl(pair: &Pair<Rule>) -> Stmt {
     let mut inner = pair.clone().into_inner();
 
+    // Visibility, unsafe, static
     let mut visibility = Visibility::Public;
     let mut is_unsafe = false;
     let mut is_static = false;
-
     while let Some(peek) = inner.peek() {
         match peek.as_rule() {
             Rule::unsafe_modifier => {
                 is_unsafe = true;
                 inner.next();
-            },
-            Rule:: visibility_modifier => {
-                visibility = assert_visibility_modifier(&mut inner)
+            }
+            Rule::visibility_modifier => {
+                visibility = assert_visibility_modifier(&mut inner);
             }
             Rule::static_modifier => {
                 is_static = true;
@@ -196,31 +225,37 @@ fn parse_fun_decl(pair: &Pair<Rule>) -> Stmt {
         }
     }
 
+    // Optional generic parameters: <T: Constraint, U: …>
+    let generics = parse_generic_params(&mut inner);
+
+    // Optional region parameters: [R1 R2 …]
+    let regions = parse_region_params(&mut inner);
+
+    // Function name
     let name = inner.next().unwrap().as_str().to_string();
 
+    // Param list
     let mut params = Vec::new();
-    if let Some(_) = inner.peek().filter(|p| p.as_rule() == Rule::param_list) {
+    if inner.peek().map(|p| p.as_rule()) == Some(Rule::param_list) {
         for param in inner.next().unwrap().into_inner() {
             params.push(parse_param(param));
         }
     }
 
-    let return_type = match inner.peek().filter(|p| p.as_rule() == Rule::type_annotation) {
-        Some(_) => Some(parse_to_type(inner.next().unwrap().as_str().split_whitespace().last().unwrap())),
-        None => None,
-    };
+    // Return type
+    let return_type = get_return_type(&mut inner, Rule::function_type_annotation);
 
+    // Body or arrow expression
     let body = match inner.next().unwrap() {
-        p if p.as_rule() == Rule::block => parse_block(p),
+        p if p.as_rule() == Rule::block => Some(parse_block(p)),
         p if p.as_rule() == Rule::arrow_expr => {
             let expr = parse_expr(p.into_inner().next().unwrap());
-            Block {
-                block: vec![
-                    Stmt::Return(ReturnStmt { value: Some(Box::new(expr)) })
-                ]
-            }
+            Some(Block {
+                block: vec![Stmt::Return(ReturnStmt { value: Some(Box::new(expr)) })],
+            })
         }
-        p => panic!("Expected block or arrow expression, got {:?}", p.as_rule()),
+        p if p.as_str() == ";" => None,
+        other => panic!("Unexpected fun_decl item: {:?}", other),
     };
 
     Stmt::FuncDecl(FuncDecl {
@@ -228,10 +263,19 @@ fn parse_fun_decl(pair: &Pair<Rule>) -> Stmt {
         is_static,
         is_unsafe,
         name,
+        generics,
+        regions,
         params,
         return_type,
         body,
     })
+}
+
+fn get_return_type(inner: &mut Pairs<Rule>, rule: Rule) -> Option<Type> {
+    match inner.peek().filter(|p| p.as_rule() == rule) {
+        Some(_) => Some(parse_to_type(inner.next().unwrap().as_str().split_whitespace().last().unwrap())),
+        None => None,
+    }
 }
 
 fn parse_param(pair: Pair<Rule>) -> Param {
@@ -302,17 +346,14 @@ fn parse_let_stmt(pair: &Pair<Rule>) -> Stmt {
     let mutability = match inner.peek().map(|p| p.as_rule()) {
         Some(Rule::mut_keyword) => {
             inner.next();
-            Some(MutKeyword::Mut)
+            true
         },
-        _ => None,
+        _ => false,
     };
 
     let ident = inner.next().unwrap().as_str().to_string();
 
-    let type_annotation = match inner.peek().map(|p| p.as_rule()) {
-        Some(Rule::type_annotation) => Some(parse_to_type(inner.next().unwrap().as_str().split_whitespace().last().unwrap())),
-        _ => None,
-    };
+    let type_annotation = get_return_type(&mut inner, Rule::type_annotation);
 
     let value = Box::new(parse_expr(inner.next().expect("Expected expression after '='")));
 
@@ -325,6 +366,69 @@ fn parse_let_stmt(pair: &Pair<Rule>) -> Stmt {
 }
 
 fn parse_to_type(token_type: &str) -> Type {
+    // Trim whitespace
+    let token_type = token_type.trim();
+
+    // Handle array types (e.g. "i32[]" or "str[]")
+    if let Some(inner) = token_type.strip_suffix("[]") {
+        return Type::Array(Box::new(parse_to_type(inner)));
+    }
+
+    // Handle lambda types (e.g. "lambda(i32, str) -> boolean")
+    if token_type.starts_with("lambda") || token_type.starts_with("concurrent lambda") {
+        let concurrent = token_type.starts_with("concurrent lambda");
+        let without_prefix = if concurrent {
+            token_type.strip_prefix("concurrent lambda").unwrap().trim()
+        } else {
+            token_type.strip_prefix("lambda").unwrap().trim()
+        };
+
+        // Split into params and return type: "(i32, str) -> boolean"
+        let parts: Vec<&str> = without_prefix.split("->").map(str::trim).collect();
+
+        // Extract parameter list
+        let params_part = parts[0]; // "(i32, str)"
+        let params_str = params_part.trim().trim_start_matches('(').trim_end_matches(')');
+        let params = if params_str.is_empty() {
+            vec![]
+        } else {
+            params_str.split(',')
+                .map(|p| parse_to_type(p.trim()))
+                .collect()
+        };
+
+        // Extract return type (default to void if missing)
+        let return_type = if parts.len() > 1 {
+            parse_to_type(parts[1])
+        } else {
+            Void
+        };
+
+        return Type::Lambda {
+            concurrent,
+            params,
+            return_type: Box::new(return_type),
+        };
+    }
+
+    if token_type.starts_with('*') {
+        // Strip leading '*' and check for mut
+        let mut rest = token_type[1..].trim();
+
+        let mutable = if rest.starts_with("mut") {
+            rest = rest.strip_prefix("mut").unwrap().trim();
+            true
+        } else {
+            false
+        };
+
+        return Type::Pointer {
+            mutable,
+            inner: Box::new(parse_to_type(rest)),
+        };
+    }
+
+    // Handle primitive types or class names
     match token_type {
         "u8" => Type::U8,
         "i8" => Type::I8,
@@ -338,8 +442,96 @@ fn parse_to_type(token_type: &str) -> Type {
         "i128" => Type::I128,
         "str" => Type::String,
         "boolean" => Type::Boolean,
-        name => Class(name.to_string())
+        name => Type::Class(name.to_string()),
     }
+}
+
+fn parse_enum_decl(pair: &Pair<Rule>) -> Stmt {
+    let mut inner = pair.clone().into_inner();
+
+    let visibility = get_visibility(&mut inner);
+    let name = inner.next().unwrap().as_str().to_string();
+
+    let generics = parse_generic_params(&mut inner);
+
+    let mut variants = Vec::new();
+    for variant in inner {
+        if variant.as_rule() == Rule::enum_variant {
+            let mut variant_inner = variant.into_inner();
+            let variant_name = variant_inner.next().unwrap().as_str().to_string();
+
+            let mut fields = Vec::new();
+            if let Some(params) = variant_inner.next() {
+                for param in params.into_inner() {
+                    fields.push(Field {
+                        name: "_".to_string(), // unnamed tuple fields
+                        field_type: parse_to_type(param.as_str()),
+                        visibility: Visibility::Public,
+                    });
+                }
+            }
+
+            variants.push(EnumVariant { name: variant_name, fields });
+        }
+    }
+
+    Stmt::EnumDecl(EnumDecl {
+        name,
+        visibility,
+        generics,
+        variants,
+    })
+}
+
+fn parse_interface_decl(pair: &Pair<Rule>) -> Stmt {
+    let mut inner = pair.clone().into_inner();
+
+    let visibility = get_visibility(&mut inner);
+    let name = inner.next().unwrap().as_str().to_string();
+    let generics = parse_generic_params(&mut inner);
+
+    let mut methods = Vec::new();
+    if let Some(block) = inner.next() {
+        for stmt in block.into_inner() {
+            if stmt.as_rule() == Rule::fun_decl {
+                if let Stmt::FuncDecl(func) = parse_fun_decl(&stmt) {
+                    methods.push(func);
+                }
+            }
+        }
+    }
+
+    Stmt::InterfaceDecl(InterfaceDecl {
+        name,
+        visibility,
+        methods: if methods.is_empty() { None } else { Some(methods) },
+        generics,
+    })
+}
+
+fn parse_impl_block(pair: &Pair<Rule>) -> Stmt {
+    let mut inner = pair.clone().into_inner();
+
+    let generics = parse_generic_params(&mut inner);
+    let interface = inner.next().unwrap().as_str().to_string();
+    let target = inner.next().unwrap().as_str().to_string();
+
+    let mut methods = Vec::new();
+    let block = inner.next().unwrap();
+    for stmt in block.into_inner() {
+        if stmt.as_rule() == Rule::fun_decl {
+            if let Stmt::FuncDecl(func) = parse_fun_decl(&stmt) {
+                methods.push(func);
+            }
+        }
+    }
+
+    Stmt::ImplDecl(ImplDecl {
+        generics,
+        interface,
+        target,
+        methods: if methods.is_empty() { None } else { Some(methods) },
+    })
 }
 
 fn parse_import_stmt(pair: &Pair<Rule>) -> Stmt {

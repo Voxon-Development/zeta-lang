@@ -8,10 +8,14 @@ edition = "2024"
 opt-level = 3
 
 [dependencies]
-cranelift = "0.121.1"
-cranelift-module = "0.121.1"
-cranelift-jit = "0.121.1"
+cranelift = "0.122.0"
+cranelift-module = "0.122.0"
+cranelift-codegen = "0.122.0"
+cranelift-object = "0.122.0"
+cranelift-frontend = "0.122.0"
+cranelift-jit = "0.122.0"
 lazy_static = "1.5.0"
 pest = "2.8.1"
 pest_derive = "2.8.1"
 anyhow = "1.0.98"
+zetaruntime = { path = "../zetaruntime" }

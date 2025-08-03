@@ -35,7 +35,7 @@ We compile to machine code at compile time, but we also include profiler calls i
 ```asm
 _ZsomeFunction:
     call profiler_start
-    ; instructions
+    // instructions
     call profiler_end
 ```
 
@@ -57,24 +57,20 @@ WIT is a special kind to combine the pros of AOT and JIT.
 
 ## AOT
 We can compile to machine code at compile time, and then run it at run time
-
 Pros:
 - Extremely fast, no runtime or virtual machine overhead
 - Fully optimized binary for release mode
 - Much lower memory usage
-
 Cons:
 - No JIT, no optimization, no profiler
 - Cannot have more high level stuff like reflection.
 
 ## JIT
 JIT is more complex, it requires a virtual machine and profiler
-
 Pros:
 - Can have more high level stuff like reflection.
 - Can have more low level stuff like profiler and optimization
 - Can optimize at runtime to even rival AOT compiled languages like C/C++/Rust/Zig/Go
-
 Cons:
 - Much higher memory usage (Java, C#, V8, they have very big memory usages compared to other AOT Languages)
 - Interpreted for a long time
@@ -105,9 +101,7 @@ Pros over AOT:
 
 Pros over Both:
 - WIT IR can be pure and direct. You don’t need intermediate stack-based bytecode or virtual machine state juggling, which reduces complexity and overhead.
-- Since IR is a 1:1 with machine code, tooling can inspect generated IR or code for optimizations, static errors, dead code, etc, yet it has no performance overhead (only memory overhead)
-  
+- Since IR is a 1:1 with machine code, tooling can inspect generated IR or code for optimizations, static errors, dead code, etc., yet it has no performance overhead (only memory overhead)
 WIT Cons:
-- Higher memory usage (Significantly lower than JIT especially at warmup times)
-- Still has profiler overhead (Optimized away in hot paths)
-- Still has warmup overhead due to lazy compilation (Compilers, especially like [zeta-lang](https://github.com/Voxon-Development/zeta-lang) is *extremely* fast for a few functions at a time, usually outweighs interpretation)
+- Higher memory usage (Significantly lower than JIT especially at warmup times, due to lack of unnecessary vtables, virtualization, unnecessary boxing, zero branch prediction, indirections, type checks and poor CPU utilization in general)
+- Still has profiler overhead + more `jmp`s for optimized paths (Optimized away on max optimized paths)

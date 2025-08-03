@@ -1,13 +1,14 @@
-use crate::ast::{ClassDecl, FuncDecl, Stmt};
+use crate::frontend::ast::{ClassDecl, FuncDecl, Stmt};
 use crate::compiler::Codegen;
 use cranelift::prelude::{types, AbiParam};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module};
 use std::time::Instant;
 
-mod parser;
-mod ast;
-mod compiler;
+pub mod compiler;
+pub mod backend;
+pub mod frontend;
+mod midend;
 
 /*fn main() {
     match parser::parse_program("\
@@ -45,10 +46,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let contents_of_file = std::fs::read_to_string("input.zeta")?;
 
-    let stmts = parser::parse_program(contents_of_file.as_str())?; // Returns Vec<Stmt>
+    let stmts = frontend::parser::parse_program(contents_of_file.as_str())?; // Returns Vec<Stmt>
     
     let classes: Vec<ClassDecl> = stmts.iter()
-        .filter_map(|stmt| if let Stmt::ClassDecl(_) = stmt { Some(get_stmt_as_class(stmt)) } else { None })
+        .filter_map(|stmt| if let Stmt::ClassDecl(_) = stmt { Some(get_stmt_as_class(&stmt)) } else { None })
         .collect();
 
     let mut builder = JITBuilder::new(cranelift_module::default_libcall_names()).unwrap();

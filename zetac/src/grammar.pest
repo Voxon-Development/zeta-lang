@@ -5,11 +5,20 @@ program      =  { SOI ~ stmt* ~ EOI }
 
 stmt = _{ block_stmt | simple_stmt }
 
-block_stmt = _{ if_stmt | while_stmt | for_stmt | match_stmt | fun_decl | class_decl | unsafe_block }
+block_stmt = _{ if_stmt | while_stmt | for_stmt | match_stmt | fun_decl | class_decl | unsafe_block | region_block | block }
 
 simple_stmt = _{ (import_stmt | let_stmt | return_stmt | expr_stmt | break_stmt | continue_stmt) ~ stmt_terminator }
 
+region_block = { region_keyword ~ ident ~ block }
+
+region_keyword = { "region" }
+
+generic_param = { ident ~ ":" ~ ident }
+generic_params = { "<" ~ param ~ ("," ~ param)* ~ ">" }
+
 stmt_terminator = _{ ";" | WHITESPACE* ~ "\n"+ ~ WHITESPACE* }
+
+SEMI = _{ ";" }
 
 
 break_stmt   = { "break" }
@@ -17,6 +26,7 @@ continue_stmt = { "continue" }
 
 import_stmt  = { "import" ~ string }
 let_stmt     = { "let" ~ mut_keyword? ~ ident ~ type_annotation? ~ "=" ~ expr  }
+const_stmt     = { "let" ~ ident ~ type_annotation? ~ "=" ~ expr  }
 return_stmt  = { "return" ~ expr? }
 if_stmt      = { "if" ~ expr ~ block ~ (("else" ~ (block | if_stmt))?) }
 while_stmt   = { "while" ~ expr ~ block }
@@ -31,24 +41,28 @@ match_stmt   = { "match" ~ expr ~ "{" ~ match_arm* ~ "}" }
 unsafe_block = { "unsafe" ~ block }
 expr_stmt    = { expr }
 
+function_type_annotation = { "->" ~ var_type }
+
+region_params = { "[" ~ ident* ~ "]" }
+
 fun_decl = {
-    visibility_modifier? ~ unsafe_modifier? ~ static_modifier? ~ ident ~ param_list ~ type_annotation? ~ (block | arrow_expr)
+    visibility_modifier? ~ unsafe_modifier? ~ mut_keyword? ~ static_modifier? ~ ident ~ generic_params? ~ region_params? ~ param_list ~ function_type_annotation? ~ (block | arrow_expr | SEMI)
 }
 
-arrow_expr = { "=" ~ expr }
+arrow_expr = { "=" ~ expr ~ SEMI  }
 
 visibility_modifier = { "public" | "private" | "internal" }
 unsafe_modifier = { "unsafe" }
 static_modifier = { "static" }
 
 
-class_decl   = { visibility? ~ "class" ~ ident ~ param_list? ~ block }
+class_decl   = { visibility? ~ "class" ~ generic_params? ~ region_params? ~ ident ~ param_list? ~ block }
 
 param_list   = { "(" ~ (param ~ ("," ~ param)*)? ~ ")" }
 param        = { ident ~ type_annotation? }
 type_annotation = { ":" ~ var_type }
 
-block        = { "{" ~ stmt* ~ "}" }
+block = { "{" ~ stmt* ~ expr? ~ "}" }
 
 match_arm    = { pattern ~ "=>" ~ block }
 
@@ -119,7 +133,17 @@ assign_expr = {
     ident ~ (assign_op | compound_assign_op) ~ expr
 }
 
-var_type = { basic_type ~ array_suffix* }
+
+lambda_type = { concurrent_modifier? ~ lambda_keyword? ~ param_type_list ~ function_type_annotation }
+concurrent_modifier = { "concurrent" }
+lambda_keyword = { "lambda" }
+
+param_type_list = { "(" ~ (param_type ~ ("," ~ param_type)*)? ~ ")" }
+param_type = { var_type }
+var_type = { pointer_type | lambda_type | basic_type ~ array_suffix* }
+
+pointer_type = { "*" ~ mut_keyword? ~ var_type }
+
 array_suffix = { "[" ~ (number)? ~ "]" }
 basic_type = { ident | "i32" | "u32" | "f64" | "uf64" | "i64" | "u64" | "i128" | "u128" | "u8" | "i8" | "i16" | "u16" | "boolean" | "str" }
 
