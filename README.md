@@ -1,3 +1,5 @@
+Discord server: https://discord.gg/VXGk2jjuzc
+
 # ALPHA STAGES
 # zeta-lang 
 New generation of JIT like you've never seen, High-performance, fearless concurrency, and memory safe systems programming without the pain.
