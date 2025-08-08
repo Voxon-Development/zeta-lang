@@ -1,18 +1,10 @@
-use crate::midend::ir::hir::{HirExpr, HirFunc, HirModule};
-use crate::midend::type_checker::context::TypeContext;
-use crate::midend::type_checker::errors::reporter::ErrorReporter;
+use crate::midend::ir::hir::{HirClass, HirExpr, HirFunc, HirStmt, HirType};
+use crate::midend::type_checker::type_checker::TypeCheckerCtx;
 
-// A pluggable interface for custom type-checking rules.
-pub trait Rule<R: ErrorReporter> {
-    // Returns a unique identifier for the rule (useful for debugging or selective enabling).
-    fn name(&self) -> &str;
-
-    // Runs the rule on a module level (e.g. global type constraints, extern validation).
-    fn check_module(&self, module: &HirModule, ctx: &mut TypeContext<R>);
-
-    // Runs the rule on a function level (e.g. return type validation).
-    fn check_function(&self, func: &HirFunc, ctx: &mut TypeContext<R>);
-
-    // Runs the rule on an expression level (e.g. constant folding type check).
-    fn check_expr(&self, expr: &HirExpr, ctx: &mut TypeContext<R>);
+pub trait TypeRule {
+    fn check_func(&self, ctx: &mut TypeCheckerCtx, func: &HirFunc) {}
+    fn check_class(&self, ctx: &mut TypeCheckerCtx, class: &HirClass) {}
+    fn check_stmt(&self, ctx: &mut TypeCheckerCtx, stmt: &HirStmt) {}
+    fn check_expr(&self, ctx: &mut TypeCheckerCtx, expr: &HirExpr) -> Option<HirType> { None }
 }
+
