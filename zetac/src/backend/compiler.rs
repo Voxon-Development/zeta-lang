@@ -1,5 +1,5 @@
 use crate::midend::ir::hir::HirModule;
-use crate::midend::ir::lowerer::{lower_module, LowerCtx};
+use crate::midend::ir::lowerer::MirLowerer;
 use crate::midend::ir::ssa_ir::{Function, Module};
 
 /// Trait defining code generation interface
@@ -20,16 +20,16 @@ pub trait Backend {
 /// The compiler driver: parses AST → HIR → SSA → Backend
 pub struct Compiler<B: Backend> {
     backend: B,
-    lower_ctx: LowerCtx
+    lower_ctx: MirLowerer
 }
 
 impl<B: Backend> Compiler<B> {
     pub fn new(backend: B) -> Self {
-        Compiler { backend, lower_ctx: LowerCtx::new() }
+        Compiler { backend, lower_ctx: MirLowerer::new() }
     }
 
     pub fn compile(mut self, hir: &HirModule) {
-        let ssa_module = lower_module(hir);
+        let ssa_module = self.lower_ctx.lower_module(hir);
         self.backend.emit_module(&ssa_module);
         self.backend.finish();
     }
