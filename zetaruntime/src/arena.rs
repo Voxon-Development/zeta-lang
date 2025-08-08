@@ -45,7 +45,7 @@ impl Arena {
         // Slow path: allocate a new chunk and retry
         self.chunk_index += 1;
         if self.chunk_index == self.chunks.len() {
-            self.chunks.push(Bump::with_capacity(self.capacity));
+            self.chunks.push(Bump::with_capacity(self.capacity * 2));
         }
 
         let new_chunk = &mut self.chunks[self.chunk_index];
