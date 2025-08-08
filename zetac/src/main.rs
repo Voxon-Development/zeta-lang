@@ -1,14 +1,14 @@
-use crate::frontend::ast::{ClassDecl, FuncDecl, Stmt};
-use crate::compiler::Codegen;
-use cranelift::prelude::{types, AbiParam};
-use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{Linkage, Module};
-use std::time::Instant;
+use crate::backend::compiler::Backend;
+use crate::backend::cranelift_backend::CraneliftBackend;
+use crate::frontend::ast::{ClassDecl, Stmt};
+use crate::frontend::hir_lowerer::HirLowerer;
+use crate::midend::ir::lowerer::MirLowerer;
+use crate::midend::type_checker::rules::type_inference::VarInferenceRule;
+use crate::midend::type_checker::type_checker::TypeChecker;
 
-pub mod compiler;
 pub mod backend;
 pub mod frontend;
-mod midend;
+pub mod midend;
 
 /*fn main() {
     match parser::parse_program("\
@@ -41,7 +41,7 @@ extern "C" fn println_int(i: i32) {
     println!("{}", i);
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+/*fn main() -> Result<(), Box<dyn std::error::Error>> {
     let instant = Instant::now();
 
     let contents_of_file = std::fs::read_to_string("input.zeta")?;
@@ -104,6 +104,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("No `main` function found");
         Ok(())
     }
+}*/
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Get the contents of the file
+    // AST = Abstract Syntax Tree
+    // HIR = High-Level Intermediate Representation
+    // MIR = Mid-Level Intermediate Representation
+    let contents_of_file = std::fs::read_to_string("input.zeta")?;
+
+    // Parse the contents of the file to a Vec<Stmt> (AST)
+    let stmts = frontend::parser::parse_program(contents_of_file.as_str())?;
+
+    // Lower AST to HIR
+    let mut lowerer = HirLowerer::new();
+    let hir_module = lowerer.lower_module(stmts);
+
+    // Check HIR for errors of any kind
+    let mut type_checker = TypeChecker::new(&lowerer.ctx);
+    type_checker.add_rule(VarInferenceRule);
+    type_checker.check_module(&hir_module);
+
+    // Lower HIR to MIR
+    let mir_ctx = MirLowerer::new();
+    let mir_module = mir_ctx.lower_module(&hir_module);
+
+    // Compile MIR to machine code using cranelift
+    let mut backend = CraneliftBackend::new();
+    backend.emit_module(&mir_module);
+
+    // --- Finalize all definitions and write to out.o ---
+    backend.finish();
+
+    Ok(())
 }
 
 #[inline]
