@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-
+use std::fmt::Display;
 // =====================================
 // HIR (High-Level IR)
 // =====================================
@@ -12,7 +11,7 @@ pub enum Hir {
     Interface(HirInterface),
     Impl(HirImpl),
     Enum(HirEnum),
-    Stmt(HirStmt),
+    Stmt(Box<HirStmt>),
     Expr(HirExpr),
 }
 
@@ -32,7 +31,7 @@ pub struct HirFunc {
     pub generics: Vec<HirGeneric>,
     pub params: Vec<HirParam>,
     pub return_type: Option<HirType>,
-    pub body: Option<Vec<HirStmt>>,
+    pub body: Option<HirStmt>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -91,7 +90,7 @@ pub struct HirParam {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirGeneric {
     pub name: String,
-    pub constraint: Option<String>,
+    pub constraints: Vec<String>,
 }
 
 #[derive(Debug, Eq, Hash, Clone, PartialEq)]
@@ -111,23 +110,43 @@ pub enum HirType {
     Void,
 }
 
+impl Display for HirType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirStmt {
     Let { name: String, ty: Option<HirType>, value: HirExpr, mutable: bool },
     Return(Option<HirExpr>),
     Expr(HirExpr),
-    If { cond: HirExpr, then_block: Vec<HirStmt>, else_block: Option<Vec<HirStmt>> },
-    While { cond: HirExpr, body: Vec<HirStmt> },
-    For { iter_var: String, range: HirExpr, body: Vec<HirStmt> },
+    If { cond: HirExpr, then_block: Box<HirStmt>, else_block: Option<Box<HirStmt>> },
+    While { cond: HirExpr, body: Box<HirStmt> },
+    For { init: Option<Box<HirStmt>>, condition: Option<HirExpr>, increment: Option<HirExpr>, body: Box<HirStmt>, },
     Match { expr: HirExpr, arms: Vec<HirMatchArm> },
+    UnsafeBlock { body: Box<HirStmt> },
+    Block { body: Vec<HirStmt> },
     Break,
     Continue,
+}
+
+impl FromIterator<HirStmt> for HirStmt {
+    fn from_iter<T: IntoIterator<Item = HirStmt>>(iter: T) -> Self {
+        HirStmt::Block { body: iter.into_iter().collect() }
+    }
+}
+
+impl FromIterator<Box<HirStmt>> for HirStmt {
+    fn from_iter<T: IntoIterator<Item = Box<HirStmt>>>(iter: T) -> Self {
+        HirStmt::Block { body: iter.into_iter().map(|s| *s).collect() }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirMatchArm {
     pub pattern: HirPattern,
-    pub body: Vec<HirStmt>,
+    pub body: Box<HirStmt>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -135,6 +154,7 @@ pub enum HirPattern {
     Ident(String),
     Number(i64),
     String(String),
+    Tuple(Vec<HirPattern>),
     EnumVariant { enum_name: String, variant: String, bindings: Vec<String> },
     Wildcard,
 }
@@ -147,6 +167,11 @@ pub enum HirExpr {
     Ident(String),
     Binary { left: Box<HirExpr>, op: Operator, right: Box<HirExpr> },
     Call { callee: Box<HirExpr>, args: Vec<HirExpr> },
+    InterfaceCall {
+        callee: Box<HirExpr>,
+        args: Vec<HirExpr>,
+        interface: String
+    },
     FieldAccess { object: Box<HirExpr>, field: String },
     Assignment { target: Box<HirExpr>, value: Box<HirExpr> },
     InterpolatedString(Vec<InterpolationPart>),
