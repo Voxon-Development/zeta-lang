@@ -3,7 +3,7 @@
 // =====================================
 
 use std::collections::HashMap;
-use crate::midend::ir::hir::{HirClass, HirEnum, HirInterface};
+use crate::midend::ir::hir::{HirClass, HirEnum, HirExpr, HirInterface};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Value(pub usize);
@@ -49,7 +49,16 @@ pub enum Instruction {
     Jump { target: BlockId },
     Branch { cond: Operand, then_bb: BlockId, else_bb: BlockId },
     Ret { value: Option<Operand> },
-    Const { dest: Value, ty: SsaType, value: Operand }
+    Const { dest: Value, ty: SsaType, value: Operand },
+    InterfaceCall {
+        object: Box<HirExpr>,
+        method: String,
+        args: Vec<HirExpr>,
+    },
+    InterfaceUpcast {
+        object: Box<HirExpr>,
+        interface: String,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
