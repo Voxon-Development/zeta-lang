@@ -154,6 +154,7 @@ pub struct FuncDecl {
     pub visibility: Visibility,
     pub is_static: bool,
     pub is_unsafe: bool,
+    pub is_extern: bool,
     pub name: String,
     pub generics: Option<Vec<Generic>>,
     pub regions: Option<Vec<RegionParam>>,
@@ -169,7 +170,7 @@ pub struct ClassDecl {
     pub generics: Option<Vec<Generic>>,
     pub regions: Option<Vec<RegionParam>>,
     pub params: Option<Vec<Param>>,
-    pub body: Option<Block>,
+    pub body: Option<Block>
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -188,9 +189,10 @@ pub enum Visibility {
 pub struct Param {
     pub name: String,
     pub type_annotation: Type,
+    pub visibility: Visibility
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Block {
     pub block: Vec<Stmt>,
 }
@@ -208,7 +210,7 @@ impl IntoIterator for Block {
 pub struct Generic {
     pub const_generic: bool,
     pub type_name: String,
-    pub type_params: Option<Vec<Type>>,
+    pub constraints: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
