@@ -18,4 +18,6 @@ lazy_static = "1.5.0"
 pest = "2.8.1"
 pest_derive = "2.8.1"
 anyhow = "1.0.98"
+thiserror = "2.0.12"
+seahash = "4.1.0"
 zetaruntime = { path = "../zetaruntime" }

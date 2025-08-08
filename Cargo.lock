@@ -787,6 +787,8 @@ dependencies = [
  "lazy_static",
  "pest",
  "pest_derive",
+ "seahash",
+ "thiserror",
  "zetaruntime",
 ]
 
