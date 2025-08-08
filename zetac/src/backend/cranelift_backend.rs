@@ -1,16 +1,14 @@
 //! SSA Backend switched to Cranelift code generation with full ADT and interpolation support
 
-use std::collections::HashMap;
-use std::env::var;
-use cranelift::prelude::{EntityRef};
-use cranelift_codegen::ir::{AbiParam, Function as ClifFunction, InstBuilder, Signature, Block as ClifBlock, types, JumpTable, JumpTableData, BlockCall, ValueListPool, BlockArg, Type};
-use cranelift_codegen::ir::condcodes::IntCC;
-use cranelift_codegen::isa;
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
-use cranelift_module::{Module as ClifModule, FuncId, Linkage, DataId, DataDescription};
-use cranelift_object::{ObjectBuilder, ObjectModule};
 use crate::backend::compiler::Backend;
 use crate::midend::ir::ssa_ir::{BinOp, BlockId, Function, Instruction, InterpolationOperand, Module, Operand, SsaType, Value};
+use cranelift_codegen::ir::condcodes::IntCC;
+use cranelift_codegen::ir::{types, AbiParam, Block as ClifBlock, BlockArg, BlockCall, Function as ClifFunction, InstBuilder, JumpTableData, Signature, Type, ValueListPool};
+use cranelift_codegen::isa;
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
+use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClifModule};
+use cranelift_object::{ObjectBuilder, ObjectModule};
+use std::collections::HashMap;
 
 pub struct CraneliftBackend {
     module: ObjectModule,
@@ -25,21 +23,6 @@ impl Backend for CraneliftBackend {
         for func in &module.funcs {
             self.emit_function(func);
         }
-    }
-
-    fn emit_extern(&mut self, func: &Function) {
-        let mut sig = Signature::new(self.module.isa().default_call_conv());
-        for param in &func.params {
-            sig.params.push(AbiParam::new(clif_type(&param.1)));
-        }
-        sig.returns.push(AbiParam::new(clif_type(&func.ret_type)));
-
-        // Declare the function without defining it
-        self.module.declare_function(
-            &func.name,
-            Linkage::Import, // Import = external
-            &sig,
-        ).unwrap();
     }
 
     fn emit_function(&mut self, func: &Function) {
@@ -61,6 +44,9 @@ impl Backend for CraneliftBackend {
         for bb in &func.blocks {
             block_map.insert(bb.id, builder.create_block());
         }
+
+        // TODO: Implement interfaces using fat pointers
+
         let entry = block_map[&func.entry];
         builder.append_block_params_for_function_params(entry);
         builder.switch_to_block(entry);
@@ -155,6 +141,21 @@ impl Backend for CraneliftBackend {
         self.module.clear_context(&mut ctx);
     }
 
+    fn emit_extern(&mut self, func: &Function) {
+        let mut sig = Signature::new(self.module.isa().default_call_conv());
+        for param in &func.params {
+            sig.params.push(AbiParam::new(clif_type(&param.1)));
+        }
+        sig.returns.push(AbiParam::new(clif_type(&func.ret_type)));
+
+        // Declare the function without defining it
+        self.module.declare_function(
+            &func.name,
+            Linkage::Import, // Import = external
+            &sig,
+        ).unwrap();
+    }
+
     fn finish(self) {
         let obj = self.module.finish();
         std::fs::write("out.o", obj.emit().unwrap()).unwrap();
@@ -218,9 +219,14 @@ impl CraneliftBackend {
         id
     }
 
-    fn lower_basic_inst(&mut self, inst: &Instruction, builder: &mut FunctionBuilder, var_map: &mut HashMap<Value, Variable>, block_map: &HashMap<BlockId, ClifBlock>) {
+    fn lower_basic_inst(&mut self,
+                        inst: &Instruction,
+                        builder: &mut FunctionBuilder,
+                        var_map: &mut HashMap<Value, Variable>,
+                        block_map: &HashMap<BlockId, ClifBlock>
+    ) {
         match inst {
-            Instruction::Const { dest, ty, value } => {
+            Instruction::Const { dest, ty: _ty, value } => {
                 let var = builder.declare_var(types::I64);
                 let val = match value {
                     Operand::ConstInt(i) => builder.ins().iconst(types::I64, *i),
@@ -303,7 +309,10 @@ impl CraneliftBackend {
                 builder.def_var(var, res);
                 var_map.insert(dest.clone().unwrap(), var);
             }
+
             _ => {}
         }
+
+
     }
 }
