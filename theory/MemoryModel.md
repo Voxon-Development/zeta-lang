@@ -21,30 +21,32 @@ So with regions and the heap, you can allocate on the stack and on the heap, but
 We got inspired by Rust, but we removed some things to make it work better for regions, and make it simpler:
 - Ownership and move semantics no longer apply, making this code no longer a problem
 ```
-mut x := 5;
-y := x;
+mut u32 x = 5;
+u32 y = x;
 
 x = 6;
 
 println(x); // prints 6
 println(y); // prints 5
 ```
-- Since move semantics and ownership no longer exists, we removed references, and we replaced them with pointers such as `*mut MyStruct` and `*MyStruct`
+- Since move semantics is optional and ownership no longer exists, we removed references, and we replaced them with pointers such as `mut Ptr<MyStruct>` and `Ptr<MyStruct>`
 
 ```
-mut x := 5;
+mut u32 x = 5;
 
-immutable_ptr := *x;
-mutable_ptr: *mut i32 := *mut x;
+Ptr<u32> immutablePtr = asPtr(x);
+mut Ptr<u32> mutablePtr := asPtr(x);
 
 x = 6; // Compiles
-*mutable_ptr = 6; // Compiles
-*immutable_ptr = 6; // Does not compile
+
+// Auto dereference, since by default pointers are safe and lifetime proven unless you explicitly use unsafe apis
+mutablePtr = 6; // Compiles
+immutablePtr = 6; // Does not compile
 ```
 
 - Since we removed references, we also removed the need for `&` and `&mut`
 
-- If there is no ownership, there is no need for reference counting for "multiple owners" and hence no need for `Arc` and `Rc` or libraries trying to optimize reference counting with `Trc` or `SharedTrc`
+- If there is no ownership, there is no need for reference counting for "multiple owners" and hence no need for `Arc` and `Rc` or libraries trying to optimize reference counting with `Trc` or `SharedTrc` (Except for cyclic data, but Zeta *wants* to take a different approach on cyclic data)
 
 Otherwise, the rest of the memory model is the same, RAII, memory safety and concurrency
 
@@ -85,14 +87,14 @@ If we want to make sure use-after-free, dangling pointers or double free is impo
 
 For example, simple RAII:
 ```
-mut x := 5;
+mut x = 5;
 
-immutable_ptr := *x;
-mutable_ptr: *mut i32 := *mut x;
+Ptr<u32> immutablePtr := x;
+mut Ptr<u32> mutablePtr := asPtr(x);
 
 x = 6; // Compiles
-*mutable_ptr = 6; // Compiles
-*immutable_ptr = 6; // Does not compile
+*mutablePtr = 6; // Compiles
+*immutablePtr = 6; // Does not compile
 
 // Everything is freed automatically here
 ```
@@ -114,19 +116,20 @@ class MySQLPlayerRepository(/* fields */) {
         // Use person.
     }
     
-    fetchPerson(id: u32) -> Option<Box<Person>> {
+	// Data? is equivalent to Option<Data> at compile time
+    fetchPerson(id: u32) -> Box<Person>? {
         preparedStatement := database.prepare("SELECT * FROM person WHERE id = ? LIMIT 1;");
         preparedStatement.setU32(1, id);
         
         resultSet := preparedStatement.execute();
-        personData := resultSet.next() ?? return None; // Returns Option<Data>
+        personData := resultSet.next() ?? return None; // Returns Data?
        
-        return Some(Box::new(Person {
+        return Box::new(Person {
             id: personData.getU32("id"),
             name: personData.getString("name"),
             age: personData.getU32("age"),
             ...
-        }));
+        });
     }
 }
 ```
@@ -135,15 +138,18 @@ What if we just did this?
 ```
 resultSet := preparedStatement.execute();
 
-unsafe { delete resultSet; } // Equivalent to rust `drop(resultSet);`
+drop(resultSet);
 
-// this needs to access a null pointer, that's undefined behavior, or a runtime exception which is also not good.
+// New zeta research indicates that resultSet is now explicitly moved (because move semantics are optional and not enforced like in rust)
+// Old zeta said: this needs to access a null pointer, that's undefined behavior, or a runtime exception which is also not good.
 personData := resultSet.next() ?? return None; // Returns Option<Data>
 ```
 
-So now we need the compiler to track resultSet, if it were to be deleted just like that then it wouldn't compile, this way, you can deallocate and handle even regular deallocations just fine!
+~~So now we need the compiler to track resultSet, if it were to be deleted just like that then it wouldn't compile, this way, you can deallocate and handle even regular deallocations just fine!~~
 
-(By the way, `delete` would call Drop#drop)
+The language now can track move semantics which greatly simplify the compiler work, though it is not enforced, `drop` and `mem.Dealloc` now move the data.
+
+Though by default, pointers will be auto dropped (auto free but it doesn't just free, but it calls Drop.drop to release resources too!) at the end of scopes by default.
 
 Safe aliasing rules? Check, Seamless lifetime management? Check
 
