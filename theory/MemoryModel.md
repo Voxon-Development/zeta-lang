@@ -108,7 +108,7 @@ but what if we are returning stack allocated data? region allocated data, or hea
 It gets pretty spicy because we can't delete anything now:
 
 ```
-class MySQLPlayerRepository(/* fields */) {
+struct MySQLPlayerRepository(/* fields */) {
     // Initialization, fields, etc
     
     foo() {
@@ -117,7 +117,7 @@ class MySQLPlayerRepository(/* fields */) {
     }
     
 	// Data? is equivalent to Option<Data> at compile time
-    fetchPerson(id: u32) -> Box<Person>? {
+    fetchPerson(u32 id) -> Box<Person>? {
         preparedStatement := database.prepare("SELECT * FROM person WHERE id = ? LIMIT 1;");
         preparedStatement.setU32(1, id);
         
@@ -150,6 +150,16 @@ personData := resultSet.next() ?? return None; // Returns Option<Data>
 The language now can track move semantics which greatly simplify the compiler work, though it is not enforced, `drop` and `mem.Dealloc` now move the data.
 
 Though by default, pointers will be auto dropped (auto free but it doesn't just free, but it calls Drop.drop to release resources too!) at the end of scopes by default.
+
+## What about long-lived lifetimes?
+You may ask aswell, What about lifetimes of pointers?
+
+Rust might have `&'a HashMap<...>`, and you usually don't use lifetimes like this... until when you put references inside structs.
+
+Zeta works harder to infer lifetimes of pointers by analyzing how pointers are used, only when the compiler finds inconsistencies then you have to put lifetimes in pointers:
+```
+struct MySQLDatabaseRepository<'a>(Ptr<ConnectionPool, 'a> connectionPool) { ... }
+```
 
 Safe aliasing rules? Check, Seamless lifetime management? Check
 
