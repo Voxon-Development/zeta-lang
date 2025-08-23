@@ -21,13 +21,13 @@ So with regions and the heap, you can allocate on the stack and on the heap, but
 We got inspired by Rust, but we removed some things to make it work better for regions, and make it simpler:
 - Ownership and move semantics no longer apply, making this code no longer a problem
 ```
-mut u32 x = 5;
-u32 y = x;
+mut String x = String::from("five");
+String y = x;
 
-x = 6;
+x.append("six");
 
-println(x); // prints 6
-println(y); // prints 5
+println(x); // prints fivesix
+println(y); // prints five
 ```
 - Since move semantics is optional and ownership no longer exists, we removed references, and we replaced them with pointers such as `mut Ptr<MyStruct>` and `Ptr<MyStruct>`
 
