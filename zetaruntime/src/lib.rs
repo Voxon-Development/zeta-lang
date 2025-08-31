@@ -1,5 +1,8 @@
 #![feature(likely_unlikely)]
+#![feature(allocator_api)]
+#![feature(slice_ptr_get)]
 
-mod string_pool;
+pub mod string_pool;
 pub mod bump;
-mod arena;
+pub mod arena;
+pub mod fiber;
