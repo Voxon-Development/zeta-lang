@@ -1,80 +1,104 @@
-#![feature(likely_unlikely)]
-#![feature(unsafe_cell_access)]
+use emberforge_compiler::midend::ir::module_lowerer::MirModuleLowerer;
+use engraver_assembly_emit::backend::Backend;
+use engraver_assembly_emit::cranelift::cranelift_backend::CraneliftBackend;
+use ir::hir::HirModule;
+use rayon::iter::IntoParallelRefIterator;
+use rayon::iter::ParallelIterator;
+use scribe_parser::hir_lowerer::HirLowerer;
+use scribe_parser::parser::Rule;
+use sentinel_typechecker::type_checker::TypeChecker;
+use snmalloc_rs::SnMalloc;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::{fs, io};
+use thiserror::Error;
+use sentinel_typechecker::rules::MathTypeRule;
+use zetaruntime::string_pool::StringPool;
 
-mod bump;
+#[global_allocator]
+static ALLOCATOR: SnMalloc = SnMalloc;
 
-use std::alloc::alloc;
-use bump::Bump;
-use std::hint::black_box;
-use std::time::Instant;
-use crate::bump::Arena;
+#[tokio::main]
+async fn main() -> Result<(), CompilerError> {
+    // Compile MIR to machine code using cranelift
+    let string_pool = StringPool::new().map_err(|_| CompilerError::FailedToAllocateStringPool)?;
+    let backend = Arc::new(Mutex::new(CraneliftBackend::new(string_pool)));
 
-#[derive(Debug)]
-struct Person<'bump> {
-    name: &'bump str,
-    age: u32,
-    height: f32,
-    weight: f32,
-    salary: f32,
-    address: &'bump str,
-    phone_number: &'bump str,
+    // Limit the number of files processed to prevent resource exhaustion
+    const MAX_FILES: usize = 100;
+
+    let files: Vec<_> = fs::read_dir(".")
+        .map_err(|e| CompilerError::FailedToReadDirectory(e.to_string()))?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext == "zeta")
+                .unwrap_or(false)
+        })
+        .take(MAX_FILES)
+        .collect();
+
+    if files.is_empty() {
+        eprintln!("No .zeta files found in current directory");
+        return Ok(());
+    }
+
+    println!("Processing {} .zeta files", files.len());
+
+    // Parallel stage: produce HIR modules with proper error handling and type checking
+    let hir_modules: Result<Vec<HirModule>, CompilerError> = files
+        .par_iter()
+        .map(|path| -> Result<HirModule, CompilerError> {
+            let contents = fs::read_to_string(path)
+                .map_err(|e| CompilerError::FailedToReadFile(path.clone(), e))?;
+
+            let stmts = scribe_parser::parser::parse_program(&contents)
+                .map_err(|e| CompilerError::ParserError(path.clone(), e))?;
+
+            let mut type_checker = TypeChecker::new();
+            type_checker.add_rule(MathTypeRule);
+            type_checker.check_program(stmts.as_slice())
+                .map_err(|e| CompilerError::TypeCheckerErrors(e))?;
+
+            let mut lowerer = HirLowerer::new();
+            let module = lowerer.lower_module(stmts);
+            Ok(module)
+
+
+        })
+        .collect();
+
+    // Serial stage: emit machine code
+    hir_modules?
+        .par_iter()
+        .for_each(|hir_module| {
+            let backend = backend.clone();
+
+            let mir_module_lowerer = MirModuleLowerer::new();
+            let mir_module = mir_module_lowerer.lower_module(hir_module);
+
+            backend.lock().unwrap().emit_module(&mir_module);
+        });
+
+  Ok(())
 }
 
-// Generate varying Person data
+#[derive(Error, Debug)]
+pub enum CompilerError {
+    #[error("Failed to read directory: {0}")]
+    FailedToReadDirectory(String),
 
-fn main() {
-    const N: usize = 100_000;
+    #[error("Failed to read file {0}: {1}")]
+    FailedToReadFile(PathBuf, io::Error),
 
-    // Bump allocator benchmark
-    let bump = Bump::with_capacity(N * (size_of::<Person>() * 2));
-    let start_bump = Instant::now();
+    #[error("Failed to allocate string pool.")]
+    FailedToAllocateStringPool,
 
-    for i in 0..N {
-        let mut buf = arrayvec::ArrayString::<64>::new();
-        buf.push_str("Person ");
-        buf.push_str(&i.to_string());
-        let name = bump.alloc_str(buf.as_str());
+    #[error("Failed to parse module {0}: {1}")]
+    ParserError(PathBuf, pest::error::Error<Rule>),
 
-        let mut buf = arrayvec::ArrayString::<64>::new();
-        buf.push_str("Address: ");
-        buf.push_str(&i.to_string());
-        let address = bump.alloc_str(buf.as_str());
-
-        let phone_number = bump.alloc_str(&format!("+201000000{:04}", i % 10000));
-
-        let person = bump.alloc(Person {
-            name,
-            age: i as u32,
-            height: 150.0 + (i % 50) as f32,
-            weight: 50.0 + (i % 30) as f32,
-            salary: (i as f32) * 1000.0,
-            address,
-            phone_number,
-        });
-
-        black_box(person);
-    }
-
-    drop(bump);
-    let elapsed_bump = start_bump.elapsed();
-    println!("Bump: Time elapsed: {} ns", elapsed_bump.as_nanos());
-    println!("Bump: Time elapsed: {} ms", elapsed_bump.as_millis());
-
-    // Heap benchmark
-    let start_heap = Instant::now();
-    for i in 0..N {
-        let person = Box::new(Person {
-            name: Box::leak(format!("Person {}", i).into_boxed_str()),
-            age: i as u32,
-            height: 150.0 + (i % 50) as f32,
-            weight: 50.0 + (i % 30) as f32,
-            salary: (i as f32) * 1000.0,
-            address: Box::leak(format!("Address {}", i).into_boxed_str()),
-            phone_number: Box::leak(format!("+201000000{:04}", i % 10000).into_boxed_str()),
-        });
-        black_box(person);
-    }
-    let elapsed_heap = start_heap.elapsed();
-    println!("Heap: Time elapsed: {} ns", elapsed_heap.as_nanos());
-    println!("Heap: Time elapsed: {} ms", elapsed_heap.as_millis());
+    #[error("Failed to compile module due to type errors: {0:?}")]
+    TypeCheckerErrors(Vec<String>)
 }
