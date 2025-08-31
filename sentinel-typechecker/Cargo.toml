@@ -1,0 +1,12 @@
+[package]
+name = "sentinel-typechecker"
+version = "0.1.0"
+edition = "2024"
+
+[profile.release]
+opt-level = 3
+
+[dependencies]
+thiserror = "2.0.12"
+seahash = "4.1.0"
+ir = { path = "../ir" }

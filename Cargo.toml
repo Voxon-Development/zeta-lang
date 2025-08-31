@@ -1,15 +1,31 @@
 [package]
-name = "untitled"
+name = "zeta-lang"
 version = "0.1.0"
 edition = "2024"
 
 [workspace]
 members = [
-    "zetac",
+    "ir",
+    "scribe-parser",
+    "emberforge-compiler",
+    "sentinel-typechecker",
+    "engraver-assembly-emit",
+    "smelter-optimizer",
     "zetaruntime"
 ]
 
 [dependencies]
-arrayvec = "0.7.6"
+snmalloc-rs = "0.3.8"
+scribe-parser = { path = "./scribe-parser" }
+emberforge-compiler = { path = "./emberforge-compiler" }
+smelter-optimizer = { path = "./smelter-optimizer" }
+zetaruntime = { path = "./zetaruntime" }
+sentinel-typechecker = { path = "./sentinel-typechecker" }
+engraver-assembly-emit = { path = "./engraver-assembly-emit" }
+ir = { path = "./ir" }
+rayon = "1.11.0"
+thiserror = "2.0.15"
+tokio = { version = "1.47.1", features = ["full"] }
+pest = "2.8.1"
 #once_cell = "1.21.3"
 #zetac = { path = "./zetac" }
