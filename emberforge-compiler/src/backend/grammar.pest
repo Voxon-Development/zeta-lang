@@ -1,0 +1,159 @@
+WHITESPACE   = _{ " " | "\t" | "\r" | "\n" }
+COMMENT      = _{ "//" ~ (!"\n" ~ ANY)* }
+
+program      =  { SOI ~ stmt* ~ EOI }
+
+stmt = _{ block_stmt | simple_stmt }
+
+effect_decl = {
+    "effect" ~ ident ~ "{" ~ fun_decl* ~ "}"
+}
+
+effect_clause = {
+    "with" ~ ident ~ ("," ~ ident)*
+}
+
+
+block_stmt = _{ if_stmt | while_stmt | for_stmt | match_stmt | fun_decl | class_decl | enum_decl | unsafe_block | region_block | block }
+
+simple_stmt = _{ (import_stmt | let_stmt | const_stmt | return_stmt | expr_stmt | break_stmt | continue_stmt) ~ stmt_terminator }
+
+region_block = { region_keyword ~ ident ~ block }
+region_keyword = { "region" }
+
+generic_param = { ident ~ (":" ~ ident ~ ("+" ~ ident)*)? }
+generic_params = { "<" ~ generic_param ~ ("," ~ generic_param)* ~ ">" }
+
+impl_decl = {
+    "impl" ~ generic_params? ~ type_expr ~ "for" ~ type_expr ~ ("{" ~ fun_decl* ~ "}" | SEMI)
+}
+
+stmt_terminator = _{ ";" | WHITESPACE* ~ "\n"+ ~ WHITESPACE* }
+SEMI = _{ ";" }
+
+break_stmt     = { "break" }
+continue_stmt  = { "continue" }
+
+import_stmt    = { "import" ~ string }
+// mut HelloWorld helloWorld = 
+let_stmt       = { mut_keyword? ~ var_type ~ ident ~ "=" ~ expr }
+const_stmt     = { "const" ~ ident ~ type_annotation? ~ "=" ~ expr }
+return_stmt    = { "return" ~ expr? }
+if_stmt        = { "if" ~ expr ~ block ~ (("else" ~ (block | if_stmt))?) }
+while_stmt     = { "while" ~ expr ~ block }
+for_stmt       = { "for" ~ "(" ~ let_stmt? ~ ";" ~ expr? ~ ";" ~ expr? ~ ")" ~ block }
+
+stmt_ending    = _{ "\n" | WHITESPACE* }
+
+array          = { "[]" }
+array_init     = { var_type ~ ".new" ~ "[" ~ number ~ "]" }
+
+match_stmt     = { "match" ~ expr ~ "{" ~ match_arm* ~ "}" }
+unsafe_block   = { "unsafe" ~ block }
+expr_stmt      = { expr }
+
+function_type_annotation = { "->" ~ var_type }
+region_params  = { "[" ~ ident* ~ "]" }
+
+fun_decl = {
+    visibility_modifier? ~ unsafe_modifier? ~ (extern_modifier ~ string)? ~ mut_keyword? ~ static_modifier? ~
+    ident ~ generic_params? ~ region_params? ~ param_list ~ function_type_annotation? ~ effect_clause? ~ (block | arrow_expr | SEMI)
+}
+
+arrow_expr = { "=" ~ expr ~ SEMI }
+
+visibility_modifier = { "public" | "private" | "internal" }
+unsafe_modifier     = { "unsafe" }
+extern_modifier = { "extern" }
+static_modifier     = { "static" }
+
+class_decl = { visibility_modifier? ~ "class" ~ ident ~ generic_params? ~ region_params? ~ param_list? ~ block }
+
+enum_decl = { visibility_modifier? ~ "enum" ~ ident ~ generic_params? ~ "{" ~ enum_variant* ~ "}" }
+enum_variant = { ident ~ ("(" ~ enum_variant_field_list ~ ")")? }
+enum_variant_field_list = { type_expr ~ ("," ~ type_expr)* }
+
+param_list   = { "(" ~ (param ~ ("," ~ param)*)? ~ ")" }
+param        = { visibility_modifier? ~ ident ~ type_annotation }
+type_annotation = { ":" ~ var_type }
+
+block        = { "{" ~ stmt* ~ expr? ~ "}" }
+match_arm    = { pattern ~ "=>" ~ block }
+
+pattern      = _{ ident | number | string | tuple_pattern | wildcard_pattern }
+class_initialization = { ident ~ "{" ~ (expr_list)? ~ "}" }
+
+expr_list    = { expr ~ ("," ~ expr)* }
+tuple_pattern = { "(" ~ (pattern ~ ("," ~ pattern)*)? ~ ")" }
+wildcard_pattern = { "_" }
+
+visibility   = _{ public_keyword | private_keyword | protected_keyword }
+public_keyword    = { "public" }
+private_keyword   = { "private" }
+protected_keyword = { "protected" }
+
+mut_keyword  = { "mut" }
+keyword      = _{ "true" | "false" | "if" | "else" | "while" | "return" | "let" | "for" | "enum" | "class" }
+
+ident        = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+number       = @{ "-"? ~ ASCII_DIGIT+ }
+string       = @{ "\"" ~ string_inner* ~ "\"" }
+string_inner = _{ "\\\"" | "\\\\" | (!"\"" ~ ANY) }
+
+expr = { class_initialization | array_init | assignment }
+assignment = { lhs ~ assign_op ~ expr | logic_or }
+lhs = { ident ~ (indexing)* }
+
+boolean = { "true" | "false" }
+
+logic_or  = { logic_and ~ ("||" ~ logic_and)* }
+logic_and = { bit_or ~ ("&&" ~ bit_or)* }
+bit_or    = { bit_xor ~ ("|" ~ bit_xor)* }
+bit_xor   = { bit_and ~ ("^" ~ bit_and)* }
+bit_and   = { equality ~ ("&" ~ equality)* }
+equality  = { comparison ~ (("==" | "!=") ~ comparison)* }
+comparison = { shift ~ (comparison_operators ~ shift)* }
+shift     = { term ~ (("<<" | ">>") ~ term)* }
+
+comparison_operators = { "<" | ">" | "<=" | ">=" | "!=" | "==" }
+term = { factor ~ (operator_add_sub ~ factor)* }
+factor = { unary ~ (operator_mul_div ~ unary)* }
+unary = { ("!" | "-" | "+")* ~ primary }
+
+primary = { atom ~ ( ( "." ~ ident ) | call_args | indexing)* }
+indexing = { "[" ~ expr ~ "]" }
+array_literal = { "[" ~ (expr ~ ("," ~ expr)*)? ~ "]" }
+atom = _{ parenthesized_expr | ident | number | string | class_initialization | boolean | array_literal }
+
+call_args = { "(" ~ (expr ~ ("," ~ expr)*)? ~ ")" }
+
+compound_assign_op = {
+    "+=" | "-=" | "*=" | "/=" | "%=" |
+    ">>=" | "<<=" | "&=" | "|=" | "^="
+}
+
+assign_expr = { ident ~ (assign_op | compound_assign_op) ~ expr }
+
+lambda_type = { concurrent_modifier? ~ lambda_keyword? ~ param_type_list ~ function_type_annotation }
+concurrent_modifier = { "concurrent" }
+lambda_keyword = { "lambda" }
+
+param_type_list = { "(" ~ (param_type ~ ("," ~ param_type)*)? ~ ")" }
+param_type = { var_type }
+var_type = { pointer_type | lambda_type | basic_type ~ array_suffix* }
+pointer_type = { "*" ~ mut_keyword? ~ var_type }
+array_suffix = { "[" ~ (number)? ~ "]" }
+basic_type = { ident | "i32" | "u32" | "f64" | "uf64" | "i64" | "u64" | "i128" | "u128" | "u8" | "i8" | "i16" | "u16" | "boolean" | "str" }
+
+parenthesized_expr = { "(" ~ expr ~ ")" }
+operator_add_sub = { "+" | "-" }
+operator_mul_div = { "*" | "/" | "%" }
+operator_pow = { "^" }
+operator_bit_or = { "|" }
+operator_bit_and = { "&" }
+operator_shift = { ">>" | "<<" | ">>>" | "<<<" }
+assign_op = { "=" | compound_assign_op }
+
+comparison_op = { "==" | "!=" | "<=" | ">=" | "<" | ">" }
+comparison_expr = { expr ~ comparison_op ~ expr }
+type_expr = { var_type }
