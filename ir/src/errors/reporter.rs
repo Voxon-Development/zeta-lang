@@ -1,5 +1,6 @@
-use crate::midend::type_checker::errors::error::TypeError;
+use crate::errors::error::TypeError;
 
+#[derive(Default)]
 pub struct ErrorReporter {
     pub errors: Vec<TypeError>,
 }

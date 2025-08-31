@@ -1,3 +1,5 @@
+use std::fmt::{Display, Formatter};
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     Import(ImportStmt),
@@ -27,7 +29,7 @@ pub struct ImportStmt {
 pub struct LetStmt {
     pub mutability: bool,
     pub ident: String,
-    pub type_annotation: Option<Type>,
+    pub type_annotation: Type,
     pub value: Box<Expr>,
 }
 
@@ -110,6 +112,15 @@ pub enum Op {
     Eq, Neq, Lt, Lte, Gt, Gte,
     // etc.
     ModAssign,
+}
+
+impl Op {
+    pub fn is_math_op(&self) -> bool {
+        match self {
+            Op::Assign => false,
+            _ => true
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -270,6 +281,7 @@ pub enum Expr {
     ExprList {
         exprs: Vec<Expr>,
     },
+    Char(char),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -291,15 +303,46 @@ pub enum Type {
     U128,
     UF64,
     Void,
-    Array(Box<Type>),
     Lambda {
-        concurrent: bool,
         params: Vec<Type>,
         return_type: Box<Type>,
     },
-    Pointer {
-        mutable: bool,
-        inner: Box<Type>
-    },
     Class(String),
+    Char,
+}
+
+impl Type {
+    pub fn is_numeric(&self) -> bool {
+        match self {
+            Type::Class(_) | Type::Lambda { params: _, return_type: _ } => false,
+            _ => true
+        }
+    }
+}
+
+impl Display for Type {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Type::U8 => f.write_str("u8"),
+            Type::I8 => f.write_str("i8"),
+            Type::U16 => f.write_str("u16"),
+            Type::I16 => f.write_str("i16"),
+            Type::I32 => f.write_str("i32"),
+            Type::F32 => f.write_str("f32"),
+            Type::F64 => f.write_str("f64"),
+            Type::I64 => f.write_str("i64"),
+            Type::String => f.write_str("string"),
+            Type::Boolean => f.write_str("bool"),
+            Type::UF32 => f.write_str("uf32"),
+            Type::U32 => f.write_str("u32"),
+            Type::U64 => f.write_str("u64"),
+            Type::I128 => f.write_str("i128"),
+            Type::U128 => f.write_str("u128"),
+            Type::UF64 => f.write_str("uf64"),
+            Type::Void => f.write_str("void"),
+            Type::Lambda { params, return_type } => f.write_str(format!("({:?}) -> {}", params, return_type).as_str()),
+            Type::Class(name) => write!(f, "{}", name),
+            Type::Char => f.write_str("char"),
+        }
+    }
 }

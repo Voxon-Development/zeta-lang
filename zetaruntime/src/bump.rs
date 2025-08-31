@@ -152,6 +152,7 @@ impl AtomicBump {
     }
 
     #[inline(always)]
+    #[allow(clippy::mut_from_ref)]
     pub fn alloc<T>(&self, val: T) -> Option<&mut T> {
         let size = size_of::<T>();
         let ptr_base = self.ptr.as_ptr() as usize;
