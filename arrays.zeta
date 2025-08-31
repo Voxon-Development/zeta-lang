@@ -1,0 +1,8 @@
+struct Array<T>(ptr: Ptr<T>, length: u64) {
+    // Indexing
+    get(index: u64) -> T = __array_get<T>(this, index);
+    set(index: u64, value: T) = __array_set<T>(this, index, value);
+}
+
+internal extern "intrinsic" __array_get<T>(Array<T> arr, u64 index) -> T;
+internal extern "intrinsic" __array_set<T>(Array<T> arr, u64 index, T value);
