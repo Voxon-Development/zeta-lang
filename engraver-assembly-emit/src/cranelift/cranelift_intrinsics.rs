@@ -102,7 +102,6 @@ pub fn codegen_array_get(
 
     // element CLIF type
     let elem_clif = clif_type_of(result_hir_ty);
-    vec![]
 
     // compute byte offset = idx * sizeof(elem)
     let size_bytes = elem_clif.bytes() as i64;
