@@ -108,25 +108,25 @@ struct MySQLPlayerRepository(/* fields */) {
     // Initialization, fields, etc
     
     foo() {
-        person := fetchPerson();
+        person := fetchPerson()
         // Use person.
     }
     
 	// Data? is equivalent to Option<Data> at compile time
-    fetchPerson(u32 id) -> Ptr<Person>? {
-        preparedStatement := database.prepare("SELECT * FROM person WHERE id = ? LIMIT 1;");
-        preparedStatement.setUnsignedInt(1, id);
+    fetchPerson(u32 id) -> Box<Person>? {
+        preparedStatement := database.prepare("SELECT * FROM person WHERE id = ? LIMIT 1;")
+        preparedStatement.setUnsignedInt(1, id)
         
-        resultSet := preparedStatement.execute();
-        personData := resultSet.next() ?? return None; // Returns Data?
+        resultSet := preparedStatement.execute()
+        personData := resultSet.next() ?? return null // resultSet.next() returns Data?
 
         // We could just as easily use a custom allocator, and by default the compiler should be able to delete it from the correct allocator
         return Box.new(Person {
-            id: personData.getU32("id"),
+            id: personData.getUnsignedInt("id"),
             name: personData.getString("name"),
-            age: personData.getU32("age"),
+            age: personData.getUnsignedInt("age"),
             ...
-        }); // Auto dereferences to a pointer
+        }, allocator=global) // allocator=global is the default and you don't need to specify this, this is just for specification
     }
 }
 ```
