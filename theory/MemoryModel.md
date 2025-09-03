@@ -1,8 +1,8 @@
 # Zeta's memory model inside out
 
-Here we'll dive into the memory model of Zeta, inspired by Rust, made to work for regions.
+Here we'll dive into the memory model of Zeta, inspired by Rust, made to work for custom allocators with memory safety.
 
-This memory model encourages fast code via encouraging developers to always use regions, zero-cost RAII and achieve memory safety while not compromising on fearless concurrency.
+This memory model encourages fast code via encouraging developers to write clean and safe code, zero-cost RAII and achieve memory safety while not compromising on fearless concurrency.
 
 # Memory Model
 For a memory model to truly be memory-safe, it has to follow these rules:
@@ -16,9 +16,8 @@ For a memory model to truly be memory-safe, it has to follow these rules:
 - Escape hatches for low-level work
 
 ## How does it work?
-So with regions and the heap, you can allocate on the stack and on the heap, but Zeta also includes first-class regions
 
-We got inspired by Rust, but we removed some things to make it work better for regions, and make it simpler:
+To make memory safety simpler from a typical Rust borrow checker:
 - Ownership and move semantics no longer apply, making this code no longer a problem
 ```
 mut String x = String::from("five");
@@ -75,11 +74,8 @@ So we need to make sure that we have safe aliasing and good lifetime management,
 - No use-after-free
 
 So how do we do this?
-Well, we have regions, and we can combine them to make it work for regions, which means we can have lifetimes that work for regions, simple, if the lifetime of the region ends, so does all the data inside the region
 
-but what if we need the heap? it's a little more complicated then
-
-We must rely on compile time RAII and tracking references and deletions.
+We must rely on safe alias tracking, lifetimes and move semantics
 
 If we want to make sure use-after-free, dangling pointers or double free is impossible here from the heap, we would want to make a tracker that tracks aliases, and deletions, or even just rely on RAII
 
@@ -91,8 +87,10 @@ Ptr<u32> immutablePtr = Ptr.new(x);
 mut Ptr<u32> mutablePtr = Ptr.new(x);
 
 x = 6; // Compiles
-*mutablePtr = 6; // Compiles
-*immutablePtr = 6; // Does not compile
+
+// Auto deref pointers to values for getting or setting
+mutablePtr = 6; // Compiles
+immutablePtr = 6; // Does not compile
 
 // Everything is freed automatically here
 ```
