@@ -29,13 +29,13 @@ x.append("six");
 println(x); // prints fivesix
 println(y); // prints five
 ```
-- Since move semantics is optional and ownership no longer exists, we removed references, and we replaced them with pointers such as `mut Ptr<MyStruct>` and `Ptr<MyStruct>`
+- Since move semantics is optional and the language copies by default, we removed references, and we replaced them with pointers such as `mut Ptr<MyStruct>` and `Ptr<MyStruct>`
 
 ```
 mut u32 x = 5;
 
 Ptr<u32> immutablePtr = asPtr(x);
-mut Ptr<u32> mutablePtr := asPtr(x);
+mut Ptr<u32> mutablePtr = asPtr(x);
 
 x = 6; // Compiles
 
@@ -44,9 +44,7 @@ mutablePtr = 6; // Compiles
 immutablePtr = 6; // Does not compile
 ```
 
-- Since we removed references, we also removed the need for `&` and `&mut`
-
-- If there is no ownership, there is no need for reference counting for "multiple owners" and hence no need for `Arc` and `Rc` or libraries trying to optimize reference counting with `Trc` or `SharedTrc` (Except for cyclic data, but Zeta *wants* to take a different approach on cyclic data)
+- There is no need for reference counting for "multiple owners" now, and hence no need for `Arc` and `Rc` or libraries trying to optimize reference counting with `Trc` or `SharedTrc` (Except for cyclic data, but Zeta *wants* to take a different approach on cyclic data)
 
 Otherwise, the rest of the memory model is the same, RAII, memory safety and concurrency
 
@@ -87,10 +85,10 @@ If we want to make sure use-after-free, dangling pointers or double free is impo
 
 For example, simple RAII:
 ```
-mut x = 5;
+mut x := 5;
 
-Ptr<u32> immutablePtr := x;
-mut Ptr<u32> mutablePtr := asPtr(x);
+Ptr<u32> immutablePtr = Ptr.new(x);
+mut Ptr<u32> mutablePtr = Ptr.new(x);
 
 x = 6; // Compiles
 *mutablePtr = 6; // Compiles
@@ -117,19 +115,20 @@ struct MySQLPlayerRepository(/* fields */) {
     }
     
 	// Data? is equivalent to Option<Data> at compile time
-    fetchPerson(u32 id) -> Box<Person>? {
+    fetchPerson(u32 id) -> Ptr<Person>? {
         preparedStatement := database.prepare("SELECT * FROM person WHERE id = ? LIMIT 1;");
-        preparedStatement.setU32(1, id);
+        preparedStatement.setUnsignedInt(1, id);
         
         resultSet := preparedStatement.execute();
         personData := resultSet.next() ?? return None; // Returns Data?
-       
-        return Box::new(Person {
+
+        // We could just as easily use a custom allocator, and by default the compiler should be able to delete it from the correct allocator
+        return Box.new(Person {
             id: personData.getU32("id"),
             name: personData.getString("name"),
             age: personData.getU32("age"),
             ...
-        });
+        }); // Auto dereferences to a pointer
     }
 }
 ```
@@ -140,14 +139,13 @@ resultSet := preparedStatement.execute();
 
 drop(resultSet);
 
-// New zeta research indicates that resultSet is now explicitly moved (because move semantics are optional and not enforced like in rust)
-// Old zeta said: this needs to access a null pointer, that's undefined behavior, or a runtime exception which is also not good.
+// resultSet is now explicitly moved (because move semantics are optional and not enforced like in rust)
 personData := resultSet.next() ?? return None; // Returns Option<Data>
 ```
 
 ~~So now we need the compiler to track resultSet, if it were to be deleted just like that then it wouldn't compile, this way, you can deallocate and handle even regular deallocations just fine!~~
 
-The language now can track move semantics which greatly simplify the compiler work, though it is not enforced, `drop` and `mem.Dealloc` now move the data.
+The language now can track move semantics which greatly simplify the compiler work, though it is not enforced, `drop` and deallocation moves the data.
 
 Though by default, pointers will be auto dropped (auto free but it doesn't just free, but it calls Drop.drop to release resources too!) at the end of scopes by default.
 
