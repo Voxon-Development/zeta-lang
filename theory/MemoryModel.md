@@ -13,7 +13,7 @@ For a memory model to truly be memory-safe, it has to follow these rules:
 - No implicit sharing of mutable state
 - Undefined behavior isolation
 - Well-defined memory ordering
-- Escape hatches for low-level work
+- Explicit (not implicit) escape hatches for low-level work
 
 ## How does it work?
 
@@ -181,7 +181,7 @@ The design for Zeta ensures this.
 
 Well-defined memory ordering? Check
 
-## Escape hatches for low-level work
+## Explicit escape hatches for low-level work
 Even with all this memory safety, we still need to escape hatches for low-level work.
 
 This includes but is not limited to:
