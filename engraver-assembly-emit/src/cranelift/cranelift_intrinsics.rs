@@ -7,8 +7,6 @@ use ir::hir::HirType;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Intrinsic {
-    PtrNull,
-    PtrIsNull,
     PtrAdd,
     PtrDeref,
     PtrStore,
@@ -21,14 +19,12 @@ pub enum Intrinsic {
 pub fn resolve_intrinsic(name: &str) -> Option<Intrinsic> {
     use Intrinsic::*;
     match name {
-        "__ptr_null" => Some(PtrNull),
-        "__ptr_is_null" => Some(PtrIsNull),
-        "__ptr_add" => Some(PtrAdd),
-        "__ptr_deref" => Some(PtrDeref),
-        "__ptr_store" => Some(PtrStore),
-        "__ptr_from_addr" => Some(PtrFromAddr),
-        "__ptr_addr" => Some(PtrAddr),
-        "__ptr_cast_to_raw" => Some(PtrCastToRaw),
+        "ptr_add" => Some(PtrAdd),
+        "ptr_deref" => Some(PtrDeref),
+        "ptr_store" => Some(PtrStore),
+        "ptr_from_addr" => Some(PtrFromAddr),
+        "ptr_addr" => Some(PtrAddr),
+        "ptr_cast_to_raw" => Some(PtrCastToRaw),
         _ => None,
     }
 }
@@ -66,60 +62,6 @@ fn ensure_value_is_ptr_width(
     }
 }
 
-pub enum ArrayIntrinsic {
-    Len,
-    Ptr,
-    Get,
-    Set,
-}
-
-pub fn resolve_array_intrinsic(name: &str) -> Option<ArrayIntrinsic> {
-    match name {
-        "__array_len" => Some(ArrayIntrinsic::Len),
-        "__array_ptr" => Some(ArrayIntrinsic::Ptr),
-        "__array_get" => Some(ArrayIntrinsic::Get),
-        "__array_set" => Some(ArrayIntrinsic::Set),
-        _ => None,
-    }
-}
-
-pub fn codegen_array_get(
-    arg_arr: LoweredValue,
-    arg_index: Value,
-    result_hir_ty: &HirType,
-    builder: &mut FunctionBuilder,
-    isa: &dyn TargetIsa,
-) -> Value {
-    // Resolve base pointer
-    let base_ptr = match arg_arr {
-        LoweredValue::Pair(p, _len) => p,
-        LoweredValue::Single(v) => v,
-    };
-    let base_ptr = ensure_val_ty(builder, base_ptr, ptr_clif_ty(isa));
-
-    // index should be usize compatible
-    let idx = ensure_val_ty(builder, arg_index, usize_clif_ty(isa));
-
-    // element CLIF type
-    let elem_clif = clif_type_of(result_hir_ty);
-
-    // compute byte offset = idx * sizeof(elem)
-    let size_bytes = elem_clif.bytes() as i64;
-    let idx_scaled = if size_bytes == 1 {
-        idx
-    } else {
-        // idx * size_bytes
-        builder.ins().imul_imm(idx, size_bytes)
-    };
-
-    // ptr + offset
-    let addr = builder.ins().iadd(base_ptr, idx_scaled);
-
-    // load element
-    let loaded = builder.ins().load(elem_clif, MemFlags::new(), addr, 0);
-    loaded
-}
-
 use cranelift::prelude::AbiParam;
 use ir::ssa_ir::SsaType;
 
@@ -138,8 +80,8 @@ fn push_param_for_hir_type(sig: &mut Signature, hir_ty: &HirType, isa: &dyn Targ
         }
         // primitives
         _ => {
-            let clif_t = clif_type_of(hir_ty, isa);
-            sig.params.push(AbiParam::new(clif_t));
+            let clif_t = clif_type_of(hir_ty);
+            sig.params.push(AbiParam::new(super::clif_type(&clif_t)));
         }
     }
 }
@@ -155,7 +97,7 @@ fn push_return_for_hir_type(sig: &mut Signature, hir_ty: &HirType, isa: &dyn Tar
             sig.returns.push(AbiParam::new(ptr_clif_ty(isa)));
         }
         _ => {
-            sig.returns.push(AbiParam::new(clif_type_of(hir_ty, isa)));
+            sig.returns.push(AbiParam::new(super::clif_type(&clif_type_of(hir_ty))));
         }
     }
 }
@@ -206,32 +148,105 @@ pub(super) fn clif_type_of(ty: &HirType) -> SsaType {
     }
 }
 
-// __array_set(arr, index, value)
-pub fn codegen_array_set(
-    arg_arr: LoweredValue,
-    arg_index: Value,
-    value: Value,
-    builder: &mut FunctionBuilder,
-    isa: &dyn TargetIsa,
-) {
-    let base_ptr = match arg_arr {
-        LoweredValue::Pair(p, _len) => p,
-        LoweredValue::Single(v) => v,
-    };
-    let base_ptr = ensure_val_ty(builder, base_ptr, ptr_clif_ty(isa));
-    let idx = ensure_val_ty(builder, arg_index, usize_clif_ty(isa));
+// In your codegen lowering for intrinsics:
+fn lower_syscall(builder: &mut FunctionBuilder, call: &IntrinsicCall) {
+    let (num_val, arg_vals) = extract_args(call); // all are machine-size ints
+    let sig = runtime_syscall_signature(arg_vals.len()); // e.g., fn(i64,i64,...)->i64
 
-    let val_ty = builder.func.dfg.value_type(value);
-    let size_bytes = val_ty.bytes() as i64;
-    let idx_scaled = if size_bytes == 1 {
-        idx
-    } else {
-        builder.ins().imul_imm(idx, size_bytes)
-    };
+    // create/import external function symbol:
+    let callee = module.declare_function(&format!("syscall{}", arg_vals.len()),
+                                         Linkage::Import, &sig).unwrap();
 
-    let addr = builder.ins().iadd(base_ptr, idx_scaled);
-    builder.ins().store(MemFlags::new(), value, addr, 0);
+    // build call operands
+    let mut operands = Vec::new();
+    operands.push(num_val); // syscall number first argument
+    operands.extend(arg_vals);
+
+    // emit call
+    let call_inst = builder.ins().call(callee, &operands);
+
+    // get return value
+    let results = builder.inst_results(call_inst);
+    let ret = results[0];
+    // return or store ret as the intrinsic result
 }
+
+#[derive(Clone, Copy, Debug)]
+pub struct Layout { pub size: u64, pub align: u64 }
+
+#[derive(Debug)]
+pub enum LayoutError {
+    Unsized(&'static str),
+    Recursive,
+    Unknown,
+}
+
+pub fn sizeof(ty: &Type, target: &TargetInfo, types: &TypeTable) -> Result<u64, LayoutError> {
+    Ok(layout_of(ty, target, types)?.size)
+}
+
+pub fn layout_of(ty: &SsaType, target: &TargetInfo, types: &TypeTable) -> Result<Layout, LayoutError> {
+    match ty {
+        Void            => Ok(Layout { size: 0, align: 1 }),
+        Bool | I8 | U8         => Ok(Layout { size: 1, align: 1 }),
+        I16 | U16       => Ok(Layout { size: 2, align: 2 }),
+        I32 | U32 | F32 => Ok(Layout { size: 4, align: 4 }),
+        I64 | U64 | F64 => Ok(Layout { size: 8, align: 8 }),
+
+        Pointer(_)      => Ok(Layout { size: target.ptr_bytes, align: target.ptr_bytes }),
+
+        // Slices/str/trait objects: usually *unsized*; error unless you define fat-pointer forms.
+        Slice(_) | Str | Dyn(_) => Err(LayoutError::Unsized("unsized type")),
+
+        // Tuples/structs: sequential fields with padding between and at end to struct align.
+        Tuple(fields) | Struct(_, fields) => {
+            let mut off = 0u64;
+            let mut max_align = 1u64;
+            for fty in fields {
+                let f = layout_of(fty, target, types)?;
+                max_align = max_align.max(f.align);
+                off = round_up(off, f.align);
+                off = off.checked_add(f.size).ok_or(LayoutError::Unknown)?;
+            }
+            let size = round_up(off, max_align);
+            Ok(Layout { size, align: max_align })
+        }
+
+        // Enums/sum types: choose your scheme. Simple tagged union:
+        Enum(variants) => {
+            if variants.is_empty() { return Ok(Layout { size: 0, align: 1 }); }
+            let mut max_variant = Layout { size: 0, align: 1 };
+            for v in variants {
+                let l = layout_of(v, target, types)?;
+                max_variant.size  = max_variant.size.max(l.size);
+                max_variant.align = max_variant.align.max(l.align);
+            }
+            let tag = Layout { size: tag_bytes(variants.len()), align: 1 }; // define tag width
+            let union_size = round_up(max_variant.size, max_variant.align);
+            let total = round_up(union_size, tag.align).checked_add(tag.size).ok_or(LayoutError::Unknown)?;
+            Ok(Layout { size: total, align: max_variant.align.max(tag.align) })
+        }
+    }
+}
+
+#[inline]
+fn round_up(x: u64, align: u64) -> u64 {
+    if align <= 1 { return x; }
+    let m = align - 1;
+    (x + m) & !m
+}
+
+fn tag_bytes(variants: usize) -> u64 {
+    // pick an encoding; here is a simple power-of-two step
+    match variants {
+        0..=0x100      => 1,
+        0x101..=0x1_0000 => 2,
+        0x1_0001..=0x1_0000_0000 => 4,
+        _ => 8,
+    }
+}
+
+pub struct TargetInfo { pub ptr_bytes: u64 /* plus anything else you need */ }
 
 /// Codegen an intrinsic. Returns `Some(Value)` if the intrinsic produced a value,
 /// or `None` if it produced no value (like store).
@@ -250,11 +265,6 @@ pub fn codegen_intrinsic(
 ) -> Option<Value> {
     let ptr_ty = isa.pointer_type();
     match intr {
-        Intrinsic::PtrNull => {
-            // return a null pointer
-            let zero = builder.ins().iconst(ptr_ty, 0);
-            Some(zero)
-        }
 
         Intrinsic::PtrCastToRaw => {
             // args: [value]
@@ -293,17 +303,6 @@ pub fn codegen_intrinsic(
             Some(nonzero_test)
         }
 
-        Intrinsic::PtrIsNull => {
-            // args: [ptr]
-            let p = args[0];
-            let p_ty = builder.func.dfg.value_type(p);
-            let p = ensure_value_is_ptr_width(builder, p, ptr_ty, p_ty);
-            let zero = builder.ins().iconst(ptr_ty, 0);
-            let cmp = builder.ins().icmp(IntCC::Equal, p, zero);
-            // cmp is an integer boolean (I8). If your boolean type differs, convert here.
-            Some(cmp)
-        }
-
         Intrinsic::PtrAdd => {
             // args: [ptr, bytes:u64]
             // We add bytes (an integer) to the pointer.
@@ -330,14 +329,12 @@ pub fn codegen_intrinsic(
 
             // Determine CLIF load type from return HirType
             let ret_hir = &ret_hir_types[0];
-            let clif_ret = clif_type_of(ret_hir, isa);
+            let clif_ret = clif_type_of(&ret_hir);
 
             // Use default MemFlags. Tune if you need volatile/readonly.
             let mem_flags = MemFlags::new();
 
-            // Cranelift `load` expects the base to be pointer typed. Good.
-            let loaded = builder.ins().load(clif_ret, mem_flags, p, 0);
-            Some(loaded)
+            Some(builder.ins().load(super::clif_type(&clif_ret), mem_flags, p, 0))
         }
 
         Intrinsic::PtrStore => {
