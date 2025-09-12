@@ -1,8 +1,8 @@
 # Zeta's memory model inside out
 
-Here we'll dive into the memory model of Zeta, inspired by Rust, made to work for regions.
+Here we'll dive into the memory model of Zeta, inspired by Rust, made to work for custom allocators with memory safety.
 
-This memory model encourages fast code via encouraging developers to always use regions, zero-cost RAII and achieve memory safety while not compromising on fearless concurrency.
+This memory model encourages fast code via encouraging developers to write clean and safe code, zero-cost RAII and achieve memory safety while not compromising on fearless concurrency.
 
 # Memory Model
 For a memory model to truly be memory-safe, it has to follow these rules:
@@ -13,12 +13,11 @@ For a memory model to truly be memory-safe, it has to follow these rules:
 - No implicit sharing of mutable state
 - Undefined behavior isolation
 - Well-defined memory ordering
-- Escape hatches for low-level work
+- Explicit (not implicit) escape hatches for low-level work
 
 ## How does it work?
-So with regions and the heap, you can allocate on the stack and on the heap, but Zeta also includes first-class regions
 
-We got inspired by Rust, but we removed some things to make it work better for regions, and make it simpler:
+To make memory safety simpler from a typical Rust borrow checker:
 - Ownership and move semantics no longer apply, making this code no longer a problem
 ```
 mut String x = String::from("five");
@@ -29,13 +28,13 @@ x.append("six");
 println(x); // prints fivesix
 println(y); // prints five
 ```
-- Since move semantics is optional and ownership no longer exists, we removed references, and we replaced them with pointers such as `mut Ptr<MyStruct>` and `Ptr<MyStruct>`
+- Since move semantics is optional and the language copies by default, we removed references, and we replaced them with pointers such as `mut Ptr<MyStruct>` and `Ptr<MyStruct>`
 
 ```
 mut u32 x = 5;
 
 Ptr<u32> immutablePtr = asPtr(x);
-mut Ptr<u32> mutablePtr := asPtr(x);
+mut Ptr<u32> mutablePtr = asPtr(x);
 
 x = 6; // Compiles
 
@@ -44,9 +43,7 @@ mutablePtr = 6; // Compiles
 immutablePtr = 6; // Does not compile
 ```
 
-- Since we removed references, we also removed the need for `&` and `&mut`
-
-- If there is no ownership, there is no need for reference counting for "multiple owners" and hence no need for `Arc` and `Rc` or libraries trying to optimize reference counting with `Trc` or `SharedTrc` (Except for cyclic data, but Zeta *wants* to take a different approach on cyclic data)
+- There is no need for reference counting for "multiple owners" now, and hence no need for `Arc` and `Rc` or libraries trying to optimize reference counting with `Trc` or `SharedTrc` (Except for cyclic data, but Zeta *wants* to take a different approach on cyclic data)
 
 Otherwise, the rest of the memory model is the same, RAII, memory safety and concurrency
 
@@ -77,24 +74,23 @@ So we need to make sure that we have safe aliasing and good lifetime management,
 - No use-after-free
 
 So how do we do this?
-Well, we have regions, and we can combine them to make it work for regions, which means we can have lifetimes that work for regions, simple, if the lifetime of the region ends, so does all the data inside the region
 
-but what if we need the heap? it's a little more complicated then
-
-We must rely on compile time RAII and tracking references and deletions.
+We must rely on safe alias tracking, lifetimes and move semantics
 
 If we want to make sure use-after-free, dangling pointers or double free is impossible here from the heap, we would want to make a tracker that tracks aliases, and deletions, or even just rely on RAII
 
 For example, simple RAII:
 ```
-mut x = 5;
+mut x := 5;
 
-Ptr<u32> immutablePtr := x;
-mut Ptr<u32> mutablePtr := asPtr(x);
+Ptr<u32> immutablePtr = Ptr.new(x);
+mut Ptr<u32> mutablePtr = Ptr.new(x);
 
 x = 6; // Compiles
-*mutablePtr = 6; // Compiles
-*immutablePtr = 6; // Does not compile
+
+// Auto deref pointers to values for getting or setting
+mutablePtr = 6; // Compiles
+immutablePtr = 6; // Does not compile
 
 // Everything is freed automatically here
 ```
@@ -112,24 +108,25 @@ struct MySQLPlayerRepository(/* fields */) {
     // Initialization, fields, etc
     
     foo() {
-        person := fetchPerson();
+        person := fetchPerson()
         // Use person.
     }
     
 	// Data? is equivalent to Option<Data> at compile time
     fetchPerson(u32 id) -> Box<Person>? {
-        preparedStatement := database.prepare("SELECT * FROM person WHERE id = ? LIMIT 1;");
-        preparedStatement.setU32(1, id);
+        preparedStatement := database.prepare("SELECT * FROM person WHERE id = ? LIMIT 1;")
+        preparedStatement.setUnsignedInt(1, id)
         
-        resultSet := preparedStatement.execute();
-        personData := resultSet.next() ?? return None; // Returns Data?
-       
-        return Box::new(Person {
-            id: personData.getU32("id"),
+        resultSet := preparedStatement.execute()
+        personData := resultSet.next() ?? return null // resultSet.next() returns Data?
+
+        // We could just as easily use a custom allocator, and by default the compiler should be able to delete it from the correct allocator
+        return Box.new(Person {
+            id: personData.getUnsignedInt("id"),
             name: personData.getString("name"),
-            age: personData.getU32("age"),
+            age: personData.getUnsignedInt("age"),
             ...
-        });
+        }, allocator=global) // allocator=global is the default and you don't need to specify this, this is just for specification
     }
 }
 ```
@@ -140,14 +137,13 @@ resultSet := preparedStatement.execute();
 
 drop(resultSet);
 
-// New zeta research indicates that resultSet is now explicitly moved (because move semantics are optional and not enforced like in rust)
-// Old zeta said: this needs to access a null pointer, that's undefined behavior, or a runtime exception which is also not good.
+// resultSet is now explicitly moved (because move semantics are optional and not enforced like in rust)
 personData := resultSet.next() ?? return None; // Returns Option<Data>
 ```
 
 ~~So now we need the compiler to track resultSet, if it were to be deleted just like that then it wouldn't compile, this way, you can deallocate and handle even regular deallocations just fine!~~
 
-The language now can track move semantics which greatly simplify the compiler work, though it is not enforced, `drop` and `mem.Dealloc` now move the data.
+The language now can track move semantics which greatly simplify the compiler work, though it is not enforced, `drop` and deallocation moves the data.
 
 Though by default, pointers will be auto dropped (auto free but it doesn't just free, but it calls Drop.drop to release resources too!) at the end of scopes by default.
 
@@ -185,7 +181,7 @@ The design for Zeta ensures this.
 
 Well-defined memory ordering? Check
 
-## Escape hatches for low-level work
+## Explicit escape hatches for low-level work
 Even with all this memory safety, we still need to escape hatches for low-level work.
 
 This includes but is not limited to:
@@ -198,84 +194,3 @@ This includes but is not limited to:
 And this should all be under `unsafe` since Zeta cannot (or should not) guarantee safety for all of these operations.
 
 Escape hatches for low-level work? Check
-
-## We have achieved memory safety and fearless concurrency!
-
-So now the language is memory safe, but we still don't know one thing and we need to specify this:
-
-# Regions, What are regions?
-Regions are backed by bump allocators internally.
-
-A bump allocator works by allocating a big chunk of memory instead of exactly what you need, which means you need significantly more memory at the cost of O(1) deallocation of the ENTIRE bump/region + O(1) allocation
-
-It works by:
-
-```rust
-#[inline(always)]
-pub fn alloc<T>(&mut self, val: T) -> Option<&mut T> {
-    let align = align_of::<T>();
-    let size = size_of::<T>();
-
-    let ptr = self.ptr.as_ptr() as usize;
-    let base = ptr + self.offset;
-    let aligned = unsafe { align_up(base, align) };
-    let end = aligned + size;
-    let new_offset = end - ptr;
-
-    if new_offset > self.capacity {
-        return None;
-    }
-
-    self.offset = new_offset;
-    let ptr = aligned as *mut T;
-    unsafe {
-        ptr.write(val);
-        Some(&mut *ptr)
-    }
-}
-```
-
-This is just a bunch of math, and alignment to make it safer, but it boils down to:
-```rust
-// Get the memory location
-let ptr = unsafe { (self.ptr.as_ptr() as *mut u8).add(self.offset) as *mut T };
-
-// Update offset
-self.offset += size;
-
-// Write the value into memory and return a reference
-unsafe {
-	ptr.write(val);
-	Some(&mut *ptr)
-}
-```
-
-Which is a little bit of pointer arithmetic to get the memory location and write data to it, then we would increment offset so that future allocations can be done.
-
-Keep in mind the real version (above) has real alignment and checks, and optimization for cold paths (such as allocation fails)
-
-So yeah, O(1) allocation, it is literally just taking a pointer you have from your global allocator and adding `offset` to it for allocation.
-
-and when you deallocate, guess what, it is literally just deallocating one big pointer and/or setting offset to 0 :D
-
-## How does it work if you need it to grow?
-So, what I showed you in the previous section was a regular bump allocator, what if we needed it to grow?
-
-Resizing is very slow, just use the heap instead.
-
-## What should it be used for?
-Well, you should use it every time you want to do short-lived allocations, but due to the cons of arena/bump allocation, you also shouldn't do it always.
-You can also do it when you need append-only data
-
-For when region allocation does not work, just use the heap or even slab allocation if you need ultra-high performance
-
-## Pros of Regions
-
-- O(1) bulk deallocation
-- O(1) allocation
-
-## Cons of Regions
-
-- No individual deallocation
-- Memory usage is higher (Short-term)
-- No resizing
