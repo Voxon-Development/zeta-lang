@@ -3,20 +3,20 @@
 // =====================================
 
 use std::collections::HashMap;
-use crate::hir::{HirClass, HirEnum, HirInterface};
-use crate::sea_hasher::SeaHashBuilder;
+use crate::hir::{HirClass, HirEnum, HirInterface, StrId};
+use crate::ir_hasher::FxHashBuilder;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Value(pub usize);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Operand {
     Value(Value),
     ConstInt(i64),
     ConstBool(bool),
-    ConstString(String),
-    FunctionRef(String),
-    GlobalRef(String),
+    ConstString(StrId),
+    FunctionRef(StrId),
+    GlobalRef(StrId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,57 +32,118 @@ pub enum SsaType {
     I128,
     F32,
     F64,
+    ISize,
+    USize,
 
     Bool,
     String,
     Void,
-    User(String), // class/interface/enum type
+    User(StrId, Vec<SsaType>), // class/interface/enum type
+    Enum(Vec<SsaType>),
+    Tuple(Vec<SsaType>),
+    Dyn,
+    Slice,
 }
+
+use smallvec::SmallVec;
 
 #[derive(Debug, Clone)]
 pub enum Instruction {
-    Binary { dest: Value, op: BinOp, left: Operand, right: Operand },
-    Unary { dest: Value, op: UnOp, operand: Operand },
-    Phi { dest: Value, incomings: Vec<(BlockId, Value)> },
-    Call { dest: Option<Value>, func: Operand, args: Vec<Operand> },
-    Interpolate { dest: Value, parts: Vec<InterpolationOperand> },
-    EnumConstruct { dest: Value, enum_name: String, variant: String, args: Vec<Operand> },
-    MatchEnum { value: Value, arms: Vec<(String, BlockId)> },
-    Jump { target: BlockId },
-    Branch { cond: Operand, then_bb: BlockId, else_bb: BlockId },
-    Ret { value: Option<Operand> },
-    Const { dest: Value, ty: SsaType, value: Operand },
-    /// Direct method call on a concrete class (resolved at compile time)
+    /// Binary operation: dest = left OP right
+    Binary {
+        dest: Value,
+        op: BinOp,
+        left: Operand,
+        right: Operand,
+    },
+
+    /// Unary operation: dest = OP operand
+    Unary {
+        dest: Value,
+        op: UnOp,
+        operand: Operand,
+    },
+
+    /// Phi node for SSA
+    Phi {
+        dest: Value,
+        incomings: SmallVec<[(BlockId, Value); 4]>, // usually <=4 predecessors
+    },
+
+    /// Function call
+    Call {
+        dest: Option<Value>,
+        func: Operand,
+        args: SmallVec<[Operand; 8]>, // most calls <8 args
+    },
+
+    /// Direct class method call (resolved at compile time)
     ClassCall {
         dest: Option<Value>,
-        object: Value,          // `this` pointer/value
-        method_id: usize,       // method index in the class vtable or direct offset
-        args: Vec<Operand>,     // already-lowered arguments
+        object: Value,          // `this` pointer
+        method_id: usize,       // method index
+        args: SmallVec<[Operand; 8]>,
     },
 
-    /// Virtual call through interface vtable
+    /// Virtual/interface call through vtable
     InterfaceDispatch {
         dest: Option<Value>,
-        object: Value,          // interface-typed object reference
-        method_slot: usize,     // index in interface method table
-        args: Vec<Operand>,
+        object: Value,          // interface reference
+        method_slot: usize,     // vtable slot
+        args: SmallVec<[Operand; 8]>,
     },
 
-    /// Convert a concrete class reference to an interface reference
+    /// Cast class -> interface
     UpcastToInterface {
         dest: Value,
-        object: Value,          // class-typed object
-        interface_id: usize,    // which interface
+        object: Value,
+        interface_id: usize,
     },
 
-    Alloc { dest: Value, ty: SsaType },
+    /// Stack allocation (SSA-local)
+    Alloc {
+        dest: Value,
+        ty: SsaType,
+        count: usize, // number of elements if array
+    },
+
     StoreField { base: Operand, offset: usize, value: Operand },
     LoadField { dest: Value, base: Operand, offset: usize },
+
+    /// Interpolation (string concatenation)
+    Interpolate {
+        dest: Value,
+        parts: SmallVec<[InterpolationOperand; 4]>, // usually <=4 parts
+    },
+
+    EnumConstruct {
+        dest: Value,
+        enum_name: StrId,
+        variant: StrId,
+        args: SmallVec<[Operand; 8]>, // usually <=8 fields
+    },
+
+    MatchEnum {
+        value: Value,
+        arms: SmallVec<[(StrId, BlockId); 8]>, // usually <=8 arms
+    },
+
+    Jump { target: BlockId },
+
+    Branch {
+        cond: Operand,
+        then_bb: BlockId,
+        else_bb: BlockId,
+    },
+
+    Ret { value: Option<Operand> },
+    Const { dest: Value, ty: SsaType, value: Operand },
 }
+
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum InterpolationOperand {
-    Literal(String),
+    Literal(StrId),
     Value(Value),
 }
 
@@ -102,41 +163,41 @@ pub struct BasicBlock {
 
 #[derive(Debug, Clone)]
 pub struct Function {
-    pub name: String,
-    pub params: Vec<(Value, SsaType)>,
+    pub name: StrId,
+    pub params: SmallVec<[(Value, SsaType); 8]>,
     pub ret_type: SsaType,
-    pub blocks: Vec<BasicBlock>,
-    pub value_types: HashMap<Value, SsaType, SeaHashBuilder>,
+    pub blocks: SmallVec<[BasicBlock; 12]>,
+    pub value_types: HashMap<Value, SsaType, FxHashBuilder>,
     pub entry: BlockId,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct MethodInfo {
-    pub name: String,
+    pub name: StrId,
     pub slot: usize, // index in vtable
     pub is_virtual: bool,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct ClassLayout {
-    pub vtable: Vec<MethodInfo>,
+    pub vtable: SmallVec<[MethodInfo; 12]>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct InterfaceLayout {
-    pub methods: Vec<String>, // names in declaration order
+    pub methods: SmallVec<[StrId; 12]>, // names in declaration order
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Module {
-    pub funcs: HashMap<String, Function, SeaHashBuilder>,
-    pub classes: HashMap<String, HirClass, SeaHashBuilder>,
-    pub interfaces: HashMap<String, HirInterface, SeaHashBuilder>,
-    pub enums: HashMap<String, HirEnum, SeaHashBuilder>,
-    pub types: HashMap<String, SsaType, SeaHashBuilder>,
+    pub funcs: HashMap<StrId, Function, FxHashBuilder>,
+    pub classes: HashMap<StrId, HirClass, FxHashBuilder>,
+    pub interfaces: HashMap<StrId, HirInterface, FxHashBuilder>,
+    pub enums: HashMap<StrId, HirEnum, FxHashBuilder>,
+    pub types: HashMap<StrId, SsaType, FxHashBuilder>,
 
-    pub class_layouts: HashMap<String, ClassLayout, SeaHashBuilder>,
-    pub interface_layouts: HashMap<String, InterfaceLayout, SeaHashBuilder>,
+    pub class_layouts: HashMap<StrId, ClassLayout, FxHashBuilder>,
+    pub interface_layouts: HashMap<StrId, InterfaceLayout, FxHashBuilder>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -144,7 +205,7 @@ pub enum Type {
     I64,
     Bool,
     Str,
-    Enum(String),
+    Enum(StrId),
     // possibly more like Float, Struct, etc.
 }
 

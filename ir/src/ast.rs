@@ -3,6 +3,7 @@ use std::fmt::{Display, Formatter};
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     Import(ImportStmt),
+    Package(PackageStmt),
     Let(LetStmt),
     Return(ReturnStmt),
     If(IfStmt),
@@ -22,6 +23,11 @@ pub enum Stmt {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImportStmt {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PackageStmt {
     pub path: String,
 }
 
@@ -168,7 +174,6 @@ pub struct FuncDecl {
     pub is_extern: bool,
     pub name: String,
     pub generics: Option<Vec<Generic>>,
-    pub regions: Option<Vec<RegionParam>>,
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
     pub body: Option<Block>,
@@ -179,7 +184,6 @@ pub struct ClassDecl {
     pub visibility: Visibility,
     pub name: String,
     pub generics: Option<Vec<Generic>>,
-    pub regions: Option<Vec<RegionParam>>,
     pub params: Option<Vec<Param>>,
     pub body: Option<Block>
 }
@@ -198,9 +202,12 @@ pub enum Visibility {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Param {
+    pub is_mut: bool,
+    pub is_move: bool,
     pub name: String,
     pub type_annotation: Type,
-    pub visibility: Visibility
+    pub visibility: Visibility,
+    pub default_value: Option<Expr>
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -231,17 +238,6 @@ pub struct InternalExprStmt {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
-    Array {
-        elements: Box<Expr>
-    },
-    ArrayIndex {
-        array: Box<Expr>,
-        index: Box<Expr>
-    },
-    ArrayInit {
-        array_type: Type,
-        num_of_elements: u32
-    },
     Number(i64),
     Decimal(f64),
     String(String),

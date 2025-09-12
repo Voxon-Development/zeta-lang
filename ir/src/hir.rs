@@ -1,7 +1,76 @@
-use std::fmt::Display;
+use std::fmt::{Display, Formatter};
+use std::ops::Deref;
+use zetaruntime::string_pool::VmString;
+use crate::Context;
+
 // =====================================
 // HIR (High-Level IR)
 // =====================================
+
+/// A reference to an interned string in the global string pool
+#[derive(Debug, Clone, Copy, PartialEq, Default, Eq, Hash)]
+#[repr(align(32))]
+pub struct StrId(pub VmString);
+
+impl Deref for StrId {
+    type Target = VmString;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl StrId {
+    /// Create a new string ID from a VmString
+    pub fn new(vm_string: VmString) -> Self {
+        StrId(vm_string)
+    }
+
+    /// Get the underlying VmString
+    pub fn into_inner(self) -> VmString {
+        self.0
+    }
+    
+    /// Get the hash of the string
+    pub fn hash(&self) -> u64 {
+        // Use the VmString's hash method if available, or a fallback
+        // This is a simplified version - in practice, you'd want to expose the hash from VmString
+        // or use a different approach to get a unique identifier
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&self.0, &mut hasher);
+        std::hash::Hasher::finish(&hasher)
+    }
+    
+    /// Get the length of the string in bytes
+    pub fn len(&self) -> usize {
+        // Since we can't access the length directly, we'll need to resolve the string
+        // This is inefficient, so in practice, you'd want to expose the length from VmString
+        // or find another way to track it
+        0 // Placeholder
+    }
+    
+    /// Check if the string is empty
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    
+    /// Resolve the string using a context
+    pub fn resolve<'a>(&self, ctx: &'a Context) -> &'a str {
+        ctx.resolve_str(self.0)
+    }
+}
+
+impl From<VmString> for StrId {
+    fn from(vm_string: VmString) -> Self {
+        StrId(vm_string)
+    }
+}
+
+impl std::fmt::Display for StrId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // This will be resolved properly when we have access to the context
+        write!(f, "StrId({:?})", self.0)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Hir {
@@ -17,14 +86,14 @@ pub enum Hir {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirModule {
-    pub name: String,
-    pub imports: Vec<String>,
+    pub name: StrId,
+    pub imports: Vec<StrId>,
     pub items: Vec<Hir>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirFunc {
-    pub name: String,
+    pub name: StrId,
     pub visibility: Visibility,
     pub is_static: bool,
     pub is_unsafe: bool,
@@ -36,61 +105,59 @@ pub struct HirFunc {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirClass {
-    pub name: String,
+    pub name: StrId,
     pub visibility: Visibility,
     pub generics: Vec<HirGeneric>,
     pub fields: Vec<HirField>,
     pub methods: Vec<HirFunc>,
-    pub interfaces: Vec<String>, // implemented interfaces
+    pub interfaces: Vec<StrId>, // implemented interfaces
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirImpl {
     pub generics: Vec<HirGeneric>,
-    pub interface: String,
-    pub target: String,
+    pub interface: StrId,
+    pub target: StrId,
     pub methods: Vec<HirFunc>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirInterface {
-    pub name: String,
-    pub visibility: Visibility,
-    pub methods: Vec<HirFunc>,
+    pub name: StrId,
     pub generics: Vec<HirGeneric>,
+    pub methods: Vec<HirFunc>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirEnum {
-    pub name: String,
-    pub visibility: Visibility,
+    pub name: StrId,
     pub generics: Vec<HirGeneric>,
     pub variants: Vec<HirEnumVariant>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirEnumVariant {
-    pub name: String,
+    pub name: StrId,
     pub fields: Vec<HirField>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirField {
-    pub name: String,
+    pub name: StrId,
     pub field_type: HirType,
     pub visibility: Visibility,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirParam {
-    pub name: String,
-    pub ty: HirType,
+    pub name: StrId,
+    pub param_type: HirType,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirGeneric {
-    pub name: String,
-    pub constraints: Vec<String>,
+    pub name: StrId,
+    pub constraints: Vec<StrId>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -109,33 +176,27 @@ pub enum HirType {
     U128,
     Boolean,
     String,
-    Class(String, Vec<HirType>),
-    Interface(String, Vec<HirType>),
-    Enum(String, Vec<HirType>),
+    Class(StrId, Vec<HirType>),
+    Interface(StrId, Vec<HirType>),
+    Enum(StrId, Vec<HirType>),
     Lambda {
         params: Vec<HirType>,
         return_type: Box<HirType>,
         concurrent: bool,
     },
     Array(Box<HirType>),
-    Generic(String),
+    Generic(StrId),
     Void,
-}
-
-impl Display for HirType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirStmt {
-    Let { name: String, ty: HirType, value: HirExpr, mutable: bool },
+    Let { name: StrId, ty: HirType, value: HirExpr, mutable: bool },
     Return(Option<HirExpr>),
     Expr(HirExpr),
     If { cond: HirExpr, then_block: Box<HirStmt>, else_block: Option<Box<HirStmt>> },
     While { cond: HirExpr, body: Box<HirStmt> },
-    For { init: Option<Box<HirStmt>>, condition: Option<HirExpr>, increment: Option<HirExpr>, body: Box<HirStmt>, },
+    For { init: Option<Box<HirStmt>>, condition: Option<HirExpr>, increment: Option<HirExpr>, body: Box<HirStmt> },
     Match { expr: HirExpr, arms: Vec<HirMatchArm> },
     UnsafeBlock { body: Box<HirStmt> },
     Block { body: Vec<HirStmt> },
@@ -158,25 +219,26 @@ impl FromIterator<Box<HirStmt>> for HirStmt {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirMatchArm {
     pub pattern: HirPattern,
-    pub body: Box<HirStmt>,
+    pub guard: Option<HirExpr>,
+    pub body: HirStmt,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirPattern {
-    Ident(String),
+    Ident(StrId),
     Number(i64),
-    String(String),
+    String(StrId),
     Tuple(Vec<HirPattern>),
-    EnumVariant { enum_name: String, variant: String, bindings: Vec<String> },
+    EnumVariant { enum_name: StrId, variant: StrId, bindings: Vec<StrId> },
     Wildcard,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirExpr {
     Number(i64),
-    String(String),
+    String(StrId),
     Boolean(bool),
-    Ident(String),
+    Ident(StrId),
     Tuple(Vec<HirExpr>),
     Decimal(f64),
     Binary { left: Box<HirExpr>, op: Operator, right: Box<HirExpr> },
@@ -184,14 +246,14 @@ pub enum HirExpr {
     InterfaceCall {
         callee: Box<HirExpr>,
         args: Vec<HirExpr>,
-        interface: String
+        interface: StrId
     },
-    FieldAccess { object: Box<HirExpr>, field: String },
+    FieldAccess { object: Box<HirExpr>, field: StrId },
     Assignment { target: Box<HirExpr>, op: AssignmentOperator, value: Box<HirExpr> },
     InterpolatedString(Vec<InterpolationPart>),
-    EnumInit { enum_name: String, variant: String, args: Vec<HirExpr> },
+    EnumInit { enum_name: StrId, variant: StrId, args: Vec<HirExpr> },
     ExprList(Vec<HirExpr>),
-    Get { object: Box<HirExpr>, field: String },
+    Get { object: Box<HirExpr>, field: StrId },
     ClassInit { name: Box<HirExpr>, args: Vec<HirExpr> },
     Comparison { left: Box<HirExpr>, op: Operator, right: Box<HirExpr> },
 }
@@ -242,11 +304,9 @@ pub enum AssignmentOperator {
     ShiftRightAssign,
 }
 
-
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum InterpolationPart {
-    Literal(String),
+    String(StrId),
     Expr(Box<HirExpr>),
 }
 
@@ -255,4 +315,50 @@ pub enum Visibility {
     Public,
     Private,
     Internal,
+}
+
+impl Display for HirType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HirType::I8 => write!(f, "i8"),
+            HirType::I16 => write!(f, "i16"),
+            HirType::I32 => write!(f, "i32"),
+            HirType::I64 => write!(f, "i64"),
+            HirType::U8 => write!(f, "u8"),
+            HirType::U16 => write!(f, "u16"),
+            HirType::U32 => write!(f, "u32"),
+            HirType::U64 => write!(f, "u64"),
+            HirType::I128 => write!(f, "i128"),
+            HirType::U128 => write!(f, "u128"),
+            HirType::F32 => write!(f, "f32"),
+            HirType::F64 => write!(f, "f64"),
+            HirType::Boolean => write!(f, "bool"),
+            HirType::String => write!(f, "string"),
+            HirType::Class(name, args) => Self::write_args(f, name, args),
+            HirType::Interface(name, args) => Self::write_args(f, name, args),
+            HirType::Enum(name, args) => Self::write_args(f, name, args),
+            HirType::Lambda { params, return_type, concurrent } => {
+                let params_str: Vec<_> = params.iter().map(|p| p.to_string()).collect();
+                if *concurrent {
+                    write!(f, "concurrent fn({}) -> {}", params_str.join(", "), return_type)
+                } else {
+                    write!(f, "fn({}) -> {}", params_str.join(", "), return_type)
+                }
+            }
+            HirType::Array(inner) => write!(f, "[{}]", inner),
+            HirType::Generic(name) => write!(f, "{}", name),
+            HirType::Void => write!(f, "void"),
+        }
+    }
+}
+
+impl HirType {
+    fn write_args(f: &mut Formatter, name: &StrId, args: &Vec<HirType>) -> std::fmt::Result {
+        if args.is_empty() {
+            write!(f, "{}", name)
+        } else {
+            let args_str: Vec<_> = args.iter().map(|a| a.to_string()).collect();
+            write!(f, "{}<{}>", name, args_str.join(", "))
+        }
+    }
 }

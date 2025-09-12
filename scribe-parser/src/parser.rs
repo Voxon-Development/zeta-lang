@@ -1,3 +1,4 @@
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use pest_derive::Parser;
 
 use pest::iterators::{Pair, Pairs};
@@ -36,6 +37,7 @@ pub fn parse_program(input: &str) -> Result<Vec<Stmt>, pest::error::Error<Rule>>
 fn parse_stmt(stmts: &mut Vec<Stmt>, pair: Pair<Rule>) -> bool {
     match pair.as_rule() {
         Rule::impl_decl => stmts.push(Stmt::ImplDecl(parse_impl_decl(&pair))),
+        Rule::package_stmt => stmts.push(parse_package_stmt(&pair)),
         Rule::import_stmt => stmts.push(parse_import_stmt(&pair)),
         Rule::let_stmt => stmts.push(parse_let_stmt(&pair)),
         Rule::return_stmt => stmts.push(parse_return_stmt(&pair)),
@@ -103,6 +105,12 @@ fn parse_while_stmt(pair: &Pair<Rule>) -> Stmt {
     }
 }
 
+fn parse_package_stmt(pair: &Pair<Rule>) -> Stmt {
+    let mut inner = pair.clone().into_inner();
+    let path = inner.next().unwrap().as_str().to_string();
+    Stmt::Package(PackageStmt { path })
+}
+
 fn parse_for_stmt(pair: &Pair<Rule>) -> Stmt {
     let mut inner = pair.clone().into_inner();
 
@@ -166,9 +174,6 @@ fn parse_class_decl(pair: &Pair<Rule>) -> Stmt {
     // Optional generic parameters: <T: Constraint, U: …>
     let generics = parse_generic_params(&mut inner);
 
-    // Optional region parameters: [R1 R2 …]
-    let regions = parse_region_params(&mut inner);
-
     // Class keyword already consumed; now the identifier
     let name = inner.next().unwrap().as_str().to_string();
 
@@ -187,22 +192,9 @@ fn parse_class_decl(pair: &Pair<Rule>) -> Stmt {
         visibility,
         name,
         generics,
-        regions,
         params,
         body,
     })
-}
-
-fn parse_region_params(inner: &mut Pairs<Rule>) -> Option<Vec<RegionParam>> {
-    if inner.peek().map(|p| p.as_rule()) == Some(Rule::region_params) {
-        let reg_pair = inner.next().unwrap();
-        let regs = reg_pair.into_inner()
-            .map(|p| RegionParam { name: p.as_str().to_string() })
-            .collect();
-        Some(regs)
-    } else {
-        None
-    }
 }
 
 fn parse_generic_params(inner: &mut Pairs<Rule>) -> Option<Vec<Generic>> {
@@ -255,6 +247,10 @@ fn parse_fun_decl(pair: &Pair<Rule>) -> FuncDecl {
     let mut is_unsafe = false;
     let mut is_static = false;
     let mut is_extern = false;
+    let mut extern_string: Option<&str> = None;
+    let mut is_mut = false;
+    let mut inline = false;
+    let mut no_inline = false;
 
     while let Some(peek) = inner.peek() {
         match peek.as_rule() {
@@ -269,19 +265,36 @@ fn parse_fun_decl(pair: &Pair<Rule>) -> FuncDecl {
                 is_static = true;
                 inner.next();
             }
+            Rule::mut_keyword => {
+                is_mut = true;
+                inner.next();
+            }
+            Rule::inline_keyword => {
+                inline = true;
+                inner.next();
+            }
+            Rule::noinline_keyword => {
+                no_inline = true;
+                inner.next();
+            }
             Rule::extern_modifier => {
                 is_extern = true;
-                inner.next();
+                match inner.next() {
+                    Some(rule) if rule.as_rule() == Rule::string => {
+                        extern_string = Some(rule.as_str());
+                        inner.next();
+                    }
+                    _ => todo!()
+                }
             }
             _ => break,
         }
     }
 
+    debug_assert!(!inline && !no_inline);
+
     // Optional generic parameters: <T: Constraint, U: …>
     let generics = parse_generic_params(&mut inner);
-
-    // Optional region parameters: [R1 R2 …]
-    let regions = parse_region_params(&mut inner);
 
     // Function name
     let name = inner.next().unwrap().as_str().to_string();
@@ -291,7 +304,7 @@ fn parse_fun_decl(pair: &Pair<Rule>) -> FuncDecl {
     if inner.peek().map(|p| p.as_rule()) == Some(Rule::param_list) {
         for param in inner.next().unwrap().into_inner() {
             if param.as_rule() == Rule::param {
-                params.push(parse_param_no_visibility(param));
+                params.push(parse_param(param));
             }
         }
     }
@@ -319,7 +332,6 @@ fn parse_fun_decl(pair: &Pair<Rule>) -> FuncDecl {
         is_extern,
         name,
         generics,
-        regions,
         params,
         return_type,
         body,
@@ -333,29 +345,34 @@ fn get_return_type(inner: &mut Pairs<Rule>, rule: Rule) -> Option<Type> {
     }
 }
 
-fn parse_param_no_visibility(pair: Pair<Rule>) -> Param {
-    assert_eq!(pair.as_rule(), Rule::param);
-
-    let mut inner = pair.into_inner();
-
-    let type_annotation = get_type_annotation(&mut inner);
-    let name = inner.next().unwrap().as_str().to_string();
-
-    Param {
-        visibility: Visibility::Private, // default for params
-        name,
-        type_annotation,
-    }
-}
-
 fn parse_param(pair: Pair<Rule>) -> Param {
     let mut inner = pair.into_inner();
     let visibility = get_visibility(&mut inner);
 
+    let is_mut = match inner.peek() {
+        Some(rule) if rule.as_rule() == Rule::mut_keyword => true,
+        Some(_) => false,
+        None => panic!()
+    };
+
+    let is_move = match inner.peek() {
+        Some(rule) if rule.as_rule() == Rule::move_keyword => true,
+        Some(_) => false,
+        None => panic!()
+    };
+
     let type_annotation = get_type_annotation(&mut inner);
     let name = inner.next().unwrap().as_str().to_string();
 
-    Param { visibility, name, type_annotation }
+    let default_value = match inner.peek() {
+        Some(rule) => {
+            inner.next();
+            catch_unwind(AssertUnwindSafe(|| parse_expr(rule))).ok()
+        }
+        None => None
+    };
+
+    Param { is_mut, is_move, visibility, name, type_annotation, default_value }
 }
 
 fn get_type_annotation(inner: &mut Pairs<Rule>) -> Type {

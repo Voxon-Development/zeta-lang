@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::mem::MaybeUninit;
-use ir::sea_hasher::SeaHashBuilder;
+use ir::ir_hasher::FxHashBuilder;
 use ir::ssa_ir::{BasicBlock, BlockId, Function, SsaType, Value};
 
 pub struct CurrentBlockData {
@@ -8,11 +8,11 @@ pub struct CurrentBlockData {
     pub current_block: BlockId,
     pub next_value: usize,
     pub next_block: usize,
-    pub value_types: HashMap<Value, SsaType, SeaHashBuilder>,
+    pub value_types: HashMap<Value, SsaType, FxHashBuilder>,
 }
 
 impl CurrentBlockData {
-    pub fn new(func: Function, current_block: BlockId, next_value: usize, next_block: usize, value_types: HashMap<Value, SsaType, SeaHashBuilder>) -> Self {
+    pub fn new(func: Function, current_block: BlockId, next_value: usize, next_block: usize, value_types: HashMap<Value, SsaType, FxHashBuilder>) -> Self {
         Self {
             func,
             current_block,
