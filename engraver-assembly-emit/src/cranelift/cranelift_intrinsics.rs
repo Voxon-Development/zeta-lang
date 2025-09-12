@@ -1,9 +1,9 @@
-use std::io::Read;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{types, InstBuilder, MemFlags, Signature, Type, Value};
 use cranelift_codegen::isa::TargetIsa;
 use cranelift_frontend::FunctionBuilder;
 use ir::hir::HirType;
+use std::io::Read;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Intrinsic {
@@ -27,7 +27,7 @@ pub fn resolve_intrinsic(name: &str) -> Option<Intrinsic> {
         "ptr_cast_to_raw" => Some(PtrCastToRaw),
         _ => None,
     }
-}
+}/*
 
 /// Helper: try to extract the inner T from `Ptr<T>` HirType.
 /// Adjust to match how your HirType encodes generics.
@@ -38,7 +38,7 @@ pub fn as_ptr_inner(hir_ty: &HirType) -> Option<&HirType> {
         }
     }
     None
-}
+}*/
 
 /// Ensure `val` has `ptr_ty` as its CLIF type, extending/truncating as necessary.
 /// Returns a Value guaranteed to be `ptr_ty`.
@@ -63,7 +63,9 @@ fn ensure_value_is_ptr_width(
 }
 
 use cranelift::prelude::AbiParam;
-use ir::ssa_ir::SsaType;
+use cranelift_module::{Linkage, Module};
+use cranelift_object::object::read::elf::Dyn;
+use ir::ssa_ir::{Function, SsaType};
 
 fn push_param_for_hir_type(sig: &mut Signature, hir_ty: &HirType, isa: &dyn TargetIsa) {
     match hir_ty {
@@ -75,7 +77,7 @@ fn push_param_for_hir_type(sig: &mut Signature, hir_ty: &HirType, isa: &dyn Targ
             sig.params.push(len);
         }
         // Ptr<T> is a single pointer param
-        HirType::Class(name, _) if name == "Ptr" => {
+        HirType::Class(name, _args) if name == "Ptr" => {
             sig.params.push(AbiParam::new(ptr_clif_ty(isa)));
         }
         // primitives
@@ -142,20 +144,29 @@ pub(super) fn clif_type_of(ty: &HirType) -> SsaType {
         HirType::F64 => SsaType::F64,
         HirType::Boolean => SsaType::Bool,
         HirType::String => SsaType::String,
-        HirType::Class(name, _) | HirType::Interface(name, _) | HirType::Enum(name, _) => SsaType::User(name.clone()),
+        HirType::Class(name, args) | HirType::Interface(name, args) | HirType::Enum(name, args) 
+            => SsaType::User(name.clone(), args.iter().map(clif_type_of).collect()),
         HirType::Void => SsaType::Void,
         _ => unimplemented!("Unsupported type {:?}", ty),
     }
 }
 
 // In your codegen lowering for intrinsics:
-fn lower_syscall(builder: &mut FunctionBuilder, call: &IntrinsicCall) {
-    let (num_val, arg_vals) = extract_args(call); // all are machine-size ints
+fn lower_syscall(
+    builder: &mut FunctionBuilder, 
+    call: &mut cranelift_codegen::ir::function::Function,
+    ssa_call: &mut Function,
+    module: &mut impl Module
+) -> Value {
+    let (num_val, arg_vals) = extract_args(ssa_call); // all are machine-size ints
     let sig = runtime_syscall_signature(arg_vals.len()); // e.g., fn(i64,i64,...)->i64
 
     // create/import external function symbol:
     let callee = module.declare_function(&format!("syscall{}", arg_vals.len()),
-                                         Linkage::Import, &sig).unwrap();
+                                         Linkage::Import, &sig)
+        .map(|id| module.declare_func_in_func(id, call)).unwrap();
+    
+    
 
     // build call operands
     let mut operands = Vec::new();
@@ -167,8 +178,16 @@ fn lower_syscall(builder: &mut FunctionBuilder, call: &IntrinsicCall) {
 
     // get return value
     let results = builder.inst_results(call_inst);
-    let ret = results[0];
+    results[0]
     // return or store ret as the intrinsic result
+}
+
+fn runtime_syscall_signature(args_len: usize) -> Signature {
+    todo!()
+}
+
+fn extract_args(function: &Function) -> (Value, Vec<Value>) {
+    todo!()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -181,29 +200,26 @@ pub enum LayoutError {
     Unknown,
 }
 
-pub fn sizeof(ty: &Type, target: &TargetInfo, types: &TypeTable) -> Result<u64, LayoutError> {
-    Ok(layout_of(ty, target, types)?.size)
+pub fn sizeof(ty: &SsaType, target: &TargetInfo) -> Result<u64, LayoutError> {
+    Ok(layout_of(ty, target)?.size)
 }
 
-pub fn layout_of(ty: &SsaType, target: &TargetInfo, types: &TypeTable) -> Result<Layout, LayoutError> {
+pub fn layout_of(ty: &SsaType, target: &TargetInfo) -> Result<Layout, LayoutError> {
     match ty {
-        Void            => Ok(Layout { size: 0, align: 1 }),
-        Bool | I8 | U8         => Ok(Layout { size: 1, align: 1 }),
-        I16 | U16       => Ok(Layout { size: 2, align: 2 }),
-        I32 | U32 | F32 => Ok(Layout { size: 4, align: 4 }),
-        I64 | U64 | F64 => Ok(Layout { size: 8, align: 8 }),
+        SsaType::Void            => Ok(Layout { size: 0, align: 1 }),
+        SsaType::Bool | SsaType::I8 | SsaType::U8  => Ok(Layout { size: 1, align: 1 }),
+        SsaType::I16 | SsaType::U16                => Ok(Layout { size: 2, align: 2 }),
+        SsaType::I32 | SsaType::U32 | SsaType::F32 => Ok(Layout { size: 4, align: 4 }),
+        SsaType::I64 | SsaType::U64 | SsaType::F64 => Ok(Layout { size: 8, align: 8 }),
 
-        Pointer(_)      => Ok(Layout { size: target.ptr_bytes, align: target.ptr_bytes }),
-
-        // Slices/str/trait objects: usually *unsized*; error unless you define fat-pointer forms.
-        Slice(_) | Str | Dyn(_) => Err(LayoutError::Unsized("unsized type")),
+        SsaType::Slice | SsaType::Dyn => Err(LayoutError::Unsized("unsized type")),
 
         // Tuples/structs: sequential fields with padding between and at end to struct align.
-        Tuple(fields) | Struct(_, fields) => {
+        SsaType::Tuple(fields) | SsaType::User(_, fields) => {
             let mut off = 0u64;
             let mut max_align = 1u64;
             for fty in fields {
-                let f = layout_of(fty, target, types)?;
+                let f = layout_of(fty, target)?;
                 max_align = max_align.max(f.align);
                 off = round_up(off, f.align);
                 off = off.checked_add(f.size).ok_or(LayoutError::Unknown)?;
@@ -213,11 +229,11 @@ pub fn layout_of(ty: &SsaType, target: &TargetInfo, types: &TypeTable) -> Result
         }
 
         // Enums/sum types: choose your scheme. Simple tagged union:
-        Enum(variants) => {
+        SsaType::Enum(variants) => {
             if variants.is_empty() { return Ok(Layout { size: 0, align: 1 }); }
             let mut max_variant = Layout { size: 0, align: 1 };
             for v in variants {
-                let l = layout_of(v, target, types)?;
+                let l = layout_of(v, target)?;
                 max_variant.size  = max_variant.size.max(l.size);
                 max_variant.align = max_variant.align.max(l.align);
             }
@@ -226,6 +242,10 @@ pub fn layout_of(ty: &SsaType, target: &TargetInfo, types: &TypeTable) -> Result
             let total = round_up(union_size, tag.align).checked_add(tag.size).ok_or(LayoutError::Unknown)?;
             Ok(Layout { size: total, align: max_variant.align.max(tag.align) })
         }
+        SsaType::I128 => Ok(Layout { size: 16, align: 16 }),
+        SsaType::ISize => Ok(Layout { size: 8, align: 8 }),
+        SsaType::USize => Ok(Layout { size: 8, align: 8 }),
+        SsaType::String => Ok(Layout { size: 16, align: 16 }),
     }
 }
 
