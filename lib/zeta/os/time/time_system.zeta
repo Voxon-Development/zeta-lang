@@ -1,0 +1,13 @@
+package zeta.os.time
+
+struct TimeSpec(isize sec, isize nsec);
+
+interface TimeSystem {
+    clockGetTime(usize clockId, Ptr<TimeSpec> ts) -> isize;
+
+    nanoSleep(Ptr<TimeSpec> req, Ptr<TimeSpec> rem) -> isize;
+
+    clockGetMonotonic(Ptr<TimeSpec> ts) -> isize;
+
+    clockGetRealtime(Ptr<TimeSpec> ts) -> isize;
+}

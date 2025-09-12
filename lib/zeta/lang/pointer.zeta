@@ -1,24 +1,15 @@
-struct Ptr<T>(raw: u64) {
-    // Constructors / queries
-    static null() -> Ptr<T> = __ptr_null<T>();
+package zeta.lang
 
-    static new<T>(T value) -> Ptr<T> = Ptr(__ptr_cast_to_raw(value))
+type Ptr<T>(usize raw);
 
-    is_null() -> boolean = __ptr_is_null<T>(self);
+inline Ptr.new<T>(T value) -> Ptr<T> = Ptr(intrinsics::ptr_cast_to_raw(value))
 
-    unsafe add(bytes: u64) -> Ptr<T> = __ptr_add<T>(self, bytes);
+inline Ptr.fromAddr(usize addr) -> Ptr<T> = intrinsics::ptr_from_addr<T>(addr)
 
-    deref() -> T = __ptr_deref<T>(self);
-    store(value: T) = __ptr_store<T>(self, value);
-}
+unsafe inline add<T>(Ptr<T> ptr, usize bytes) -> Ptr<T> = intrinsics::ptr_add<T>(ptr, bytes)
 
-// --- Intrinsics surface (compiler-provided) ---
-internal extern "intrinsic" fn __ptr_null<T>() -> Ptr<T>;
-internal extern "intrinsic" fn __ptr_is_null<T>(Ptr<T> p) -> boolean;
-internal extern "intrinsic" fn __ptr_cast_to_raw<T>(T value) -> boolean;
-internal extern "intrinsic" fn __ptr_add<T>(Ptr<T> p, u64 bytes) -> Ptr<T>;
-internal extern "intrinsic" fn __ptr_deref<T>(Ptr<T> p) -> T;
-internal extern "intrinsic" fn __ptr_store<T>(Ptr<T> p, T value);
+inline deref<T>(Ptr<T> ptr) -> T = intrinsics::ptr_deref<T>(ptr)
 
-internal extern "intrinsic" fn __ptr_from_addr<T>(u64 addr) -> Ptr<T>;
-internal extern "intrinsic" fn __ptr_addr<T>(Ptr<T> p) -> u64;
+inline mut stor<T>(Ptr<T> ptr, T value) = intrinsics::ptr_store<T>(ptr, value)
+
+inline addr<T>(Ptr<T> ptr) -> usize = intrinsics::ptr_addr<T>(ptr)

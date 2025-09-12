@@ -1,0 +1,85 @@
+package zeta.os.fs
+
+interface FileSystem {
+    // Core syscalls
+    open(Ptr<u8> path, usize flags, usize mode) -> isize;
+    read(usize fd, Ptr<u8> buf, usize count) -> isize;
+    write(usize fd, Ptr<u8> buf, usize count) -> isize;
+    close(usize fd) -> isize;
+
+    // Metadata and file info
+    stat(Ptr<u8> path, Ptr<FileStat> buf) -> isize;
+    fstat(usize fd, Ptr<FileStat> buf) -> isize;
+    lstat(Ptr<u8> path, Ptr<FileStat> buf) -> isize;
+
+    // Directory operations
+    opendir(Ptr<u8> path) -> isize;              // returns dir handle
+    readdir(usize dirFd, Ptr<DirEntry> entry) -> isize;
+    closedir(usize dirFd) -> isize;
+
+    // File operations
+    unlink(Ptr<u8> path) -> isize;
+    rename(Ptr<u8> oldPath, Ptr<u8> newPath) -> isize;
+    mkdir(Ptr<u8> path, usize mode) -> isize;
+    rmdir(Ptr<u8> path) -> isize;
+
+    // Batch I/O (vectorized syscalls)
+    readv(usize fd, Ptr<IoVec> iov, usize iovCount) -> isize;
+    writev(usize fd, Ptr<IoVec> iov, usize iovCount) -> isize;
+    pread(usize fd, Ptr<u8> buf, usize count, isize offset) -> isize;
+    pwrite(usize fd, Ptr<u8> buf, usize count, isize offset) -> isize;
+
+    // Advanced I/O
+    fsync(usize fd) -> isize;
+    fdatasync(usize fd) -> isize;
+    truncate(Ptr<u8> path, isize length) -> isize;
+    ftruncate(usize fd, isize length) -> isize;
+    
+    asyncRead(usize fd, Ptr<u8> buf, usize count, usize offset) -> isize;
+    asyncWrite(usize fd, Ptr<u8> buf, usize count, usize offset) -> isize;
+    asyncPoll(usize fd, usize events) -> isize;
+
+    // Memory-mapped I/O
+    allocHeap(Ptr<u8> addr, usize length, usize prot, usize flags, usize fd, isize offset) -> Ptr<u8>;
+    deallocHeap(Ptr<u8> addr, usize length) -> isize;
+}
+
+type AsyncOp {
+    usize opcode;       // read/write/poll
+    usize fd;
+    Ptr<u8> buf;
+    usize len;
+    usize offset;       // optional for pread/pwrite
+    usize userData;     // opaque user value
+}
+
+type AsyncResult {
+    usize userData;     // matches AsyncOp.userData
+    isize result;       // syscall return code
+}
+
+type FileStat {
+    usize dev;
+    usize ino;
+    usize mode;
+    usize nlink;
+    usize uid;
+    usize gid;
+    usize size;
+    isize atime;
+    isize mtime;
+    isize ctime;
+}
+
+type DirEntry {
+    usize ino;
+    usize offset;
+    usize reclen;
+    u8 type;
+    Ptr<u8> name;
+}
+
+type IoVec {
+    Ptr<u8> base;
+    usize len;
+}

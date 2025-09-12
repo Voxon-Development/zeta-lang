@@ -1,4 +1,4 @@
-struct Vec3f(i32 x, i32 y, i32 z) {
+type Vec3f(i32 x, i32 y, i32 z) {
     multiply(Vec3f by) {
         this.x *= by.x();
         this.y *= by.y();
@@ -14,7 +14,7 @@ struct Vec3f(i32 x, i32 y, i32 z) {
     sum() -> i32 = this.x + this.y + this.z;
 }
 
-struct Vec9f(Vec3f x, Vec3f y, Vec3f z) {
+type Vec9f(Vec3f x, Vec3f y, Vec3f z) {
     multiply(Vec3f by) {
         this.x.multiply(by);
         this.y.multiply(by);
