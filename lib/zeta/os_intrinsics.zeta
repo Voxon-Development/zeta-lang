@@ -1,0 +1,28 @@
+package zeta
+
+extern "intrinsic" syscall0(n usize) -> isize;
+
+extern "intrinsic" syscall1(usize n, usize a0) -> isize;
+
+extern "intrinsic" syscall2(
+    usize n, usize a0, usize a1
+) -> isize;
+
+extern "intrinsic" syscall3(
+    usize n, usize a0, usize a1, usize a2
+) -> isize;
+
+extern "intrinsic" syscall4(
+    usize n, usize a0, usize a1,
+    usize a2, usize a3
+) -> isize;
+
+extern "intrinsic" syscall5(
+    usize n, usize a0, usize a1,
+    usize a2, usize a3, usize a4
+) -> isize;
+
+extern "intrinsic" syscall6(
+    usize n, usize a0, usize a1,
+    usize a2, usize a3, usize a4, usize a5
+) -> isize;

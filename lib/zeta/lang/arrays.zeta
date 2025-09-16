@@ -1,8 +1,43 @@
-struct Array<T>(ptr: Ptr<T>, length: u64) {
-    // Indexing
-    get(index: u64) -> T = __array_get<T>(this, index);
-    set(index: u64, value: T) = __array_set<T>(this, index, value);
+package zeta.lang
+
+!enum ArrayError {
+    IndexOutOfBounds
 }
 
-internal extern "intrinsic" __array_get<T>(Array<T> arr, u64 index) -> T;
-internal extern "intrinsic" __array_set<T>(Array<T> arr, u64 index, T value);
+type Array<T, const N: usize>(Ptr<T> ptr);
+
+inline Array.new() -> Array<T, N> {
+    p := intrinsics::stack_alloc<T, N>()
+    Array(p)
+}
+
+inline Array.zeroed() -> Array<T, N> {
+    p := intrinsics::stack_alloc_zeroed<T, N>()
+    Array(p)
+}
+
+inline get<T>(Array<T> array, usize index) -> T? {
+    if (index >= length) {
+        return null
+    }
+    uncheckedGet(index)
+}
+
+inline set<T>(Array<T> array, usize index, T value) -> void! {
+    if (index >= array.length) {
+        return ArrayError.IndexOutOfBounds
+    }
+    uncheckedSet(index, value)
+}
+
+unsafe inline uncheckedGet<T>(Array<T> array, usize index) -> T? {
+    offset := index * sizeOf<T>()
+    p := unsafe { self.ptr.add(offset) }
+    p?.deref()
+}
+
+unsafe inline uncheckedSet<T>(Array<T> array, usize index, T value) {
+    offset := index * sizeOf<T>()
+    p := unsafe { array.ptr.add(offset) }
+    p.store(value)
+}

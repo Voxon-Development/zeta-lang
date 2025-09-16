@@ -12,6 +12,7 @@ use ir::ssa_ir::{BinOp, BlockId, Function, Instruction, InterpolationOperand, Mo
 use leapfrog::LeapMap;
 use std::collections::HashMap;
 use zetaruntime::string_pool::{StringPool, VmString};
+use crate::cranelift::clif_type;
 
 pub struct CraneliftBackend {
     module: ObjectModule,
@@ -120,7 +121,7 @@ impl CraneliftBackend {
                         builder.use_var(*vv)
                     }
                     Operand::ConstInt(i) => builder.ins().iconst(types::I64, *i),
-                    _ => unimplemented!(),
+                    _ => todo!(),
                 };
                 let r = match right {
                     Operand::Value(v) => {
@@ -624,25 +625,5 @@ impl Backend for CraneliftBackend {
     fn finish(self) {
         let obj = self.module.finish();
         std::fs::write("out.o", obj.emit().unwrap()).unwrap();
-    }
-}
-
-fn clif_type(param: &SsaType) -> Type {
-    match param {
-        SsaType::I8 | SsaType::Bool => types::I8,
-        SsaType::I16 => types::I16,
-        SsaType::I32 => types::I32,
-        SsaType::I64 => types::I64,
-        SsaType::U8 => types::I8,
-        SsaType::U16 => types::I16,
-        SsaType::U32 => types::I32,
-        SsaType::U64 => types::I64,
-        SsaType::I128 => types::I128,
-        SsaType::F32 => types::F32,
-        SsaType::F64 => types::F64,
-        SsaType::Void => types::I8,
-        SsaType::Ptr(_) => types::I64,
-        SsaType::String => types::I64, // Pointer
-        SsaType::User(_) => types::I64 // Pointer
     }
 }
