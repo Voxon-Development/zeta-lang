@@ -808,3 +808,110 @@ fn parse_binary_expr(mut inner: Pairs<Rule>, op_from_str: fn(&str) -> Op) -> Exp
 
     expr
 }
+#[cfg(test)]
+mod parser_diff_tests {
+    // Import only what we need from the parent module to keep scope clean.
+    use super::{parse_string, parse_to_type, Type};
+
+    #[test]
+    fn parse_string_handles_basic_and_known_escapes() {
+        // Basic, no escapes
+        assert_eq\!(parse_string("\"hello\""), "hello");
+
+        // Known escapes: \n, \t, \", \\
+        assert_eq\!(parse_string("\"a\\n\\t\\\"\\\\b\""), "a\n\t\"\\b");
+        // Note: 'b' is an unknown escape; expected to be kept as two chars: backslash + 'b'
+    }
+
+    #[test]
+    fn parse_string_preserves_unknown_escape_sequences() {
+        // Unknown escape \x should remain as backslash + 'x'
+        assert_eq\!(parse_string("\"prefix\\\\xsuffix\""), "prefix\\xsuffix");
+
+        // Mixed content with multiple unknown escapes
+        assert_eq\!(parse_string("\"_\\\\q_\\\\Z_\""), "_\\q_\\Z_");
+    }
+
+    #[test]
+    fn parse_to_type_parses_primitives_and_class_names() {
+        assert\!(matches\!(parse_to_type("u8"),   Type::U8));
+        assert\!(matches\!(parse_to_type("i32"),  Type::I32));
+        assert\!(matches\!(parse_to_type("u128"), Type::U128));
+        assert\!(matches\!(parse_to_type("str"),  Type::String));
+        assert\!(matches\!(parse_to_type("boolean"), Type::Boolean));
+
+        // Unknown tokens map to Class(name)
+        match parse_to_type("MyCustomType") {
+            Type::Class(name) => assert_eq\!(name, "MyCustomType"),
+            _ => panic\!("expected Type::Class for unknown token"),
+        }
+    }
+
+    #[test]
+    fn parse_to_type_trims_whitespace_around_tokens() {
+        assert\!(matches\!(parse_to_type("  i64  "), Type::I64));
+        match parse_to_type("   FooBar  ") {
+            Type::Class(name) => assert_eq\!(name, "FooBar"),
+            _ => panic\!("expected Type::Class after trimming"),
+        }
+    }
+
+    #[test]
+    fn parse_to_type_parses_simple_lambda_types() {
+        // (i32, str) -> boolean
+        let ty = parse_to_type("(i32, str) -> boolean");
+        if let Type::Lambda { params, return_type } = ty {
+            assert_eq\!(params.len(), 2);
+            assert\!(matches\!(params[0], Type::I32));
+            assert\!(matches\!(params[1], Type::String));
+            assert\!(matches\!(*return_type, Type::Boolean));
+        } else {
+            panic\!("expected Type::Lambda");
+        }
+    }
+
+    #[test]
+    fn parse_to_type_lambda_no_params_and_whitespace() {
+        // ( ) -> i32 with extra spaces
+        let ty = parse_to_type(" ( ) ->  i32 ");
+        if let Type::Lambda { params, return_type } = ty {
+            assert\!(params.is_empty());
+            assert\!(matches\!(*return_type, Type::I32));
+        } else {
+            panic\!("expected Type::Lambda");
+        }
+    }
+
+    #[test]
+    fn parse_to_type_lambda_defaults_to_void_return_when_missing() {
+        // (i32, str)  // no '-> return'
+        let ty = parse_to_type("(i32, str)");
+        if let Type::Lambda { params, return_type } = ty {
+            assert_eq\!(params.len(), 2);
+            // Default to Void when return type is omitted
+            assert\!(matches\!(*return_type, Type::Void));
+        } else {
+            panic\!("expected Type::Lambda");
+        }
+    }
+
+    #[test]
+    fn parse_to_type_nested_lambda_return_types() {
+        // (i32) -> (str) -> boolean
+        let ty = parse_to_type("(i32)->(str)->boolean");
+        if let Type::Lambda { params, return_type } = ty {
+            assert_eq\!(params.len(), 1);
+            assert\!(matches\!(params[0], Type::I32));
+
+            if let Type::Lambda { params: inner_params, return_type: inner_ret } = *return_type {
+                assert_eq\!(inner_params.len(), 1);
+                assert\!(matches\!(inner_params[0], Type::String));
+                assert\!(matches\!(*inner_ret, Type::Boolean));
+            } else {
+                panic\!("expected nested Type::Lambda in return position");
+            }
+        } else {
+            panic\!("expected outer Type::Lambda");
+        }
+    }
+}

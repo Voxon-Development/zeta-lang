@@ -403,3 +403,246 @@ pub fn codegen_intrinsic(
         }
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    // Testing library/framework note:
+    // These tests use Rust's built-in test framework (cargo test) with `#[test]`.
+    // No external testing libraries are introduced to keep alignment with typical project setup.
+
+    // Minimal stand-ins/imports for IR types used by this module.
+    // If these modules exist elsewhere in the repository, these uses will resolve.
+    use ir::ssa_ir::SsaType;
+    use ir::hir::HirType;
+
+    // Helper: safely construct a CLIF function builder sufficient for simple integer ops.
+    // We avoid creating a full ISA; many type checks work at the IR level.
+    fn make_builder() -> (cranelift_codegen::ir::function::Function, FunctionBuilder, Type) {
+        use cranelift_codegen::ir::{Function as ClifFunction, Signature};
+        use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+
+        // Build an empty function with a single block.
+        let mut func = ClifFunction::with_name_signature(
+            cranelift_codegen::ir::ExternalName::user(0, 0),
+            Signature::new(cranelift_codegen::isa::CallConv::SystemV),
+        );
+        let mut fb_ctx = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut func, &mut fb_ctx);
+        let block = builder.create_block();
+        builder.append_block_params_for_function_params(block);
+        builder.switch_to_block(block);
+        builder.seal_block(block);
+        // Pointer type from a minimal fake; cranelift IR uses opaque pointer type from func's ISA later.
+        let ptr_ty = types::I64; // assume 64-bit for IR shape tests (type relations only)
+        (builder.func.clone(), builder, ptr_ty)
+    }
+
+    #[test]
+    fn test_resolve_intrinsic_mappings() {
+        assert_eq\!(resolve_intrinsic("ptr_add"), Some(Intrinsic::PtrAdd));
+        assert_eq\!(resolve_intrinsic("ptr_deref"), Some(Intrinsic::PtrDeref));
+        assert_eq\!(resolve_intrinsic("ptr_store"), Some(Intrinsic::PtrStore));
+        assert_eq\!(resolve_intrinsic("ptr_from_addr"), Some(Intrinsic::PtrFromAddr));
+        assert_eq\!(resolve_intrinsic("ptr_addr"), Some(Intrinsic::PtrAddr));
+        assert_eq\!(resolve_intrinsic("ptr_cast_to_raw"), Some(Intrinsic::PtrCastToRaw));
+        assert_eq\!(resolve_intrinsic("unknown_intrinsic"), None);
+    }
+
+    #[test]
+    fn test_clif_type_of_primitives_and_user() {
+        // primitives
+        assert_eq\!(clif_type_of(&HirType::I8),   SsaType::I8);
+        assert_eq\!(clif_type_of(&HirType::I16),  SsaType::I16);
+        assert_eq\!(clif_type_of(&HirType::I32),  SsaType::I32);
+        assert_eq\!(clif_type_of(&HirType::I64),  SsaType::I64);
+        assert_eq\!(clif_type_of(&HirType::U8),   SsaType::U8);
+        assert_eq\!(clif_type_of(&HirType::U16),  SsaType::U16);
+        assert_eq\!(clif_type_of(&HirType::U32),  SsaType::U32);
+        assert_eq\!(clif_type_of(&HirType::U64),  SsaType::U64);
+        assert_eq\!(clif_type_of(&HirType::F32),  SsaType::F32);
+        assert_eq\!(clif_type_of(&HirType::F64),  SsaType::F64);
+        assert_eq\!(clif_type_of(&HirType::Boolean), SsaType::Bool);
+        assert_eq\!(clif_type_of(&HirType::String),  SsaType::String);
+        assert_eq\!(clif_type_of(&HirType::Void),    SsaType::Void);
+
+        // user types (Class/Interface/Enum funnel to SsaType::User)
+        let inner = HirType::I32;
+        let user = HirType::Class("Vec".to_string(), vec\![inner.clone()]);
+        let mapped = clif_type_of(&user);
+        match mapped {
+            SsaType::User(name, args) => {
+                assert_eq\!(name, "Vec");
+                assert_eq\!(args, vec\![SsaType::I32]);
+            }
+            other => panic\!("Expected SsaType::User, got {:?}", other),
+        }
+
+        let iface = HirType::Interface("Display".to_string(), vec\![]);
+        let mapped_iface = clif_type_of(&iface);
+        match mapped_iface {
+            SsaType::User(name, args) => {
+                assert_eq\!(name, "Display");
+                assert\!(args.is_empty());
+            }
+            _ => panic\!("Expected User for interface"),
+        }
+    }
+
+    #[test]
+    fn test_round_up_and_tag_bytes_edges() {
+        // round_up
+        assert_eq\!(round_up(0, 1), 0);
+        assert_eq\!(round_up(1, 1), 1);
+        assert_eq\!(round_up(1, 2), 2);
+        assert_eq\!(round_up(15, 8), 16);
+        assert_eq\!(round_up(16, 8), 16);
+        assert_eq\!(round_up(17, 8), 24);
+
+        // tag_bytes thresholds
+        assert_eq\!(tag_bytes(0), 1);
+        assert_eq\!(tag_bytes(1), 1);
+        assert_eq\!(tag_bytes(0x100), 1);
+        assert_eq\!(tag_bytes(0x101), 2);
+        assert_eq\!(tag_bytes(0x1_0000), 2);
+        assert_eq\!(tag_bytes(0x1_0001), 4);
+        assert_eq\!(tag_bytes(0x1_0000_0000), 4);
+        assert_eq\!(tag_bytes(0x1_0000_0001), 8);
+    }
+
+    #[test]
+    fn test_layout_of_scalars_and_structs() {
+        let tgt = TargetInfo { ptr_bytes: 8 };
+
+        // Scalars
+        assert_eq\!(layout_of(&SsaType::Void, &tgt).unwrap(), Layout { size: 0, align: 1 });
+        assert_eq\!(layout_of(&SsaType::Bool, &tgt).unwrap(), Layout { size: 1, align: 1 });
+        assert_eq\!(layout_of(&SsaType::I8, &tgt).unwrap(),   Layout { size: 1, align: 1 });
+        assert_eq\!(layout_of(&SsaType::U16, &tgt).unwrap(),  Layout { size: 2, align: 2 });
+        assert_eq\!(layout_of(&SsaType::I32, &tgt).unwrap(),  Layout { size: 4, align: 4 });
+        assert_eq\!(layout_of(&SsaType::U64, &tgt).unwrap(),  Layout { size: 8, align: 8 });
+        assert_eq\!(layout_of(&SsaType::F64, &tgt).unwrap(),  Layout { size: 8, align: 8 });
+        assert_eq\!(layout_of(&SsaType::I128, &tgt).unwrap(), Layout { size: 16, align: 16 });
+        assert_eq\!(layout_of(&SsaType::String, &tgt).unwrap(), Layout { size: 16, align: 16 });
+
+        // Unsized
+        let err = layout_of(&SsaType::Slice, &tgt).unwrap_err();
+        matches\!(err, LayoutError::Unsized(_));
+
+        // Tuple with padding and final alignment
+        // Tuple(I8, I32, U16) => offsets: I8@0, pad to 4 -> I32@4, then pad to 2 -> U16@8; end pad to max_align(4) => size 12 rounded to 12
+        let tup = SsaType::Tuple(vec\![SsaType::I8, SsaType::I32, SsaType::U16]);
+        let l = layout_of(&tup, &tgt).unwrap();
+        assert_eq\!(l.align, 4);
+        assert_eq\!(l.size, 12);
+
+        // Nested User type reuses same tuple rule
+        let user = SsaType::User("MyStruct".into(), vec\![SsaType::U64, SsaType::I8]);
+        let l2 = layout_of(&user, &tgt).unwrap();
+        // U64@0, align=8; I8@8, align stays 8; size rounds up to 16
+        assert_eq\!(l2.align, 8);
+        assert_eq\!(l2.size, 16);
+    }
+
+    #[test]
+    fn test_layout_of_enums_tagged_union() {
+        let tgt = TargetInfo { ptr_bytes: 8 };
+
+        // Empty enum => size 0 align 1
+        let empty = SsaType::Enum(vec\![]);
+        assert_eq\!(layout_of(&empty, &tgt).unwrap(), Layout { size: 0, align: 1 });
+
+        // Two variants: (I8) or (U64)
+        let e = SsaType::Enum(vec\![SsaType::I8, SsaType::U64]);
+        let l = layout_of(&e, &tgt).unwrap();
+        // Union size rounds up largest variant (8) to its align(8)=8; tag is 1 byte; total sizes = 8 + 1 rounded to max align (8) => should be 16
+        assert_eq\!(l.align, 8);
+        assert_eq\!(l.size, 16);
+    }
+
+    #[test]
+    fn test_sizeof_delegates_to_layout() {
+        let tgt = TargetInfo { ptr_bytes: 8 };
+        assert_eq\!(sizeof(&SsaType::U32, &tgt).unwrap(), 4);
+        assert_eq\!(sizeof(&SsaType::Tuple(vec\![SsaType::U32, SsaType::U32])), &tgt).unwrap(), 8);
+    }
+
+    #[test]
+    fn test_codegen_intrinsic_ptraddr_and_fromaddr_and_add_types() {
+        // Build a simple function builder
+        use cranelift_frontend::FunctionBuilder;
+        use cranelift_frontend::FunctionBuilderContext;
+        use cranelift_codegen::ir::{Function as ClifFunction, Signature};
+
+        let mut func = ClifFunction::with_name_signature(
+            cranelift_codegen::ir::ExternalName::user(0, 1),
+            Signature::new(cranelift_codegen::isa::CallConv::SystemV),
+        );
+        let mut fb_ctx = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut func, &mut fb_ctx);
+        let block = builder.create_block();
+        builder.switch_to_block(block);
+        builder.seal_block(block);
+
+        // Assume 64-bit ptr in IR for testing types
+        let ptr_ty = types::I64;
+
+        // Prepare args
+        let p = builder.ins().iconst(ptr_ty, 0x1000);
+        let b = builder.ins().iconst(types::I64, 16);
+
+        // PtrAdd => pointer-typed result
+        let res_add = super::codegen_intrinsic(Intrinsic::PtrAdd, &[p, b], &[], &mut builder, &fake_isa::FakeIsa::new());
+        let res_add = res_add.expect("PtrAdd should return a value");
+        let ty_add = builder.func.dfg.value_type(res_add);
+        assert_eq\!(ty_add, ptr_ty);
+
+        // PtrFromAddr => pointer-typed result
+        let from = super::codegen_intrinsic(Intrinsic::PtrFromAddr, &[p], &[], &mut builder, &fake_isa::FakeIsa::new());
+        let from = from.expect("PtrFromAddr should return a value");
+        let ty_from = builder.func.dfg.value_type(from);
+        assert_eq\!(ty_from, ptr_ty);
+
+        // PtrAddr => integer-typed (usize) result
+        let addr = super::codegen_intrinsic(Intrinsic::PtrAddr, &[p], &[], &mut builder, &fake_isa::FakeIsa::new());
+        let addr = addr.expect("PtrAddr should return a value");
+        let ty_addr = builder.func.dfg.value_type(addr);
+        assert_eq\!(ty_addr, ptr_ty); // on 64-bit, usize == I64 in this IR setting
+
+        builder.finalize();
+    }
+
+    // A very small fake ISA to satisfy &dyn TargetIsa requirements for tests that only need pointer_type()
+    // Without pulling cranelift-native as a dev-dependency.
+    mod fake_isa {
+        use cranelift_codegen::isa::{TargetIsa, CallConv};
+        use cranelift_codegen::settings::{self, Flags};
+        use cranelift_codegen::ir::types;
+        use target_lexicon::Triple;
+        use std::fmt::Debug;
+
+        pub struct FakeIsa {
+            flags: Flags,
+        }
+
+        impl FakeIsa {
+            pub fn new() -> Self {
+                let builder = settings::builder();
+                let flags = Flags::new(builder);
+                Self { flags }
+            }
+        }
+
+        impl TargetIsa for FakeIsa {
+            fn name(&self) -> &'static str { "fake" }
+            fn triple(&self) -> &Triple {
+                // Use a static triple; details don't matter for pointer_type width in these tests
+                static T: once_cell::sync::Lazy<Triple> = once_cell::sync::Lazy::new(|| "x86_64-unknown-unknown".parse().unwrap());
+                &T
+            }
+            fn flags(&self) -> &Flags { &self.flags }
+            fn pointer_type(&self) -> cranelift_codegen::ir::Type { types::I64 }
+            fn default_call_conv(&self) -> CallConv { CallConv::SystemV }
+            // Provide minimal required methods with unimplemented\!() if not used by tests
+        }
+    }
+}
