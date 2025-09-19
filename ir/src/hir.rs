@@ -1,7 +1,6 @@
 use std::fmt::{Display, Formatter};
 use std::ops::Deref;
 use zetaruntime::string_pool::VmString;
-use crate::Context;
 
 // =====================================
 // HIR (High-Level IR)
@@ -14,6 +13,7 @@ pub struct StrId(pub VmString);
 
 impl Deref for StrId {
     type Target = VmString;
+
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -42,20 +42,12 @@ impl StrId {
     
     /// Get the length of the string in bytes
     pub fn len(&self) -> usize {
-        // Since we can't access the length directly, we'll need to resolve the string
-        // This is inefficient, so in practice, you'd want to expose the length from VmString
-        // or find another way to track it
-        0 // Placeholder
+        self.0.length
     }
     
     /// Check if the string is empty
     pub fn is_empty(&self) -> bool {
         self.len() == 0
-    }
-    
-    /// Resolve the string using a context
-    pub fn resolve<'a>(&self, ctx: &'a Context) -> &'a str {
-        ctx.resolve_str(self.0)
     }
 }
 
@@ -65,8 +57,8 @@ impl From<VmString> for StrId {
     }
 }
 
-impl std::fmt::Display for StrId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for StrId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         // This will be resolved properly when we have access to the context
         write!(f, "StrId({:?})", self.0)
     }
@@ -95,7 +87,6 @@ pub struct HirModule {
 pub struct HirFunc {
     pub name: StrId,
     pub visibility: Visibility,
-    pub is_static: bool,
     pub is_unsafe: bool,
     pub generics: Vec<HirGeneric>,
     pub params: Vec<HirParam>,
@@ -109,7 +100,6 @@ pub struct HirClass {
     pub visibility: Visibility,
     pub generics: Vec<HirGeneric>,
     pub fields: Vec<HirField>,
-    pub methods: Vec<HirFunc>,
     pub interfaces: Vec<StrId>, // implemented interfaces
 }
 
@@ -124,6 +114,7 @@ pub struct HirImpl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirInterface {
     pub name: StrId,
+    pub visibility: Visibility,
     pub generics: Vec<HirGeneric>,
     pub methods: Vec<HirFunc>,
 }
@@ -131,6 +122,7 @@ pub struct HirInterface {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirEnum {
     pub name: StrId,
+    pub visibility: Visibility,
     pub generics: Vec<HirGeneric>,
     pub variants: Vec<HirEnumVariant>,
 }
@@ -184,7 +176,6 @@ pub enum HirType {
         return_type: Box<HirType>,
         concurrent: bool,
     },
-    Array(Box<HirType>),
     Generic(StrId),
     Void,
 }
@@ -314,7 +305,8 @@ pub enum InterpolationPart {
 pub enum Visibility {
     Public,
     Private,
-    Internal,
+    Module,
+    Package
 }
 
 impl Display for HirType {
@@ -345,7 +337,6 @@ impl Display for HirType {
                     write!(f, "fn({}) -> {}", params_str.join(", "), return_type)
                 }
             }
-            HirType::Array(inner) => write!(f, "[{}]", inner),
             HirType::Generic(name) => write!(f, "{}", name),
             HirType::Void => write!(f, "void"),
         }
