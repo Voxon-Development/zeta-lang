@@ -316,7 +316,7 @@ fn rewrite_operands_with_consts(inst: &mut Instruction, const_map: &HashMap<Valu
         Instruction::Branch { cond, .. } => { subst(cond); }
         Instruction::Ret { value } => { if let Some(v) = value { subst(v); } }
         Instruction::Const { .. } => {}
-        Instruction::ClassCall { object, args, .. } => { /* object is a Value, not Operand; can't rewrite */ for a in args { subst(a); } }
+        Instruction::ClassCall { object: _, args, .. } => { /* object is a Value, not Operand; can't rewrite */ for a in args { subst(a); } }
         Instruction::InterfaceDispatch { object: _, args, .. } => { for a in args { subst(a); } }
         Instruction::UpcastToInterface { .. } => {}
         Instruction::Alloc { .. } => {}
