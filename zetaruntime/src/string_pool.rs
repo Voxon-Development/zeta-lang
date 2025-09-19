@@ -38,7 +38,7 @@ impl BuildHasher for IdentityBuild {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub struct VmString {
     offset: usize,
-    length: usize,
+    pub length: usize,
     hash: u64,
 }
 
