@@ -1,26 +1,31 @@
+use std::cell::RefCell;
 use crate::rules::rule::{TypeCheckerRule, TypeRule};
 use crate::type_checker_ctx::TypeCheckerCtx;
 use ir::ast::{Block, ElseBranch, Expr, ForStmt, FuncDecl, IfStmt, LetStmt, Op, ReturnStmt, Stmt, Type, WhileStmt};
 use std::collections::HashMap;
+use std::rc::Rc;
 use ir::ast::Type::I8;
+use ir::context::Context;
+use ir::hir::StrId;
 
-#[derive(Default)]
-pub struct TypeChecker {
+pub struct TypeChecker<'a> {
     rules: Vec<TypeCheckerRule>,
     pub ctx: TypeCheckerCtx,
-    symbol_table: HashMap<String, Type>,
+    symbol_table: HashMap<StrId, Type>,
+    pub context: Rc<RefCell<Context<'a>>>
 }
 
-impl TypeChecker {
-    pub fn new() -> Self {
+impl<'a> TypeChecker<'a> {
+    pub fn new(context: Rc<RefCell<Context<'a>>>) -> Self {
         Self {
             rules: Vec::new(),
             ctx: TypeCheckerCtx::new(),
             symbol_table: HashMap::new(),
+            context
         }
     }
 
-    pub fn get_expr_type(&mut self, expr: &ir::ast::Expr) -> Type {
+    pub fn get_expr_type(&mut self, expr: &Expr) -> Type {
         match expr {
             _ => I8
         }
