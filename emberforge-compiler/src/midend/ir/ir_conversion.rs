@@ -1,7 +1,7 @@
 use ir::hir::{AssignmentOperator, HirType, Operator};
 use ir::ssa_ir::{BinOp, SsaType};
 
-fn assign_op_to_bin_op(op: AssignmentOperator) -> BinOp {
+pub fn assign_op_to_bin_op(op: AssignmentOperator) -> BinOp {
     let bin_op = match op {
         AssignmentOperator::AddAssign => BinOp::Add,
         AssignmentOperator::SubtractAssign => BinOp::Sub,
@@ -18,7 +18,7 @@ fn assign_op_to_bin_op(op: AssignmentOperator) -> BinOp {
     bin_op
 }
 
-pub(super) fn lower_type_hir(ty: &HirType) -> SsaType {
+pub fn lower_type_hir(ty: &HirType) -> SsaType {
     match ty {
         HirType::I8 => SsaType::I8,
         HirType::I16 => SsaType::I16,
