@@ -1,15 +1,15 @@
+use zetaruntime::bump::{GrowableBump};
 use crate::errors::error::TypeError;
 
-#[derive(Default)]
 pub struct ErrorReporter {
-    pub errors: Vec<TypeError>,
+    pub errors: Vec<TypeError, GrowableBump>,
 }
 
 // Centralized error reporting for type-checking.
 impl ErrorReporter {
-    pub const fn new() -> ErrorReporter {
+    pub fn new() -> ErrorReporter {
         ErrorReporter {
-            errors: Vec::new(),
+            errors: Vec::new_in(GrowableBump::new(1024, align_of::<TypeError>())),
         }
     }
     
