@@ -1,28 +1,32 @@
 //! SSA Backend switched to Cranelift code generation with full ADT and interpolation support
 
+use std::cell::RefCell;
 use crate::backend::Backend;
+use crate::cranelift::clif_type;
 use cranelift::prelude::EntityRef;
 use cranelift_codegen::ir::condcodes::IntCC;
-use cranelift_codegen::ir::{types, AbiParam, Block as ClifBlock, BlockArg, BlockCall, Function as ClifFunction, InstBuilder, JumpTableData, MemFlags, Signature, Type, ValueListPool};
+use cranelift_codegen::ir::{types, AbiParam, Block as ClifBlock, BlockArg, BlockCall, Function as ClifFunction, InstBuilder, JumpTableData, MemFlags, Signature, ValueListPool};
 use cranelift_codegen::isa;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClifModule};
 use cranelift_object::{ObjectBuilder, ObjectModule};
-use ir::ssa_ir::{BinOp, BlockId, Function, Instruction, InterpolationOperand, Module, Operand, SsaType, Value};
+use ir::context::Context;
+use ir::hir::StrId;
+use ir::ssa_ir::{BinOp, BlockId, Function, Instruction, InterpolationOperand, Module, Operand, Value};
 use leapfrog::LeapMap;
 use std::collections::HashMap;
-use zetaruntime::string_pool::{StringPool, VmString};
-use crate::cranelift::clif_type;
+use std::rc::Rc;
+use zetaruntime::string_pool::VmString;
 
-pub struct CraneliftBackend {
+pub struct CraneliftBackend<'a> {
     module: ObjectModule,
     string_data: LeapMap<VmString, ZetaDataId>,
     interp_func: FuncId,
     enum_new: FuncId,
     enum_tag: FuncId,
     alloc_func: FuncId,
-    func_ids: HashMap<String, FuncId>,
-    string_pool: StringPool
+    func_ids: HashMap<StrId, FuncId>,
+    context: Rc<RefCell<Context<'a>>>
 }
 
 
@@ -49,8 +53,8 @@ impl leapfrog::Value for ZetaDataId {
 
 
 
-impl CraneliftBackend {
-    pub fn new(string_pool: StringPool) -> Self {
+impl<'a> CraneliftBackend<'a> {
+    pub fn new(context: Rc<RefCell<Context<'a>>>) -> Self {
         let isa = isa::lookup_by_name("x86_64").unwrap()
             .finish(cranelift_codegen::settings::Flags::new(cranelift_codegen::settings::builder()));
         let builder = ObjectBuilder::new(isa.unwrap(), "ssair", cranelift_module::default_libcall_names()).unwrap();
@@ -78,7 +82,7 @@ impl CraneliftBackend {
         sig_enum_tag.returns.push(AbiParam::new(types::I64));
         let enum_tag = module.declare_function("__enum_tag", Linkage::Import, &sig_enum_tag).unwrap();
 
-        CraneliftBackend { module, string_data: LeapMap::new(), interp_func, enum_new, enum_tag, alloc_func, func_ids: HashMap::new(), string_pool }
+        CraneliftBackend { module, string_data: LeapMap::new(), interp_func, enum_new, enum_tag, alloc_func, func_ids: HashMap::new(), context }
     }
 
     // Replaced lower_basic_inst
@@ -153,7 +157,7 @@ impl CraneliftBackend {
                 var_map.insert(*dest, var);
             }
 
-            Instruction::Phi { dest, incomings } => {
+            Instruction::Phi { dest, incomings: _ } => {
                 // For phi lowering we map (block, dest) -> param index, and we read that param
                 let idx = phi_param_map
                     .get(&(curr_bb, *dest))
@@ -273,15 +277,8 @@ impl CraneliftBackend {
                 };
                 builder.ins().return_(&[rv]);
             }
-            Instruction::Alloc { dest, ty: _ } => {
-                // Simple convention: call runtime `__alloc(size_in_bytes)` which returns i64 pointer.
-                // We'll declare __alloc in CraneliftBackend::new (see below).
-                // Compute size. Here we assume pointer-sized fields. If you know the concrete
-                // size per type, replace this with computed size.
+            Instruction::Alloc { dest, ty: _, count: _ } => {
                 let size_bytes = 3i64 * 8; // <= conservative default; ideally compute from `ty`
-                let alloc_func = self.module.declare_func_in_func(self.interp_func /* placeholder? see below */, &mut builder.func);
-                // Actually we create a dedicated alloc FuncId in new() — use that (see below as `alloc_func_id`).
-                // Here I'll assume you added `self.alloc_func` as FuncId in the struct, so:
                 let alloc_ref = self.module.declare_func_in_func(self.alloc_func, &mut builder.func);
                 let size_val = builder.ins().iconst(types::I64, size_bytes);
                 let call = builder.ins().call(alloc_ref, &[size_val]);
@@ -345,10 +342,16 @@ impl CraneliftBackend {
             }
             Instruction::Call { dest, func, args } => {
                 // Resolve callee name
+                let mut func_name_id: Option<&StrId> = None;
                 let func_name = match func {
-                    Operand::FunctionRef(s) => s.as_str(),
+                    Operand::FunctionRef(s) => {
+                        func_name_id = Some(s);
+                        self.context.borrow_mut().string_pool.resolve_string(&*s)
+                    },
                     _ => panic!("Call target must be a FunctionRef in current lowering"),
                 };
+
+                let func_name_id = func_name_id.unwrap();
 
                 // Build arg vals
                 let mut arg_vals = Vec::new();
@@ -365,7 +368,7 @@ impl CraneliftBackend {
                 }
 
                 // Find or declare FuncId
-                let func_id = if let Some(fid) = self.func_ids.get(func_name) {
+                let func_id = if let Some(fid) = self.func_ids.get(func_name_id) {
                     *fid
                 } else {
                     // Not declared yet: create an import with a guess signature.
@@ -379,7 +382,7 @@ impl CraneliftBackend {
                     }
                     let fid = self.module.declare_function(func_name, Linkage::Import, &sig)
                         .unwrap_or_else(|e| panic!("failed to declare import {}: {:?}", func_name, e));
-                    self.func_ids.insert(func_name.to_string(), fid);
+                    self.func_ids.insert(*func_name_id, fid);
                     fid
                 };
 
@@ -411,12 +414,8 @@ impl CraneliftBackend {
         }
     }
 
-    fn get_or_create_string(&mut self, s: &str) -> DataId {
-        // Intern the string first
-        let vm_str = self.string_pool
-            .intern(s)
-            .expect("StringPool allocation failed");
-
+    fn get_or_create_string(&mut self, s: &StrId) -> DataId {
+        let vm_str = **s;
         // Check if the string already exists in the LeapMap
         if let Some(mut id) = self.string_data.get(&vm_str) {
             if let Some(value) = id.value() {
@@ -431,7 +430,7 @@ impl CraneliftBackend {
             .unwrap();
 
         let mut data_ctx = DataDescription::new();
-        data_ctx.define(s.as_bytes().to_vec().into_boxed_slice());
+        data_ctx.define(self.context.borrow_mut().string_pool.resolve_bytes(s).to_vec().into_boxed_slice());
         self.module.define_data(id, &data_ctx).unwrap();
 
         // Insert into LeapMap
@@ -441,7 +440,7 @@ impl CraneliftBackend {
     }
 }
 
-impl Backend for CraneliftBackend {
+impl<'a> Backend for CraneliftBackend<'a> {
     fn emit_module(&mut self, module: &Module) {
         // 1) First pass: declare all functions (so calls can resolve to FuncId)
         for (name, func) in &module.funcs {
@@ -452,7 +451,7 @@ impl Backend for CraneliftBackend {
             }
             sig.returns.push(AbiParam::new(clif_type(&func.ret_type)));
 
-            let fid = self.module.declare_function(name, Linkage::Local, &sig)
+            let fid = self.module.declare_function(self.context.borrow_mut().string_pool.resolve_string(&*name), Linkage::Local, &sig)
                 .expect(&format!("failed to declare function {}", name));
             self.func_ids.insert(name.clone(), fid);
         }
@@ -469,7 +468,7 @@ impl Backend for CraneliftBackend {
         }
         sig.returns.push(AbiParam::new(clif_type(&func.ret_type)));
 
-        let fid = self.module.declare_function(&func.name, Linkage::Local, &sig).unwrap();
+        let fid = self.module.declare_function(self.context.borrow_mut().string_pool.resolve_string(&*func.name), Linkage::Local, &sig).unwrap();
         let mut ctx = self.module.make_context();
         ctx.func = ClifFunction::with_name_signature(
             cranelift_codegen::ir::UserFuncName::user(0, fid.as_u32()),
@@ -552,7 +551,7 @@ impl Backend for CraneliftBackend {
 
                     Instruction::EnumConstruct { dest, variant, .. } => {
                         let var = builder.declare_var(types::I64);
-                        let tag = variant.parse::<i64>().unwrap_or(0);
+                        let tag = self.context.borrow_mut().string_pool.resolve_string(&*variant).parse::<i64>().unwrap_or(0);
 
                         let func_ref = self.module.declare_func_in_func(self.enum_new, &mut builder.func);
                         let x = &[builder.ins().iconst(types::I64, tag)];
@@ -616,7 +615,7 @@ impl Backend for CraneliftBackend {
 
         // Declare the function without defining it
         self.module.declare_function(
-            &func.name,
+            self.context.borrow_mut().string_pool.resolve_string(&*func.name),
             Linkage::Import, // Import = external
             &sig,
         ).unwrap();

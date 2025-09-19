@@ -3,7 +3,6 @@ use cranelift_codegen::ir::{types, InstBuilder, MemFlags, Signature, Type, Value
 use cranelift_codegen::isa::TargetIsa;
 use cranelift_frontend::FunctionBuilder;
 use ir::hir::HirType;
-use std::io::Read;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Intrinsic {
@@ -64,20 +63,20 @@ fn ensure_value_is_ptr_width(
 
 use cranelift::prelude::AbiParam;
 use cranelift_module::{Linkage, Module};
-use cranelift_object::object::read::elf::Dyn;
 use ir::ssa_ir::{Function, SsaType};
+use zetaruntime::string_pool::StringPool;
 
-fn push_param_for_hir_type(sig: &mut Signature, hir_ty: &HirType, isa: &dyn TargetIsa) {
+fn push_param_for_hir_type(sig: &mut Signature, hir_ty: &HirType, isa: &dyn TargetIsa, string_pool: &StringPool) {
     match hir_ty {
         // detect Array<T> - adapt to how your HirType encodes generics
-        HirType::Class(name, args) if name == "Array" && args.len() == 1 => {
+        HirType::Class(name, args) if string_pool.resolve_string(name) == "Array" && args.len() == 1 => {
             let pt = AbiParam::new(ptr_clif_ty(isa));
             let len = AbiParam::new(usize_clif_ty(isa));
             sig.params.push(pt);
             sig.params.push(len);
         }
         // Ptr<T> is a single pointer param
-        HirType::Class(name, _args) if name == "Ptr" => {
+        HirType::Class(name, _args) if string_pool.resolve_string(name) == "Ptr" => {
             sig.params.push(AbiParam::new(ptr_clif_ty(isa)));
         }
         // primitives
@@ -89,13 +88,13 @@ fn push_param_for_hir_type(sig: &mut Signature, hir_ty: &HirType, isa: &dyn Targ
 }
 
 // For returns, same idea: push one or two return types depending on Array<T>.
-fn push_return_for_hir_type(sig: &mut Signature, hir_ty: &HirType, isa: &dyn TargetIsa) {
+fn push_return_for_hir_type(sig: &mut Signature, hir_ty: &HirType, isa: &dyn TargetIsa, string_pool: &StringPool) {
     match hir_ty {
-        HirType::Class(name, args) if name == "Array" && args.len() == 1 => {
+        HirType::Class(name, args) if string_pool.resolve_string(name) == "Array" && args.len() == 1 => {
             sig.returns.push(AbiParam::new(ptr_clif_ty(isa)));
             sig.returns.push(AbiParam::new(usize_clif_ty(isa)));
         }
-        HirType::Class(name, _) if name == "Ptr" => {
+        HirType::Class(name, _) if string_pool.resolve_string(name) == "Ptr" => {
             sig.returns.push(AbiParam::new(ptr_clif_ty(isa)));
         }
         _ => {
@@ -364,10 +363,6 @@ pub fn codegen_intrinsic(
 
             let p_ty = builder.func.dfg.value_type(p);
             let p = ensure_value_is_ptr_width(builder, p, ptr_ty, p_ty);
-
-            // We need the value type for store; assume val already has right CLIF type
-            // (the caller should have produced correct typed value).
-            let val_ty = builder.func.dfg.value_type(val);
 
             let mem_flags = MemFlags::new();
             builder.ins().store(mem_flags, val, p, 0);
