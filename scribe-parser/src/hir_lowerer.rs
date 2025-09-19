@@ -1,22 +1,24 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-
+use std::rc::Rc;
+use smallvec::SmallVec;
 use ir::ast::{
     self,
-    ClassDecl, ComparisonOp, ElseBranch, EnumDecl, Expr, FuncDecl,
+    ClassDecl, ElseBranch, EnumDecl, Expr, FuncDecl,
     ImplDecl, InterfaceDecl, LetStmt, Op, Pattern, Stmt, Type
 };
-
+use ir::context::Context;
 use ir::hir::{self, AssignmentOperator, Hir, HirClass, HirEnum, HirEnumVariant, HirExpr, HirField, HirFunc, HirGeneric, HirImpl, HirInterface, HirMatchArm, HirModule, HirParam, HirPattern, HirStmt, HirType, Operator, StrId};
 
 use ir::errors::reporter::ErrorReporter;
 use ir::ir_hasher::FxHashBuilder;
-
+use zetaruntime::string_pool::StringPool;
 // ===============================
 // Lowering Context
 // ===============================
 
-pub struct LoweringCtx {
+pub struct LoweringCtx<'a> {
     pub classes: HashMap<StrId, HirClass, FxHashBuilder>,
     pub interfaces: HashMap<StrId, HirInterface, FxHashBuilder>,
     pub functions: HashMap<StrId, HirFunc, FxHashBuilder>,
@@ -26,15 +28,17 @@ pub struct LoweringCtx {
     // caches for instantiated generics:
     pub instantiated_classes: HashMap<(StrId, StrId), StrId, FxHashBuilder>, // (orig_name, suffix) -> new_name
     pub instantiated_functions: HashMap<(StrId, StrId), StrId, FxHashBuilder>, // (orig_name, suffix) -> new_name
+
+    pub context: Rc<RefCell<Context<'a>>>
 }
 
-pub struct HirLowerer {
-    pub ctx: LoweringCtx,
+pub struct HirLowerer<'a> {
+    pub ctx: LoweringCtx<'a>,
     pub error_reporter: ErrorReporter
 }
 
-impl HirLowerer {
-    pub fn new() -> Self {
+impl<'a> HirLowerer<'a> {
+    pub fn new(context: Rc<RefCell<Context<'a>>>) -> Self {
         let sea_hasher = FxHashBuilder;
 
         Self {
@@ -44,8 +48,11 @@ impl HirLowerer {
                 interfaces: HashMap::with_hasher(sea_hasher),
                 type_bindings: HashMap::with_hasher(sea_hasher),
                 variable_types: HashMap::with_hasher(sea_hasher),
+
                 instantiated_classes: HashMap::with_hasher(sea_hasher),
                 instantiated_functions: HashMap::with_hasher(sea_hasher),
+
+                context
             },
             error_reporter: ErrorReporter::new()
         }
@@ -67,7 +74,7 @@ impl HirLowerer {
             }
             items.push(item);
         }
-        HirModule { name: "root".to_string(), imports: vec![], items }
+        HirModule { name: StrId(self.ctx.context.borrow_mut().string_pool.intern("root")), imports: vec![], items }
     }
 
     fn lower_toplevel(&mut self, stmt: Stmt) -> Hir {
@@ -101,7 +108,6 @@ impl HirLowerer {
         HirFunc {
             name: func.name,
             visibility: lower_visibility(&func.visibility),
-            is_static: func.is_static,
             is_unsafe: func.is_unsafe,
             generics: func.generics.unwrap_or_default()
                 .into_iter()
@@ -109,7 +115,7 @@ impl HirLowerer {
                 .collect(),
 
             params: func.params.into_iter()
-                .map(|p| HirParam { name: p.name, ty: self.lower_type(&p.type_annotation) })
+                .map(|p| HirParam { name: p.name, param_type: self.lower_type(&p.type_annotation) })
                 .collect(),
 
             return_type: func.return_type.map(|t| self.lower_type(&t)),
@@ -118,13 +124,11 @@ impl HirLowerer {
     }
 
     fn lower_class_decl(&mut self, c: ClassDecl) -> HirClass {
-        let methods = c.body.unwrap_or_default().into_iter().filter_map(|s| match s { Stmt::FuncDecl(f) => Some(self.lower_func_decl(f)), _ => None }).collect();
         HirClass {
             name: c.name,
             visibility: lower_visibility(&c.visibility),
             generics: c.generics.unwrap_or_default().into_iter().map(|g| HirGeneric { name: g.type_name, constraints: g.constraints }).collect(),
             fields: c.params.unwrap_or_default().iter().map(|p| self.lower_field(p)).collect(),
-            methods,
             interfaces: vec![],
         }
     }
@@ -217,7 +221,11 @@ impl HirLowerer {
                     expr: self.lower_expr(&match_stmt.expr),
                     arms: match_stmt.arms.into_iter().map(|a| HirMatchArm {
                         pattern: self.lower_pattern(&a.pattern),
-                        body: Box::new(a.block.into_iter().map(|s| self.lower_stmt(s)).collect())
+                        guard: match &a.guard {
+                            Some(guard) => Some(self.lower_expr(guard)),
+                            _ => None
+                        },
+                        body: a.block.into_iter().map(|s| self.lower_stmt(s)).collect()
                     }).collect()
                 }),
 
@@ -261,12 +269,12 @@ impl HirLowerer {
             HirExpr::Binary { left, op: _, right } => {
                 let lt = self.infer_type(left)?; let rt = self.infer_type(right)?; if lt == rt { Some(lt) } else { None }
             }
-            HirExpr::FieldAccess { object, field } => self.infer_field_access_type(object, field),
+            HirExpr::FieldAccess { object, field } => self.infer_field_access_type(object, *field),
             _ => None,
         }
     }
 
-    fn infer_field_access_type(&self, object: &HirExpr, field: &str) -> Option<HirType> {
+    fn infer_field_access_type(&self, object: &HirExpr, field: StrId) -> Option<HirType> {
         let obj_ty = self.infer_type(object)?;
         match obj_ty {
             HirType::Class(name, _) => {
@@ -330,11 +338,11 @@ impl HirLowerer {
             Expr::Assignment { lhs, op, rhs } =>
                 HirExpr::Assignment {
                     target: Box::new(self.lower_expr(lhs)),
-                    op: Self::lower_assignment_operator(op),
+                    op: Self::lower_assignment_operator(*op),
                     value: Box::new(self.lower_expr(rhs))
                 },
 
-            Expr::ExprList { exprs } =>
+            Expr::ExprList { expressions: exprs } =>
                 HirExpr::ExprList(exprs.iter().map(|e| self.lower_expr(e)).collect()),
 
             &Expr::Char(_) => todo!(),
@@ -353,7 +361,7 @@ impl HirLowerer {
 
     fn detect_interface_call(&mut self, arguments: &Vec<Expr>, lowered_callee: &HirExpr) -> Option<HirExpr> {
         let HirExpr::FieldAccess { object, field } = lowered_callee else { return None };
-        let interface = self.find_interface_method(object, field)?;
+        let interface = self.find_interface_method(object, *field)?;
 
         Some(HirExpr::InterfaceCall {
             callee: Box::new(lowered_callee.clone()),
@@ -362,19 +370,19 @@ impl HirLowerer {
         })
     }
 
-    fn lower_assignment_operator(op: &String) -> AssignmentOperator {
-        match op.as_str() {
-            "=" => AssignmentOperator::Assign,
-            "+=" => AssignmentOperator::AddAssign,
-            "-=" => AssignmentOperator::SubtractAssign,
-            "*=" => AssignmentOperator::MultiplyAssign,
-            "/=" => AssignmentOperator::DivideAssign,
-            "%=" => AssignmentOperator::ModuloAssign,
-            "&=" => AssignmentOperator::BitAndAssign,
-            "|=" => AssignmentOperator::BitOrAssign,
-            "^=" => AssignmentOperator::BitXorAssign,
-            "<<=" => AssignmentOperator::ShiftLeftAssign,
-            ">>=" => AssignmentOperator::ShiftRightAssign,
+    fn lower_assignment_operator(op: Op) -> AssignmentOperator {
+        match op {
+            Op::Assign => AssignmentOperator::Assign,
+            Op::AddAssign => AssignmentOperator::AddAssign,
+            Op::SubAssign => AssignmentOperator::SubtractAssign,
+            Op::MulAssign => AssignmentOperator::MultiplyAssign,
+            Op::DivAssign => AssignmentOperator::DivideAssign,
+            Op::ModAssign => AssignmentOperator::ModuloAssign,
+            Op::BitAndAssign => AssignmentOperator::BitAndAssign,
+            Op::BitOrAssign => AssignmentOperator::BitOrAssign,
+            Op::BitXorAssign => AssignmentOperator::BitXorAssign,
+            Op::ShrAssign => AssignmentOperator::ShiftLeftAssign,
+            Op::ShlAssign => AssignmentOperator::ShiftRightAssign,
             _ => unreachable!(),
         }
     }
@@ -411,7 +419,7 @@ impl HirLowerer {
         }
     }
 
-    fn find_interface_method(&self, object: &HirExpr, method: &str) -> Option<String> {
+    fn find_interface_method(&self, object: &HirExpr, method: StrId) -> Option<StrId> {
         // Resolve class name from variable types or direct identifier equal to class name
         let class_name = match object {
             HirExpr::Ident(var) => {
@@ -459,19 +467,27 @@ impl HirLowerer {
     // Monomorphization
     // ===============================
     // Public entry: monomorphize a function with substitutions mapping generic-name -> concrete HirType
-    pub fn monomorphize_function(&mut self, func: &HirFunc, substitutions: &HashMap<String, HirType>) -> HirFunc {
+    pub fn monomorphize_function(&mut self, func: &HirFunc, substitutions: &HashMap<StrId, HirType>) -> HirFunc {
         // clone and apply substitutions to signature
         let mut new_func = func.clone();
         self.apply_substitutions_to_func(&mut new_func, substitutions);
 
         // rename function to specialized name (cache)
-        let suffix = Self::suffix_for_subs(substitutions);
-        let orig_name = new_func.name.clone();
+        let suffix = self.suffix_for_subs(substitutions);
+        let orig_name: StrId = new_func.name.clone();
         let specialized_name = match self.ctx.instantiated_functions.entry((orig_name.clone(), suffix.clone())) {
             Entry::Occupied(e) => e.get().clone(),
             Entry::Vacant(e) => {
-                let new_name = format!("{}_{}", orig_name, suffix);
-                e.insert(new_name.clone());
+                const UNDERSCORE_LEN: usize = 1;
+                let mut small_vec: SmallVec<[u8; 32]> = SmallVec::with_capacity(orig_name.len() + UNDERSCORE_LEN + suffix.len());
+                small_vec.extend_from_slice(self.ctx.context.borrow_mut().string_pool.resolve_bytes(&*orig_name));
+                small_vec.push(b'_');
+                small_vec.extend_from_slice(self.ctx.context.borrow_mut().string_pool.resolve_bytes(&*suffix));
+
+                let new_name = StrId(self.ctx.context.borrow_mut().string_pool.intern_bytes(small_vec.as_slice()));
+                e.insert(new_name);
+
+                // This is a Copy value.
                 new_name
             }
         };
@@ -486,9 +502,9 @@ impl HirLowerer {
         new_func
     }
 
-    fn apply_substitutions_to_func(&self, func: &mut HirFunc, substitutions: &HashMap<String, HirType>) {
+    fn apply_substitutions_to_func(&self, func: &mut HirFunc, substitutions: &HashMap<StrId, HirType>) {
         for param in &mut func.params {
-            param.ty = self.substitute_type(&param.ty, substitutions);
+            param.param_type = self.substitute_type(&param.param_type, substitutions);
         }
 
         if let Some(ret) = &mut func.return_type {
@@ -496,7 +512,7 @@ impl HirLowerer {
         }
     }
 
-    fn monomorphize_body(&mut self, body: &mut HirStmt, substitutions: &HashMap<String, HirType>) {
+    fn monomorphize_body(&mut self, body: &mut HirStmt, substitutions: &HashMap<StrId, HirType>) {
         match body {
             HirStmt::Block { body } => {
                 for stmt in body.iter_mut() { self.monomorphize_stmt(stmt, substitutions); }
@@ -530,18 +546,18 @@ impl HirLowerer {
         }
     }
 
-    fn monomorphize_stmt(&mut self, stmt: &mut HirStmt, subs: &HashMap<String, HirType>) {
+    fn monomorphize_stmt(&mut self, stmt: &mut HirStmt, subs: &HashMap<StrId, HirType>) {
         self.monomorphize_body(stmt, subs);
     }
 
-    fn monomorphize_expr(&mut self, expr: &mut HirExpr, subs: &HashMap<String, HirType>) {
+    fn monomorphize_expr(&mut self, expr: &mut HirExpr, subs: &HashMap<StrId, HirType>) {
         match expr {
             HirExpr::Call { callee, args } => {
                 self.monomorphize_expr(callee, subs);
                 for a in args { self.monomorphize_expr(a, subs); }
                 // if callee is a constructor that got instantiated, nothing else to do
             }
-            HirExpr::InterfaceCall { callee, interface, args } => {
+            HirExpr::InterfaceCall { callee, interface: _, args } => {
                 // monomorphize inner expressions first
                 self.monomorphize_expr(callee, subs);
                 for a in args.iter_mut() { self.monomorphize_expr(a, subs); }
@@ -557,28 +573,22 @@ impl HirLowerer {
 
                 // if name is identifier of generic class (e.g. Foo) and args/types allow instantiation, instantiate
                 if let HirExpr::Ident(id) = &**name {
-                    if let Some(base_class) = self.ctx.classes.get(id) {
-                        if !base_class.generics.is_empty() {
-                            // derive concrete types from constructor args' inferred types where possible
-                            let mut concrete_args = Vec::new();
-                            for a in args.iter() {
-                                let inferred = self.infer_type(a).unwrap_or(HirType::Generic("Unknown".into()));
-                                let substituted = self.substitute_type(&inferred, subs);
-                                concrete_args.push(substituted);
-                            }
-
-                            // If lengths mismatch, fill with Unknown generics mapping if needed
-                            if concrete_args.len() < base_class.generics.len() {
-                                // fallback: map remaining generics to Generic(name)
-                                for g in base_class.generics.iter().skip(concrete_args.len()) {
-                                    concrete_args.push(HirType::Generic(g.name.clone()));
-                                }
-                            }
-
-                            let new_name = self.instantiate_class_for_types(&id, &concrete_args);
-                            **name = HirExpr::Ident(new_name);
-                        }
+                    let Some(base_class) = self.ctx.classes.get(id) else { return; };
+                    if base_class.generics.is_empty() { return }
+                    let mut concrete_args = Vec::new();
+                    for a in args.iter() {
+                        let inferred = self.infer_type(a).unwrap_or(HirType::Generic(StrId(self.ctx.context.borrow_mut().string_pool.intern("Unknown"))));
+                        let substituted = self.substitute_type(&inferred, subs);
+                        concrete_args.push(substituted);
                     }
+
+                    if concrete_args.len() < base_class.generics.len() {
+                        base_class.generics.iter().skip(concrete_args.len()).map(|g| HirType::Generic(g.name))
+                            .for_each(|name| concrete_args.push(name));
+                    }
+
+                    let new_name = self.instantiate_class_for_types(base_class, &concrete_args);
+                    **name = HirExpr::Ident(new_name);
                 }
             }
             HirExpr::FieldAccess { object, .. } | HirExpr::Get { object, .. } => {
@@ -607,7 +617,7 @@ impl HirLowerer {
     // Returns Some(HirExpr::Call) on success.
     fn direct_method_lookup(
         &mut self,
-        subs: &HashMap<String, HirType>,
+        subs: &HashMap<StrId, HirType>,
         callee: &mut Box<HirExpr>,
         args: &Vec<HirExpr>
     ) -> Option<HirExpr> {
@@ -632,7 +642,7 @@ impl HirLowerer {
             let concrete_name = if class_args.is_empty() {
                 class_name.clone()
             } else {
-                self.instantiate_class_for_types(&class_name, &class_args)
+                self.instantiate_class_for_types(class_name, &class_args)
             };
 
             let class = self.ctx.classes.get(&concrete_name)?;
@@ -653,41 +663,33 @@ impl HirLowerer {
     // Utilities for monomorphization
     // --------------------
 
-    // Create a string suffix for a set of substitutions, e.g. {"T": i32} -> "T_i32" or "i32" depending on mapping.
-    fn suffix_for_subs(subs: &HashMap<String, HirType>) -> String {
-        let mut pieces: Vec<String> = subs.iter().map(|(k, v)| {
-            format!("{}{}", k, Self::type_suffix(v))
-        }).collect();
-        pieces.sort();
-        pieces.join("_")
-    }
+    // Create a StrId suffix for a set of substitutions, e.g. {"T": i32} -> "T_i32" or "i32" depending on mapping.
+    fn suffix_for_subs(&mut self, subs: &HashMap<StrId, HirType>) -> StrId {
+        // Collect into Vec<(StrId, StrId)> so we can sort deterministically.
+        let pieces: Vec<(StrId, StrId)> = subs
+            .iter()
+            .map(|(k, v)| (*k, type_suffix_with_pool(self.ctx.context.borrow_mut().string_pool, v))) // assume type_suffix returns StrId
+            .collect();
 
-    // Render a short suffix for a HirType (used in name mangling)
-    fn type_suffix(ty: &HirType) -> String {
-        match ty {
-            HirType::I32 => "i32".into(),
-            HirType::I64 => "i64".into(),
-            HirType::U32 => "u32".into(),
-            HirType::U64 => "u64".into(),
-            HirType::F32 => "f32".into(),
-            HirType::F64 => "f64".into(),
-            HirType::String => "String".into(),
-            HirType::Boolean => "Bool".into(),
-            HirType::Class(name, args) => {
-                if args.is_empty() { name.clone() } else {
-                    let inner = args.iter().map(|a| Self::type_suffix(a)).collect::<Vec<_>>().join("_");
-                    format!("{}_{}", name, inner)
-                }
+        // Preallocate on stack, fallback to heap if too big.
+        let mut buf: SmallVec<[u8; 128]> = SmallVec::new();
+
+        for (i, (k, v)) in pieces.iter().enumerate() {
+            if i > 0 {
+                buf.push(b'_');
             }
-            HirType::Generic(name) => name.clone(),
-            HirType::Array(inner) => format!("Arr{}", Self::type_suffix(inner)),
-            HirType::Void => "void".into(),
-            _ => "T".into(),
+            buf.extend_from_slice(self.ctx.context.borrow_mut().string_pool.resolve_bytes(&*k));
+            buf.extend_from_slice(self.ctx.context.borrow_mut().string_pool.resolve_bytes(&*v));
         }
+
+        // Convert &[u8] → &str without re-allocating
+        let s = unsafe { std::str::from_utf8_unchecked(&buf) };
+
+        StrId(self.ctx.context.borrow_mut().string_pool.intern(s))
     }
 
     // Substitute occurrences of Generic types with concrete ones
-    fn substitute_type(&self, ty: &HirType, subs: &HashMap<String, HirType>) -> HirType {
+    fn substitute_type(&self, ty: &HirType, subs: &HashMap<StrId, HirType>) -> HirType {
         match ty {
             HirType::Generic(name) => subs.get(name).cloned().unwrap_or(ty.clone()),
             HirType::Class(name, args) => {
@@ -700,98 +702,112 @@ impl HirLowerer {
             HirType::Lambda { params, return_type, concurrent } => {
                 HirType::Lambda { params: params.iter().map(|p| self.substitute_type(p, subs)).collect(), return_type: Box::new(self.substitute_type(return_type, subs)), concurrent: *concurrent }
             }
-            HirType::Array(inner) => HirType::Array(Box::new(self.substitute_type(inner, subs))),
             other => other.clone(),
         }
     }
 
     // Instantiate a generic class for concrete args, caching the result and registering the new class in ctx.classes
-    fn instantiate_class_for_types(&mut self, original: &str, concrete_args: &[HirType]) -> String {
-        let suffix = concrete_args.iter().map(|t| Self::type_suffix(t)).collect::<Vec<_>>().join("_");
-        let key = (original.to_string(), suffix.clone());
-
-        if let Some(name) = self.ctx.instantiated_classes.get(&key) {
-            return name.clone();
-        }
-
-        let base = match self.ctx.classes.get(original) {
-            Some(c) => c.clone(),
-            None => return original.to_string(), // fallback: unknown class, keep name
+    pub fn instantiate_class_for_types(
+        &mut self,
+        base: &ClassDecl,
+        concrete_args: &[HirType],
+    ) -> HirClass {
+        let mut generics = match base.generics {
+            Some(generics) => generics,
+            None => return self.lower_class_decl(base.clone())
         };
 
-        // Build mapping from base.generics -> concrete_args by order
-        let mut map = HashMap::new();
-        for (i, generic) in base.generics.iter().enumerate() {
-            if let Some(arg) = concrete_args.get(i) {
-                map.insert(generic.name.clone(), arg.clone());
-            } else {
-                // if not provided, leave as Generic
-                map.insert(generic.name.clone(), HirType::Generic(generic.name.clone()));
-            }
+        // 1) Build mapping from generic params -> concrete args
+        let mut map: HashMap<StrId, HirType> = HashMap::new();
+        for (i, generic) in generics.iter().enumerate() {
+            let ty = concrete_args
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| HirType::Generic(generic.type_name));
+            map.insert(generic.type_name, ty);
         }
 
-        // clone and substitute field types and methods param/return types
-        let mut new_class = base.clone();
-        let new_name = format!("{}_{}", original, suffix);
-        new_class.name = new_name.clone();
+        // 2) Clone base class
+        let mut new_class = self.lower_class_decl(base.clone());
 
-        for f in &mut new_class.fields {
-            f.field_type = self.substitute_type(&f.field_type, &map);
+        // 3) Specialize fields by substituting generics
+        for field in &mut new_class.fields {
+            field.field_type = self.substitute_type(&field.field_type, &map);
         }
 
-        // monomorphize methods: substitute param/return types and rename functions if needed
-        for m in &mut new_class.methods {
-            // substitute parameter and return types
-            for p in &mut m.params {
-                p.ty = self.substitute_type(&p.ty, &map);
-            }
-            if let Some(r) = &mut m.return_type {
-                *r = self.substitute_type(r, &map);
-            }
-            // rename method to a specialized name (cache)
-            let method_suffix = map.iter().map(|(k, v)| format!("{}{}", k, Self::type_suffix(v))).collect::<Vec<_>>().join("_");
-            let orig_mname = m.name.clone();
-            let mkey = (orig_mname.clone(), method_suffix.clone());
-            let new_mname = match self.ctx.instantiated_functions.entry(mkey.clone()) {
-                Entry::Occupied(e) => e.get().clone(),
-                Entry::Vacant(e) => {
-                    let nm = format!("{}_{}", orig_mname, method_suffix);
-                    e.insert(nm.clone());
-                    nm
-                }
-            };
-            m.name = new_mname;
-            // monomorphize body too if present
-            if let Some(body) = &mut m.body {
-                self.monomorphize_body(body, &map);
-            }
-            // register specialized function
-            self.ctx.functions.insert(m.name.clone(), m.clone());
-        }
+        // 4) Drop generics on the specialized class
+        generics.clear();
 
-        // register class
-        self.ctx.classes.insert(new_name.clone(), new_class);
-        self.ctx.instantiated_classes.insert(key, new_name.clone());
-        new_name
+        // 5) Give the new class a mangled name
+        let mut new_name = base.name.to_string();
+        for arg in concrete_args {
+            new_name.push('_');
+
+            let id = type_suffix_with_pool(self.ctx.context.borrow_mut().string_pool, arg);
+            new_name.push_str(
+                self.ctx.context.borrow().string_pool.resolve_string(&*id)
+            );
+        }
+        new_class.name = self.ctx.context.borrow_mut().string_pool.intern(&new_name).into();
+
+        new_class
     }
-
 }
 
 const fn lower_visibility(visibility: &ast::Visibility) -> hir::Visibility {
     match visibility {
         ast::Visibility::Public => hir::Visibility::Public,
         ast::Visibility::Private => hir::Visibility::Private,
-        ast::Visibility::Internal => hir::Visibility::Internal,
+        ast::Visibility::Module => hir::Visibility::Module,
+        ast::Visibility::Package => hir::Visibility::Package,
     }
 }
 
-const fn lower_cmp_operator(op: ComparisonOp) -> Operator {
+const fn lower_cmp_operator(op: Op) -> Operator {
     match op {
-        ComparisonOp::Equal => Operator::Equals,
-        ComparisonOp::NotEqual => Operator::NotEquals,
-        ComparisonOp::LessThan => Operator::LessThan,
-        ComparisonOp::LessThanOrEqual => Operator::LessThanOrEqual,
-        ComparisonOp::GreaterThan => Operator::GreaterThan,
-        ComparisonOp::GreaterThanOrEqual => Operator::GreaterThanOrEqual
+        Op::Eq => Operator::Equals,
+        Op::Neq => Operator::NotEquals,
+        Op::Lt => Operator::LessThan,
+        Op::Lte => Operator::LessThanOrEqual,
+        Op::Gt => Operator::GreaterThan,
+        Op::Gte => Operator::GreaterThanOrEqual,
+        _ => unreachable!()
     }
+}
+
+pub fn type_suffix_with_pool(pool: &mut StringPool, ty: &HirType) -> StrId {
+    StrId(match ty {
+        HirType::I32 => pool.intern("i32"),
+        HirType::I64 => pool.intern("i64"),
+        HirType::U32 => pool.intern("u32"),
+        HirType::U64 => pool.intern("u64"),
+        HirType::F32 => pool.intern("f32"),
+        HirType::F64 => pool.intern("f64"),
+        HirType::String => pool.intern("StrId"),
+        HirType::Boolean => pool.intern("Bool"),
+
+        HirType::Class(name, args) => {
+            if args.is_empty() {
+                **name
+            } else {
+                let mut buf: SmallVec<[u8; 128]> = SmallVec::new();
+                buf.extend_from_slice(pool.resolve_bytes(&*name));
+                for arg in args {
+                    buf.push(b'_');
+                    let suffix = type_suffix_with_pool(pool, arg);
+                    let part = pool.resolve_bytes(&*suffix);
+
+                    buf.extend_from_slice(part);
+                }
+                let s = unsafe { std::str::from_utf8_unchecked(&buf) };
+                pool.intern(s)
+            }
+        }
+
+        HirType::Generic(name) => **name,
+
+        HirType::Void => pool.intern("void"),
+
+        _ => pool.intern("T"),
+    })
 }
