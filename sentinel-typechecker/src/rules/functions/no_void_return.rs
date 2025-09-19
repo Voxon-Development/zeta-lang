@@ -15,7 +15,7 @@ impl TypeRule for NoVoidReturnRule {
             let Stmt::Return(return_stmt) = stmt else { continue };
             let Some(ref return_value) = return_stmt.value else { continue };
             ctx.ctx.error_reporter.add_error(TypeError::VoidFunctionWithNonVoidReturn {
-                function_name: func.name.clone(),
+                function_name: ctx.context.borrow_mut().string_pool.resolve_string(&*func.name.clone()).to_string(),
                 return_value: return_value.deref().clone(),
                 location: SourceSpan::default()
             })
