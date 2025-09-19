@@ -1,117 +1,119 @@
-type LinuxThreads;
+type LinuxThreads
 
-// 1. Threads / Processes
-// createThread: thin wrapper around clone syscall
-// flags: clone flags, childStack: pointer/stack for child (0 if not used)
-LinuxThreads.createThread(flags: usize, childStack: usize, ptid: usize, ctid: usize, tls: usize) -> isize {
-    // syscall6(SYS_CLONE, flags, childStack, ptid, ctid, tls, 0)
-    return syscall6(SYS_CLONE, flags, childStack, ptid, ctid, tls)
-}
-
-LinuxThreads.fork() -> isize {
-    return syscall0(SYS_FORK)
-}
-
-LinuxThreads.vfork() -> isize {
-    return syscall0(SYS_VFORK)
-}
-
-LinuxThreads.execve(path: Ptr<u8>, argv: Ptr<Ptr<u8>>, envp: Ptr<Ptr<u8>>) -> isize {
-    // long syscall: execve(const char *pathname, char *const argv[], char *const envp[])
-    return syscall3(SYS_EXECVE, path as usize, argv as usize, envp as usize)
-}
-
-LinuxThreads.setTidAddress(tidptr: Ptr<i32>) -> isize {
-    return syscall1(SYS_SET_TID_ADDRESS, tidptr as usize)
-}
-
-LinuxThreads.getTid() -> isize {
-    // gettid returns tid
-    return syscall0(SYS_GETTID)
-}
-
-// 2. Synchronization primitives
-
-// raw futex wrapper (generic)
-LinuxThreads.futex(addr: Ptr<i32>, futexOp: i32, val: i32, timeoutPtr: Ptr<u8>, uaddr2: usize, val3: i32) -> isize {
-    return syscall6(SYS_FUTEX, addr as usize, futexOp as usize, val as usize, timeoutPtr as usize, uaddr2, val3 as usize)
-}
-
-// SysV semaphores
-LinuxThreads.semget(key: i32, nsems: i32, semflg: i32) -> isize {
-    return syscall3(SYS_SEMGET, key as usize, nsems as usize, semflg as usize)
-}
-
-LinuxThreads.semop(semid: i32, sops: Ptr<u8>, nsops: usize) -> isize {
-    return syscall3(SYS_SEMOP, semid as usize, sops as usize, nsops)
-}
-
-LinuxThreads.semctl(semid: i32, semnum: i32, cmd: i32, arg: usize) -> isize {
-    return syscall4(SYS_SEMCTL, semid as usize, semnum as usize, cmd as usize, arg)
-}
-
-// eventfd/timerfd/signalfd
-LinuxThreads.eventfd2(initval: u32, flags: i32) -> isize {
-    return syscall2(SYS_EVENTFD2, initval as usize, flags as usize)
-}
-
-LinuxThreads.timerfdCreate(clockid: i32, flags: i32) -> isize {
-    return syscall2(SYS_TIMERFD_CREATE, clockid as usize, flags as usize)
-}
-
-LinuxThreads.signalfd4(fd: i32, mask: Ptr<u8>, masksize: usize, flags: i32) -> isize {
-    return syscall4(SYS_SIGNALFD4, fd as usize, mask as usize, masksize, flags as usize)
-}
-
-// 3. Event/Wait APIs
-
-LinuxThreads.epollCreate1(flags: i32) -> isize {
-    return syscall1(SYS_EPOLL_CREATE1, flags as usize)
-}
-
-LinuxThreads.epollCtl(epfd: i32, op: i32, fd: i32, eventPtr: Ptr<u8>) -> isize {
-    return syscall4(SYS_EPOLL_CTL, epfd as usize, op as usize, fd as usize, eventPtr as usize)
-}
-
-LinuxThreads.epollPwait(epfd: i32, events: Ptr<u8>, maxevents: i32, timeout: i32, sigmask: Ptr<u8>, sigsetsize: usize) -> isize {
-    return syscall6(SYS_EPOLL_PWAIT, epfd as usize, events as usize, maxevents as usize, timeout as usize, sigmask as usize, sigsetsize)
-}
-
-// io_uring (thin syscall wrappers)
-LinuxThreads.ioUringSetup(entries: u32, paramsPtr: Ptr<u8>) -> isize {
-    return syscall2(SYS_IO_URING_SETUP, entries as usize, paramsPtr as usize)
-}
-
-LinuxThreads.ioUringEnter(fd: i32, toSubmit: u32, minComplete: u32, flags: u32, sigPtr: Ptr<u8>, sigsz: usize) -> isize {
-    return syscall6(SYS_IO_URING_ENTER, fd as usize, toSubmit as usize, minComplete as usize, flags as usize, sigPtr as usize, sigsz)
-}
-
-LinuxThreads.rtSigsuspend(mask: Ptr<u8>, sigsetsize: usize) -> isize {
-    return syscall2(SYS_RT_SIGSUSPEND, mask as usize, sigsetsize)
-}
-
-LinuxThreads.rtSigtimedwait(sigset: Ptr<u8>, info: Ptr<u8>, ts: Ptr<u8>, sigsetsize: usize) -> isize {
-    return syscall4(SYS_RT_SIGTIMEDWAIT, sigset as usize, info as usize, ts as usize, sigsetsize)
-}
-
-// 4. Atomics & low-level primitives
-// These call into assumed compiler intrinsics. Replace with your runtime intrinsics if names differ.
-
-LinuxThreads.atomicLoadI32(addr: Ptr<i32>) -> i32 {
-    // acquire semantics
-    return atomicLoad(addr)
-}
-
-LinuxThreads.atomicStoreI32(addr: Ptr<i32>, val: i32) {
-    // release semantics
-    atomicStore(addr, val)
-}
-
-LinuxThreads.atomicCompareExchangeI32(addr: Ptr<i32>, old: i32, new: i32) -> boolean {
-    // returns true if swapped
-    return atomicCompareExchange(addr, old, new)
-}
-
-LinuxThreads.atomicFetchAddI32(addr: Ptr<i32>, delta: i32) -> i32 {
-    return atomicFetchAdd(addr, delta)
+impl OsThreadSystem for LinuxThreads {
+    // 1. Threads / Processes
+    // createThread: thin wrapper around clone syscall
+    // flags: clone flags, childStack: pointer/stack for child (0 if not used)
+    createThread(usize flags, usize childStack, usize ptid, usize ctid, usize tls) -> isize {
+        // syscall6(SYS_CLONE, flags, childStack, ptid, ctid, tls, 0)
+        return syscall6(SYS_CLONE, flags, childStack, ptid, ctid, tls)
+    }
+    
+    fork() -> isize {
+        return syscall0(SYS_FORK)
+    }
+    
+    vfork() -> isize {
+        return syscall0(SYS_VFORK)
+    }
+    
+    execve(Ptr<u8> path, Ptr<Ptr<u8>> argv, Ptr<Ptr<u8>> envp) -> isize {
+        // long syscall: execve(const char *pathname, char *const argv[], char *const envp[])
+        return syscall3(SYS_EXECVE, path as usize, argv as usize, envp as usize)
+    }
+    
+    setTidAddress(Ptr<i32> tidptr) -> isize {
+        return syscall1(SYS_SET_TID_ADDRESS, tidptr as usize)
+    }
+    
+    getTid() -> isize {
+        // gettid returns tid
+        return syscall0(SYS_GETTID)
+    }
+    
+    // 2. Synchronization primitives
+    
+    // raw futex wrapper (generic)
+    futex(Ptr<i32> addr, i32 futexOp, i32 val, Ptr<u8> timeout, usize uaddr2, i32 val3) -> isize {
+        return syscall6(SYS_FUTEX, addr as usize, futexOp as usize, val as usize, timeoutPtr as usize, uaddr2, val3 as usize)
+    }
+    
+    // SysV semaphores
+    semget(i32 key, i32 nsems, i32 semflg) -> isize {
+        return syscall3(SYS_SEMGET, key as usize, nsems as usize, semflg as usize)
+    }
+    
+    semop(i32 semid, Ptr<u8> sops, usize nsops) -> isize {
+        return syscall3(SYS_SEMOP, semid as usize, sops as usize, nsops)
+    }
+    
+    semctl(i32 semid, i32 semnum, i32 cmd, usize arg) -> isize {
+        return syscall4(SYS_SEMCTL, semid as usize, semnum as usize, cmd as usize, arg)
+    }
+    
+    // eventfd/timerfd/signalfd
+    eventfd2(u32 initval, i32 flags) -> isize {
+        return syscall2(SYS_EVENTFD2, initval as usize, flags as usize)
+    }
+    
+    timerfdCreate(i32 clockid, i32 flags) -> isize {
+        return syscall2(SYS_TIMERFD_CREATE, clockid as usize, flags as usize)
+    }
+    
+    signalfd4(i32 fd, Ptr<u8> mask, usize masksize, i32 flags) -> isize {
+        return syscall4(SYS_SIGNALFD4, fd as usize, mask as usize, masksize, flags as usize)
+    }
+    
+    // 3. Event/Wait APIs
+    
+    epollCreate1(i32 flags) -> isize {
+        return syscall1(SYS_EPOLL_CREATE1, flags as usize)
+    }
+    
+    epollCtl(i32 epfd, i32 op, i32 fd, Ptr<u8> eventPtr) -> isize {
+        return syscall4(SYS_EPOLL_CTL, epfd as usize, op as usize, fd as usize, eventPtr as usize)
+    }
+    
+    epollPwait(i32 epfd, Ptr<u8> events, i32 maxevents, i32 timeout, Ptr<u8> sigmask, usize sigsetsize) -> isize {
+        return syscall6(SYS_EPOLL_PWAIT, epfd as usize, events as usize, maxevents as usize, timeout as usize, sigmask as usize, sigsetsize)
+    }
+    
+    // io_uring (thin syscall wrappers)
+    ioUringSetup(u32 entries, Ptr<u8> paramsPtr) -> isize {
+        return syscall2(SYS_IO_URING_SETUP, entries as usize, paramsPtr as usize)
+    }
+    
+    ioUringEnter(i32 fd, u32 toSubmit, u32 minComplete, u32 flags, Ptr<u8> sigPtr, usize sigsz) -> isize {
+        return syscall6(SYS_IO_URING_ENTER, fd as usize, toSubmit as usize, minComplete as usize, flags as usize, sigPtr as usize, sigsz)
+    }
+    
+    rtSigsuspend(Ptr<u8> mask, usize sigsetsize) -> isize {
+        return syscall2(SYS_RT_SIGSUSPEND, mask as usize, sigsetsize)
+    }
+    
+    rtSigtimedwait(Ptr<u8> sigset, Ptr<u8> info, Ptr<u8> ts, usize sigsetsize) -> isize {
+        return syscall4(SYS_RT_SIGTIMEDWAIT, sigset as usize, info as usize, ts as usize, sigsetsize)
+    }
+    
+    // 4. Atomics & low-level primitives
+    // These call into assumed compiler intrinsics. Replace with your runtime intrinsics if names differ.
+    
+    atomicLoadI32(Ptr<i32> addr) -> i32 {
+        // acquire semantics
+        return atomicLoad(addr)
+    }
+    
+    atomicStoreI32(Ptr<i32> addr, i32 val) {
+        // release semantics
+        atomicStore(addr, val)
+    }
+    
+    atomicCompareExchangeI32(Ptr<i32> addr, i32 old, i32 new) -> boolean {
+        // returns true if swapped
+        return atomicCompareExchange(addr, old, new)
+    }
+    
+    atomicFetchAddI32(Ptr<i32> addr, i32 delta) -> i32 {
+        return atomicFetchAdd(addr, delta)
+    }
 }

@@ -104,61 +104,65 @@ type TunIfReq(
     Array<u8, 14> pad
 )
 
-// ---------- Qualified functions ----------
-LinuxNetworkX86_64.socket(usize domain, usize type, usize protocol) -> isize {
-    return os_intrinsics::syscall3(SYS_SOCKET, domain, type, protocol)
-}
+type LinuxNetworkX86_64
 
-LinuxNetworkX86_64.socketpair(usize domain, usize type, usize protocol, Ptr<usize> sv) -> isize {
-    return os_intrinsics::syscall4(SYS_SOCKETPAIR, domain, type, protocol, sv.addr())
-}
-
-LinuxNetworkX86_64.bind(usize sockfd, Ptr<SockAddr> addr, usize addrlen) -> isize {
-    return os_intrinsics::syscall3(SYS_BIND, sockfd, addr.addr(), addrlen)
-}
-
-LinuxNetworkX86_64.listen(usize sockfd, usize backlog) -> isize {
-    return os_intrinsics::syscall2(SYS_LISTEN, sockfd, backlog)
-}
-
-LinuxNetworkX86_64.accept(usize sockfd, Ptr<SockAddr> addr, Ptr<usize> addrlen) -> isize {
-    return os_intrinsics::syscall3(SYS_ACCEPT, sockfd, addr.addr(), addrlen.addr())
-}
-
-LinuxNetworkX86_64.accept4(usize sockfd, Ptr<SockAddr> addr, Ptr<usize> addrlen, usize flags) -> isize {
-    return os_intrinsics::syscall4(SYS_ACCEPT4, sockfd, addr.addr(), addrlen.addr(), flags)
-}
-
-LinuxNetworkX86_64.connect(usize sockfd, Ptr<SockAddr> addr, usize addrlen) -> isize {
-    return os_intrinsics::syscall3(SYS_CONNECT, sockfd, addr.addr(), addrlen)
-}
-
-LinuxNetworkX86_64.sendto(usize sockfd, Ptr<u8> buf, usize len, usize flags, Ptr<SockAddr> dest, usize addrlen) -> isize {
-    return os_intrinsics::syscall6(SYS_SENDTO, sockfd, buf.addr(), len, flags, dest.addr(), addrlen)
-}
-
-LinuxNetworkX86_64.recvfrom(usize sockfd, Ptr<u8> buf, usize len, usize flags, Ptr<SockAddr> src, Ptr<usize> srclen) -> isize {
-    return os_intrinsics::syscall6(SYS_RECVFROM, sockfd, buf.addr(), len, flags, src.addr(), srclen.addr())
-}
-
-LinuxNetworkX86_64.tun_open(Ptr<u8> devname, usize flags) -> isize {
-    return os_intrinsics::syscall4(SYS_OPENAT, -100, devname.addr(), flags, 0)
-}
-
-LinuxNetworkX86_64.tun_set_iff(usize fd, Ptr<TunIfReq> req) -> isize {
-    const usize TUNSETIFF = 0x400454ca
-    return os_intrinsics::syscall3(SYS_IOCTL, fd, TUNSETIFF, req.addr())
-}
-
-LinuxNetworkX86_64.tun_read(usize fd, Ptr<u8> buf, usize len) -> isize {
-    return os_intrinsics::syscall3(SYS_READ, fd, buf.addr(), len)
-}
-
-LinuxNetworkX86_64.tun_write(usize fd, Ptr<u8> buf, usize len) -> isize {
-    return os_intrinsics::syscall3(SYS_WRITE, fd, buf.addr(), len)
-}
-
-LinuxNetworkX86_64.select(usize nfds, Ptr<FdSet> readfds, Ptr<FdSet> writefds, Ptr<FdSet> exceptfds, Ptr<TimeVal> timeout) -> isize {
-    return os_intrinsics::syscall6(SYS_SELECT, nfds,
-        readfds.addr(), writefds.addr(), exceptfds.addr(), timeout.addr(), 0)
+impl Network for LinuxNetworkX86_64 {
+    // ---------- Qualified functions ----------
+    socket(usize domain, usize type, usize protocol) -> isize {
+        return os_intrinsics::syscall3(SYS_SOCKET, domain, type, protocol)
+    }
+    
+    socketpair(usize domain, usize type, usize protocol, Ptr<usize> sv) -> isize {
+        return os_intrinsics::syscall4(SYS_SOCKETPAIR, domain, type, protocol, sv.addr())
+    }
+    
+    bind(usize sockfd, Ptr<SockAddr> addr, usize addrlen) -> isize {
+        return os_intrinsics::syscall3(SYS_BIND, sockfd, addr.addr(), addrlen)
+    }
+    
+    listen(usize sockfd, usize backlog) -> isize {
+        return os_intrinsics::syscall2(SYS_LISTEN, sockfd, backlog)
+    }
+    
+    accept(usize sockfd, Ptr<SockAddr> addr, Ptr<usize> addrlen) -> isize {
+        return os_intrinsics::syscall3(SYS_ACCEPT, sockfd, addr.addr(), addrlen.addr())
+    }
+    
+    accept4(usize sockfd, Ptr<SockAddr> addr, Ptr<usize> addrlen, usize flags) -> isize {
+        return os_intrinsics::syscall4(SYS_ACCEPT4, sockfd, addr.addr(), addrlen.addr(), flags)
+    }
+    
+    connect(usize sockfd, Ptr<SockAddr> addr, usize addrlen) -> isize {
+        return os_intrinsics::syscall3(SYS_CONNECT, sockfd, addr.addr(), addrlen)
+    }
+    
+    sendto(usize sockfd, Ptr<u8> buf, usize len, usize flags, Ptr<SockAddr> dest, usize addrlen) -> isize {
+        return os_intrinsics::syscall6(SYS_SENDTO, sockfd, buf.addr(), len, flags, dest.addr(), addrlen)
+    }
+    
+    recvfrom(usize sockfd, Ptr<u8> buf, usize len, usize flags, Ptr<SockAddr> src, Ptr<usize> srclen) -> isize {
+        return os_intrinsics::syscall6(SYS_RECVFROM, sockfd, buf.addr(), len, flags, src.addr(), srclen.addr())
+    }
+    
+    tun_open(Ptr<u8> devname, usize flags) -> isize {
+        return os_intrinsics::syscall4(SYS_OPENAT, -100, devname.addr(), flags, 0)
+    }
+    
+    tun_set_iff(usize fd, Ptr<TunIfReq> req) -> isize {
+        const usize TUNSETIFF = 0x400454ca
+        return os_intrinsics::syscall3(SYS_IOCTL, fd, TUNSETIFF, req.addr())
+    }
+    
+    tun_read(usize fd, Ptr<u8> buf, usize len) -> isize {
+        return os_intrinsics::syscall3(SYS_READ, fd, buf.addr(), len)
+    }
+    
+    tun_write(usize fd, Ptr<u8> buf, usize len) -> isize {
+        return os_intrinsics::syscall3(SYS_WRITE, fd, buf.addr(), len)
+    }
+    
+    select(usize nfds, Ptr<FdSet> readfds, Ptr<FdSet> writefds, Ptr<FdSet> exceptfds, Ptr<TimeVal> timeout) -> isize {
+        return os_intrinsics::syscall6(SYS_SELECT, nfds,
+            readfds.addr(), writefds.addr(), exceptfds.addr(), timeout.addr(), 0)
+    }
 }

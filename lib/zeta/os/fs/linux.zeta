@@ -40,126 +40,128 @@ const usize SYS_IO_URING_REGISTER = 427
 
 type LinuxFilesystemX86_64
 
-inline LinuxFilesystemX86_64.open(Ptr<u8> path, usize flags, usize mode) -> isize {
-    os_intrinsics::syscall4(SYS_OPENAT, -100usize /* AT_FDCWD */, path.addr(), flags, mode)
-}
-
-inline LinuxFilesystemX86_64.read(usize fd, Ptr<u8> buf, usize count) -> isize {
-    os_intrinsics::syscall3(SYS_READ, fd, buf.addr(), count)
-}
-
-inline LinuxFilesystemX86_64.write(usize fd, Ptr<u8> buf, usize count) -> isize {
-    os_intrinsics::syscall3(SYS_WRITE, fd, buf.addr(), count)
-}
-
-inline LinuxFilesystemX86_64.close(usize fd) -> isize {
-    os_intrinsics::syscall1(SYS_CLOSE, fd)
-}
-
-// Metadata
-LinuxFilesystemX86_64.stat(Ptr<u8> path, Ptr<FileStat> buf) -> isize {
-    os_intrinsics::syscall2(SYS_STAT, path.addr(), buf.addr())
-}
-
-LinuxFilesystemX86_64.fstat(usize fd, Ptr<FileStat> buf) -> isize {
-    os_intrinsics::syscall2(SYS_FSTAT, fd, buf.addr())
-}
-
-LinuxFilesystemX86_64.lstat(Ptr<u8> path, Ptr<FileStat> buf) -> isize {
-    os_intrinsics::syscall2(SYS_LSTAT, path.addr(), buf.addr())
-}
-
-// Directory operations
-LinuxFilesystemX86_64.opendir(Ptr<u8> path) -> isize {
-    os_intrinsics::syscall4(SYS_OPENAT, -100usize, path.addr(), 0, 0)
-}
-
-LinuxFilesystemX86_64.readdir(usize fd, Ptr<DirEntry> entry) -> isize {
-    os_intrinsics::syscall3(SYS_GETDENTS64, fd, entry.addr(), sizeof(DirEntry))
-}
-
-LinuxFilesystemX86_64.closedir(usize fd) -> isize {
-    os_intrinsics::syscall1(SYS_CLOSE, fd)
-}
-
-// File operations
-LinuxFilesystemX86_64.unlink(Ptr<u8> path) -> isize {
-    os_intrinsics::syscall1(SYS_UNLINK, path.addr())
-}
-
-LinuxFilesystemX86_64.rename(Ptr<u8> oldPath, Ptr<u8> newPath) -> isize {
-    os_intrinsics::syscall2(SYS_RENAME, oldPath.addr(), newPath.addr())
-}
-
-LinuxFilesystemX86_64.mkdir(Ptr<u8> path, usize mode) -> isize {
-    os_intrinsics::syscall2(SYS_MKDIR, path.addr(), mode)
-}
-
-LinuxFilesystemX86_64.rmdir(Ptr<u8> path) -> isize {
-    os_intrinsics::syscall1(SYS_RMDIR, path.addr())
-}
-
-// Batch I/O
-LinuxFilesystemX86_64.readv(usize fd, Ptr<IoVec> iov, usize iovCount) -> isize {
-    os_intrinsics::syscall3(SYS_READV, fd, iov.addr(), iovCount)
-}
-
-LinuxFilesystemX86_64.writev(usize fd, Ptr<IoVec> iov, usize iovCount) -> isize {
-    os_intrinsics::syscall3(SYS_WRITEV, fd, iov.addr(), iovCount)
-}
-
-LinuxFilesystemX86_64.pread(usize fd, Ptr<u8> buf, usize count, isize offset) -> isize {
-    os_intrinsics::syscall4(SYS_PREAD64, fd, buf.addr(), count, offset)
-}
-
-LinuxFilesystemX86_64.pwrite(usize fd, Ptr<u8> buf, usize count, isize offset) -> isize {
-    os_intrinsics::syscall4(SYS_PWRITE64, fd, buf.addr(), count, offset)
-}
-
-// Advanced I/O
-LinuxFilesystemX86_64.fsync(usize fd) -> isize {
-    os_intrinsics::syscall1(SYS_FSYNC, fd)
-}
-
-LinuxFilesystemX86_64.fdatasync(usize fd) -> isize {
-    os_intrinsics::syscall1(SYS_FDATASYNC, fd)
-}
-
-LinuxFilesystemX86_64.truncate(Ptr<u8> path, isize length) -> isize {
-    os_intrinsics::syscall2(SYS_TRUNCATE, path.addr(), length)
-}
-
-LinuxFilesystemX86_64.ftruncate(usize fd, isize length) -> isize {
-    os_intrinsics::syscall2(SYS_FTRUNCATE, fd, length)
-}
-
-// Memory-mapped I/O
-LinuxFilesystemX86_64.mmap(Ptr<u8> addr, usize length, usize prot, usize flags, usize fd, isize offset) -> Ptr<u8> {
-    os_intrinsics::syscall6(SYS_MMAP, addr.addr(), length, prot, flags, fd, offset) as Ptr<u8>
-}
-
-LinuxFilesystemX86_64.munmap(Ptr<u8> addr, usize length) -> isize {
-    os_intrinsics::syscall2(SYS_MUNMAP, addr.addr(), length)
-}
-
-// Async I/O (simplified io_uring stubs)
-LinuxFilesystemX86_64.asyncRead(usize fd, Ptr<u8> buf, usize count, usize offset) -> isize {
-    LinuxFilesystemX86_64.submitAsync(Ptr.new(AsyncOp(IORING_OP_READ, fd, buf, count, offset, 0)), 1)
-}
-
-LinuxFilesystemX86_64.asyncWrite(usize fd, Ptr<u8> buf, usize count, usize offset) -> isize {
-    LinuxFilesystemX86_64.submitAsync(Ptr.new(AsyncOp(IORING_OP_WRITE, fd, buf, count, offset, 0)), 1)
-}
-
-LinuxFilesystemX86_64.asyncPoll(usize fd, usize events) -> isize {
-    LinuxFilesystemX86_64.submitAsync(Ptr.new(AsyncOp(IORING_OP_POLL_ADD, fd, null, events, 0, 0)), 1)
-}
-
-LinuxFilesystemX86_64.submitAsync(Ptr<AsyncOp> ops, usize count) -> isize {
-    os_intrinsics::syscall4(SYS_IO_URING_ENTER, uringFd, ops.addr(), count, 0)
-}
-
-LinuxFilesystemX86_64.waitAsync(Ptr<AsyncResult> results, usize count, usize timeout) -> isize {
-    os_intrinsics::syscall6(SYS_IO_URING_ENTER, uringFd, 0, count,
-        IORING_ENTER_GETEVENTS, results.addr(), timeout)
+impl FileSystem for LinuxFilesystemX86_64 {
+    inline open(Ptr<u8> path, usize flags, usize mode) -> isize {
+        os_intrinsics::syscall4(SYS_OPENAT, -100usize /* AT_FDCWD */, path.addr(), flags, mode)
+    }
+    
+    inline read(usize fd, Ptr<u8> buf, usize count) -> isize {
+        os_intrinsics::syscall3(SYS_READ, fd, buf.addr(), count)
+    }
+    
+    inline write(usize fd, Ptr<u8> buf, usize count) -> isize {
+        os_intrinsics::syscall3(SYS_WRITE, fd, buf.addr(), count)
+    }
+    
+    inline close(usize fd) -> isize {
+        os_intrinsics::syscall1(SYS_CLOSE, fd)
+    }
+    
+    // Metadata
+    stat(Ptr<u8> path, Ptr<FileStat> buf) -> isize {
+        os_intrinsics::syscall2(SYS_STAT, path.addr(), buf.addr())
+    }
+    
+    fstat(usize fd, Ptr<FileStat> buf) -> isize {
+        os_intrinsics::syscall2(SYS_FSTAT, fd, buf.addr())
+    }
+    
+    lstat(Ptr<u8> path, Ptr<FileStat> buf) -> isize {
+        os_intrinsics::syscall2(SYS_LSTAT, path.addr(), buf.addr())
+    }
+    
+    // Directory operations
+    opendir(Ptr<u8> path) -> isize {
+        os_intrinsics::syscall4(SYS_OPENAT, -100usize, path.addr(), 0, 0)
+    }
+    
+    readdir(usize fd, Ptr<DirEntry> entry) -> isize {
+        os_intrinsics::syscall3(SYS_GETDENTS64, fd, entry.addr(), sizeof(DirEntry))
+    }
+    
+    closedir(usize fd) -> isize {
+        os_intrinsics::syscall1(SYS_CLOSE, fd)
+    }
+    
+    // File operations
+    unlink(Ptr<u8> path) -> isize {
+        os_intrinsics::syscall1(SYS_UNLINK, path.addr())
+    }
+    
+    rename(Ptr<u8> oldPath, Ptr<u8> newPath) -> isize {
+        os_intrinsics::syscall2(SYS_RENAME, oldPath.addr(), newPath.addr())
+    }
+    
+    mkdir(Ptr<u8> path, usize mode) -> isize {
+        os_intrinsics::syscall2(SYS_MKDIR, path.addr(), mode)
+    }
+    
+    rmdir(Ptr<u8> path) -> isize {
+        os_intrinsics::syscall1(SYS_RMDIR, path.addr())
+    }
+    
+    // Batch I/O
+    readv(usize fd, Ptr<IoVec> iov, usize iovCount) -> isize {
+        os_intrinsics::syscall3(SYS_READV, fd, iov.addr(), iovCount)
+    }
+    
+    writev(usize fd, Ptr<IoVec> iov, usize iovCount) -> isize {
+        os_intrinsics::syscall3(SYS_WRITEV, fd, iov.addr(), iovCount)
+    }
+    
+    pread(usize fd, Ptr<u8> buf, usize count, isize offset) -> isize {
+        os_intrinsics::syscall4(SYS_PREAD64, fd, buf.addr(), count, offset)
+    }
+    
+    pwrite(usize fd, Ptr<u8> buf, usize count, isize offset) -> isize {
+        os_intrinsics::syscall4(SYS_PWRITE64, fd, buf.addr(), count, offset)
+    }
+    
+    // Advanced I/O
+    fsync(usize fd) -> isize {
+        os_intrinsics::syscall1(SYS_FSYNC, fd)
+    }
+    
+    fdatasync(usize fd) -> isize {
+        os_intrinsics::syscall1(SYS_FDATASYNC, fd)
+    }
+    
+    truncate(Ptr<u8> path, isize length) -> isize {
+        os_intrinsics::syscall2(SYS_TRUNCATE, path.addr(), length)
+    }
+    
+    ftruncate(usize fd, isize length) -> isize {
+        os_intrinsics::syscall2(SYS_FTRUNCATE, fd, length)
+    }
+    
+    // Memory-mapped I/O
+    mmap(Ptr<u8> addr, usize length, usize prot, usize flags, usize fd, isize offset) -> Ptr<u8> {
+        os_intrinsics::syscall6(SYS_MMAP, addr.addr(), length, prot, flags, fd, offset) as Ptr<u8>
+    }
+    
+    munmap(Ptr<u8> addr, usize length) -> isize {
+        os_intrinsics::syscall2(SYS_MUNMAP, addr.addr(), length)
+    }
+    
+    // Async I/O (simplified io_uring stubs)
+    asyncRead(usize fd, Ptr<u8> buf, usize count, usize offset) -> isize {
+        submitAsync(Ptr.new(AsyncOp(IORING_OP_READ, fd, buf, count, offset, 0)), 1)
+    }
+    
+    asyncWrite(usize fd, Ptr<u8> buf, usize count, usize offset) -> isize {
+        submitAsync(Ptr.new(AsyncOp(IORING_OP_WRITE, fd, buf, count, offset, 0)), 1)
+    }
+    
+    asyncPoll(usize fd, usize events) -> isize {
+        submitAsync(Ptr.new(AsyncOp(IORING_OP_POLL_ADD, fd, null, events, 0, 0)), 1)
+    }
+    
+    submitAsync(Ptr<AsyncOp> ops, usize count) -> isize {
+        os_intrinsics::syscall4(SYS_IO_URING_ENTER, uringFd, ops.addr(), count, 0)
+    }
+    
+    waitAsync(Ptr<AsyncResult> results, usize count, usize timeout) -> isize {
+        os_intrinsics::syscall6(SYS_IO_URING_ENTER, uringFd, 0, count,
+            IORING_ENTER_GETEVENTS, results.addr(), timeout)
+    }
 }

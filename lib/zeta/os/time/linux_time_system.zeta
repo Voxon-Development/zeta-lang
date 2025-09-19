@@ -6,20 +6,22 @@ const SYS_CLOCK_NANOSLEEP = 230;
 const CLOCK_REALTIME  = 0;
 const CLOCK_MONOTONIC = 1;
 
-type LinuxTimeSystem;
+type LinuxTimeSystemX86_64;
 
-inline LinuxTimeSystem.clockGetTime(usize clockId, Ptr<TimeSpec> ts) -> isize {
-    syscall2(SYS_CLOCK_GETTIME, clockId, ts.addr())
-}
-
-LinuxTimeSystem.nanosleep(Ptr<TimeSpec> req, Ptr<TimeSpec> rem) -> isize {
-    syscall2(SYS_CLOCK_NANOSLEEP, req.addr(), rem.addr())
-}
-
-inline LinuxTimeSystem.clockGetMonotonic(Ptr<TimeSpec> ts) -> isize {
-    clockGetTime(CLOCK_MONOTONIC, ts)
-}
-
-inline LinuxTimeSystem.clockGetRealtime(Ptr<TimeSpec> ts) -> isize {
-    clockGetTime(CLOCK_REALTIME, ts)
+impl TimeSystem for LinuxTimeSystem {
+    inline clockGetTime(usize clockId, Ptr<TimeSpec> ts) -> isize {
+        syscall2(SYS_CLOCK_GETTIME, clockId, ts.addr())
+    }
+    
+    nanosleep(Ptr<TimeSpec> req, Ptr<TimeSpec> rem) -> isize {
+        syscall2(SYS_CLOCK_NANOSLEEP, req.addr(), rem.addr())
+    }
+    
+    inline clockGetMonotonic(Ptr<TimeSpec> ts) -> isize {
+        clockGetTime(CLOCK_MONOTONIC, ts)
+    }
+    
+    inline clockGetRealtime(Ptr<TimeSpec> ts) -> isize {
+        clockGetTime(CLOCK_REALTIME, ts)
+    }
 }
