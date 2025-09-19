@@ -1,5 +1,7 @@
-use std::alloc::{handle_alloc_error, Layout};
+use std::alloc::{handle_alloc_error, AllocError, Allocator, Layout};
+use std::cell::RefCell;
 use std::ptr::NonNull;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub(crate) const DEFAULT_CHUNK_SIZE: usize = 4096;
@@ -17,6 +19,12 @@ pub struct Bump {
     pub(crate) capacity: usize,
     pub(crate) offset: usize,
     pub(crate) align: usize,
+}
+
+impl Default for Bump {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Bump {
@@ -88,6 +96,114 @@ impl Drop for Bump {
     fn drop(&mut self) {
         let layout = unsafe { Layout::from_size_align_unchecked(self.capacity, self.align) };
         unsafe { std::alloc::dealloc(self.ptr.as_ptr(), layout) }
+    }
+}
+
+struct Chunk {
+    ptr: NonNull<u8>,
+    capacity: usize,
+    offset: usize,
+    align: usize,
+}
+
+impl Chunk {
+    fn new(capacity: usize, align: usize) -> Self {
+        let layout = unsafe { Layout::from_size_align_unchecked(capacity, align) };
+        let ptr = unsafe { std::alloc::alloc(layout) };
+        if ptr.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        Self {
+            ptr: unsafe { NonNull::new_unchecked(ptr) },
+            capacity,
+            offset: 0,
+            align,
+        }
+    }
+
+    fn try_alloc(&mut self, layout: Layout) -> Option<NonNull<u8>> {
+        let ptr = self.ptr.as_ptr() as usize;
+        let base = ptr + self.offset;
+        let aligned = align_up(base, layout.align());
+        let end = aligned + layout.size();
+        let new_offset = end - ptr;
+
+        if new_offset > self.capacity {
+            return None;
+        }
+
+        self.offset = new_offset;
+        Some(unsafe { NonNull::new_unchecked(aligned as *mut u8) })
+    }
+}
+
+impl Drop for Chunk {
+    fn drop(&mut self) {
+        let layout = unsafe { Layout::from_size_align_unchecked(self.capacity, self.align) };
+        unsafe { std::alloc::dealloc(self.ptr.as_ptr(), layout) }
+    }
+}
+
+pub struct GrowableBump {
+    chunks: Rc<RefCell<Vec<Chunk>>>,
+    align: usize,
+}
+
+impl GrowableBump {
+    pub fn new(initial_capacity: usize, align: usize) -> Self {
+        Self {
+            chunks: Rc::new(RefCell::new(vec![Chunk::new(initial_capacity, align)])),
+            align,
+        }
+    }
+
+    /// Allocate and initialize a value of type `T` inside the bump.
+    pub fn alloc_value<T>(&mut self, val: T) -> &mut T {
+        let layout = Layout::new::<T>();
+        let ptr = self.allocate(layout).unwrap().as_non_null_ptr().cast::<T>();
+        unsafe {
+            ptr.as_ptr().write(val);
+            &mut *ptr.as_ptr()
+        }
+    }
+
+    /// Reset all but the first chunk.
+    pub fn reset(&mut self) {
+        let mut chunks = self.chunks.borrow_mut();
+        if let Some(first) = chunks.first_mut() {
+            first.offset = 0;
+        }
+        chunks.truncate(1);
+    }
+}
+
+unsafe impl Allocator for GrowableBump {
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        let mut chunks = self.chunks.borrow_mut();
+
+        if let Some(last) = chunks.last_mut() {
+            if let Some(ptr) = last.try_alloc(layout) {
+                return Ok(NonNull::slice_from_raw_parts(ptr, layout.size()));
+            }
+        }
+
+        // Grow: double the last capacity or at least layout.size()
+        let new_cap = chunks
+            .last()
+            .map(|c| c.capacity.max(layout.size()) * 2)
+            .unwrap_or(layout.size().max(1024));
+
+        chunks.push(Chunk::new(new_cap, self.align));
+        let last = chunks.last_mut().unwrap();
+        let ptr = last
+            .try_alloc(layout)
+            .ok_or(AllocError)?; // must succeed after growing
+
+        Ok(NonNull::slice_from_raw_parts(ptr, layout.size()))
+    }
+
+    unsafe fn deallocate(&self, _ptr: NonNull<u8>, _layout: Layout) {
+        // bump allocator does not support freeing individual allocations
     }
 }
 
