@@ -1,7 +1,6 @@
 use std::fmt::{Debug, Display, Formatter};
 use thiserror::Error;
-use crate::ast::Expr;
-use crate::hir::HirType;
+use crate::ast::{Expr, Type};
 
 // Represents a type-checking error with detailed diagnostic information.
 #[derive(Debug, Error)]
@@ -10,8 +9,8 @@ pub enum TypeError {
     // Example: trying to assign a string to an integer variable.
     #[error("Type mismatch: expected {expected} but found {found} at {location}")]
     Mismatch {
-        expected: HirType,    // The type we expected (e.g. int)
-        found: HirType,       // The type we actually got (e.g. string)
+        expected: Type,    // The type we expected (e.g. int)
+        found: Type,       // The type we actually got (e.g. string)
         location: SourceSpan,
     },
 
@@ -43,8 +42,8 @@ pub enum TypeError {
     #[error("Invalid function call: {function} expected {expected_params:?} but got {found_params:?} at {location}")]
     InvalidFunctionCall {
         function: String,
-        expected_params: Vec<HirType>,
-        found_params: Vec<HirType>,
+        expected_params: Vec<Type>,
+        found_params: Vec<Type>,
         location: SourceSpan,
     },
 
@@ -52,7 +51,7 @@ pub enum TypeError {
     #[error("Type {target_type} does not implement trait {trait_name} at {location}")]
     MissingTraitImpl {
         trait_name: String,
-        target_type: HirType,
+        target_type: Type,
         location: SourceSpan,
     },
 
