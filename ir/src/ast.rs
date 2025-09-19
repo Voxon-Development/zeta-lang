@@ -1,4 +1,5 @@
 use std::fmt::{Display, Formatter};
+use crate::hir::StrId;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
@@ -23,18 +24,18 @@ pub enum Stmt {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImportStmt {
-    pub path: String,
+    pub path: StrId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PackageStmt {
-    pub path: String,
+    pub path: StrId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LetStmt {
     pub mutability: bool,
-    pub ident: String,
+    pub ident: StrId,
     pub type_annotation: Type,
     pub value: Box<Expr>,
 }
@@ -42,14 +43,14 @@ pub struct LetStmt {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImplDecl {
     pub generics: Option<Vec<Generic>>,
-    pub interface: String,
-    pub target: String,
+    pub interface: StrId,
+    pub target: StrId,
     pub methods: Option<Vec<FuncDecl>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct InterfaceDecl {
-    pub name: String,
+    pub name: StrId,
     pub visibility: Visibility,
     pub methods: Option<Vec<FuncDecl>>,
     pub generics: Option<Vec<Generic>>,
@@ -57,21 +58,22 @@ pub struct InterfaceDecl {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnumDecl {
-    pub name: String,
+    pub name: StrId,
     pub visibility: Visibility,
+    pub error_viable: bool,
     pub generics: Option<Vec<Generic>>,
     pub variants: Vec<EnumVariant>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnumVariant {
-    pub name: String,
+    pub name: StrId,
     pub fields: Vec<Field>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Field {
-    pub name: String,
+    pub name: StrId,
     pub field_type: Type,
     pub visibility: Visibility,
 }
@@ -108,16 +110,73 @@ pub struct ForStmt {
     pub block: Block,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Op {
-    Add, Sub, Mul, Div, Mod,
-    Shl, Shr, BitOr, BitXor, BitAnd,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Shl,
+    Shr,
+    BitOr,
+    BitXor,
+    BitAnd,
     Assign,
-    AddAssign, SubAssign, MulAssign, DivAssign,
-    ShlAssign, ShrAssign, BitOrAssign, BitXorAssign, BitAndAssign,
-    Eq, Neq, Lt, Lte, Gt, Gte,
-    // etc.
+    AddAssign,
+    SubAssign,
+    MulAssign,
+    DivAssign,
     ModAssign,
+    ShlAssign,
+    ShrAssign,
+    BitOrAssign,
+    BitXorAssign,
+    BitAndAssign,
+    Eq,
+    Neq,
+    Lt,
+    Lte,
+    Gt,
+    Gte,
+}
+
+impl Into<Op> for &str {
+    fn into(self) -> Op {
+        match self {
+            "+" => Op::Add,
+            "-" => Op::Sub,
+            "*" => Op::Mul,
+            "/" => Op::Div,
+            "%" => Op::Mod,
+            "<<" => Op::Shl,
+            ">>" => Op::Shr,
+            "|" => Op::BitOr,
+            "^" => Op::BitXor,
+            "&" => Op::BitAnd,
+
+            "=" => Op::Assign,
+            "+=" => Op::AddAssign,
+            "-=" => Op::SubAssign,
+            "*=" => Op::MulAssign,
+            "/=" => Op::DivAssign,
+            "%=" => Op::ModAssign,
+            "<<=" => Op::ShlAssign,
+            ">>=" => Op::ShrAssign,
+            "|=" => Op::BitOrAssign,
+            "^=" => Op::BitXorAssign,
+            "&=" => Op::BitAndAssign,
+
+            "==" => Op::Eq,
+            "!=" => Op::Neq,
+            "<" => Op::Lt,
+            "<=" => Op::Lte,
+            ">" => Op::Gt,
+            ">=" => Op::Gte,
+
+            other => panic!("Unknown operator string: {}", other),
+        }
+    }
 }
 
 impl Op {
@@ -149,14 +208,15 @@ pub struct MatchStmt {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatchArm {
     pub pattern: Pattern,
+    pub guard: Option<Expr>,
     pub block: Block,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pattern {
-    Ident(String),
+    Ident(StrId),
     Number(i64),
-    String(String),
+    String(StrId),
     Tuple(Vec<Pattern>),
     Wildcard,
 }
@@ -169,10 +229,10 @@ pub struct UnsafeBlock {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FuncDecl {
     pub visibility: Visibility,
-    pub is_static: bool,
     pub is_unsafe: bool,
     pub is_extern: bool,
-    pub name: String,
+    pub extern_string: Option<StrId>,
+    pub name: StrId,
     pub generics: Option<Vec<Generic>>,
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
@@ -182,33 +242,44 @@ pub struct FuncDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClassDecl {
     pub visibility: Visibility,
-    pub name: String,
+    pub name: StrId,
+    pub error_viable: bool,
     pub generics: Option<Vec<Generic>>,
     pub params: Option<Vec<Param>>,
-    pub body: Option<Block>
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct RegionParam {
-    pub name: String
+    pub body: Block
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Visibility {
     Public,
     Private,
-    Internal
+    Module,
+    Package
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Param {
+pub enum Param {
+    Normal(NormalParam),
+    This(ThisParam),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NormalParam {
     pub is_mut: bool,
     pub is_move: bool,
-    pub name: String,
+    pub name: StrId,
     pub type_annotation: Type,
     pub visibility: Visibility,
-    pub default_value: Option<Expr>
+    pub default_value: Option<Expr>,
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThisParam {
+    pub is_mut: bool,
+    pub is_move: bool,
+    pub type_annotation: Option<Type>, // e.g. Ptr<this>, this?, etc
+}
+
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Block {
@@ -227,8 +298,8 @@ impl IntoIterator for Block {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Generic {
     pub const_generic: bool,
-    pub type_name: String,
-    pub constraints: Vec<String>,
+    pub type_name: StrId,
+    pub constraints: Vec<StrId>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -240,12 +311,12 @@ pub struct InternalExprStmt {
 pub enum Expr {
     Number(i64),
     Decimal(f64),
-    String(String),
-    Ident(String),
+    String(StrId),
+    Ident(StrId),
     Boolean(bool),
     Comparison {
         lhs: Box<Expr>,
-        op: ComparisonOp,
+        op: Op,
         rhs: Box<Expr>,
     },
     ClassInit {
@@ -254,7 +325,7 @@ pub enum Expr {
     },
     FieldAccess {
         object: Box<Expr>,
-        field: String
+        field: StrId
     },
     Binary {
         left: Box<Expr>,
@@ -267,15 +338,15 @@ pub enum Expr {
     },
     Get {
         object: Box<Expr>,
-        field: String
+        field: StrId
     },
     Assignment {
         lhs: Box<Expr>, 
-        op: String, 
+        op: Op,
         rhs: Box<Expr>
     },
     ExprList {
-        exprs: Vec<Expr>,
+        expressions: Vec<Expr>,
     },
     Char(char),
 }
@@ -303,14 +374,28 @@ pub enum Type {
         params: Vec<Type>,
         return_type: Box<Type>,
     },
-    Class(String),
+    Class { name: StrId, generics: Vec<Type> },
+    Nullable(Option<Box<Type>>),
+    PossibleError(PossibleErrorType),
+    This,
     Char,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PossibleErrorType {
+    Some(Box<Type>),
+    Error(Box<Type>)
 }
 
 impl Type {
     pub fn is_numeric(&self) -> bool {
         match self {
-            Type::Class(_) | Type::Lambda { params: _, return_type: _ } => false,
+            Type::Class { name: _, generics: _ }
+                | Type::Lambda { params: _, return_type: _ }
+                | Type::Nullable(_)
+                | Type::PossibleError(_)
+                | Type::This
+                | Type::String => false,
             _ => true
         }
     }
@@ -327,7 +412,7 @@ impl Display for Type {
             Type::F32 => f.write_str("f32"),
             Type::F64 => f.write_str("f64"),
             Type::I64 => f.write_str("i64"),
-            Type::String => f.write_str("string"),
+            Type::String => f.write_str("StrId"),
             Type::Boolean => f.write_str("bool"),
             Type::UF32 => f.write_str("uf32"),
             Type::U32 => f.write_str("u32"),
@@ -337,8 +422,34 @@ impl Display for Type {
             Type::UF64 => f.write_str("uf64"),
             Type::Void => f.write_str("void"),
             Type::Lambda { params, return_type } => f.write_str(format!("({:?}) -> {}", params, return_type).as_str()),
-            Type::Class(name) => write!(f, "{}", name),
+            Type::Class(name, generics) => {
+                write!(f, "{}", name)?;
+                if !generics.is_empty() {
+                    write!(f, "<")?;
+                    for (i, generic) in generics.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", generic)?;
+                    }
+                    write!(f, ">")?;
+                }
+                Ok(())
+            }
             Type::Char => f.write_str("char"),
+            Type::Nullable(ty) => {
+                if let Some(ty) = ty {
+                    std::fmt::Display::fmt(&ty, f)
+                } else {
+                    f.write_str("null")
+                }
+            },
+            Type::PossibleError(err_type) => {
+                match err_type {
+                    PossibleErrorType::Some(ty) => std::fmt::Display::fmt(&ty, f),
+                    PossibleErrorType::Error(err) => std::fmt::Display::fmt(&err, f)
+                }
+            }
         }
     }
 }
