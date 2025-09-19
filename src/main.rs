@@ -11,18 +11,25 @@ use snmalloc_rs::SnMalloc;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::{fs, io};
+use std::cell::RefCell;
+use std::rc::Rc;
 use thiserror::Error;
+use ir::context::Context;
+use ir::errors::reporter::ErrorReporter;
 use sentinel_typechecker::rules::MathTypeRule;
 use zetaruntime::string_pool::StringPool;
 
 #[global_allocator]
 static ALLOCATOR: SnMalloc = SnMalloc;
 
-#[tokio::main]
-async fn main() -> Result<(), CompilerError> {
+fn main() -> Result<(), CompilerError> {
     // Compile MIR to machine code using cranelift
-    let string_pool = StringPool::new().map_err(|_| CompilerError::FailedToAllocateStringPool)?;
-    let backend = Arc::new(Mutex::new(CraneliftBackend::new(string_pool)));
+    let mut string_pool = StringPool::new().map_err(|_| CompilerError::FailedToAllocateStringPool)?;
+    let error_reporter = ErrorReporter::new();
+
+    let context = Rc::new(RefCell::new(Context { string_pool: &mut string_pool, error_reporter }));
+
+    let backend = Rc::new(RefCell::new(CraneliftBackend::new(context.clone())));
 
     // Limit the number of files processed to prevent resource exhaustion
     const MAX_FILES: usize = 100;
@@ -49,20 +56,20 @@ async fn main() -> Result<(), CompilerError> {
 
     // Parallel stage: produce HIR modules with proper error handling and type checking
     let hir_modules: Result<Vec<HirModule>, CompilerError> = files
-        .par_iter()
+        .iter()
         .map(|path| -> Result<HirModule, CompilerError> {
             let contents = fs::read_to_string(path)
                 .map_err(|e| CompilerError::FailedToReadFile(path.clone(), e))?;
 
-            let stmts = scribe_parser::parser::parse_program(&contents)
-                .map_err(|e| CompilerError::ParserError(path.clone(), e))?;
+            let stmts = scribe_parser::parser::parse_program(&contents, context.clone())
+                    .map_err(|e| CompilerError::ParserError(path.clone(), e))?;
 
-            let mut type_checker = TypeChecker::new();
+            let mut type_checker = TypeChecker::new(context.clone());
             type_checker.add_rule(MathTypeRule);
             type_checker.check_program(stmts.as_slice())
                 .map_err(|e| CompilerError::TypeCheckerErrors(e))?;
 
-            let mut lowerer = HirLowerer::new();
+            let mut lowerer = HirLowerer::new(context.clone());
             let module = lowerer.lower_module(stmts);
             Ok(module)
 
@@ -72,14 +79,14 @@ async fn main() -> Result<(), CompilerError> {
 
     // Serial stage: emit machine code
     hir_modules?
-        .par_iter()
+        .iter()
         .for_each(|hir_module| {
             let backend = backend.clone();
 
             let mir_module_lowerer = MirModuleLowerer::new();
             let mir_module = mir_module_lowerer.lower_module(hir_module);
 
-            backend.lock().unwrap().emit_module(&mir_module);
+            backend.borrow_mut().emit_module(&mir_module);
         });
 
   Ok(())
