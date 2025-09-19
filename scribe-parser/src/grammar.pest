@@ -31,7 +31,7 @@ simple_stmt = _{ (import_stmt | let_stmt | const_stmt | return_stmt | expr_stmt 
 defer_stmt = { "defer" ~ (block | stmt) }
 
 const_keyword = { "const" }
-generic_param = { const_keyword? ~ ident ~ (":" ~ ident ~ ("," ~ ident)*)? }
+generic_param = { const_keyword? ~ ident ~ (":" ~ var_type ~ ("," ~ var_type)*)? }
 generic_params = { "<" ~ generic_param ~ ("," ~ generic_param)* ~ ">" }
 
 impl_decl = {
@@ -54,13 +54,13 @@ let_stmt = { mut_keyword? ~ var_type ~ atom ~ "=" ~ expr }
 shorthand_let_stmt = { mut_keyword? ~ atom ~ ":=" ~ expr }
 const_stmt = { "const" ~ var_type ~ ident ~ "=" ~ expr }
 return_stmt = { "return" ~ expr? }
-if_stmt = { "if" ~ "(" ~ expr ~ ")" ~ block ~ (("else" ~ (block | if_stmt))?) }
-while_stmt = { "while" ~ "(" ~ expr ~ ")" ~ block }
-for_stmt = { "for" ~ "(" ~ atom ~ ":=" ~ expr ~ ")" ~ block }
+if_stmt = { "if" ~ expr ~ block ~ (("else" ~ (block | if_stmt))?) }
+while_stmt = { "while" ~ expr ~ block }
+for_stmt = { "for" ~ atom ~ ":=" ~ expr ~ block }
 
 stmt_ending    = _{ "\n" | WHITESPACE* }
 
-match_stmt     = { "match" ~ "(" ~ expr ~ ")" ~ "{" ~ match_arm* ~ "}" }
+match_stmt     = { "match" ~ expr ~ "{" ~ match_arm* ~ "}" }
 unsafe_block   = { "unsafe" ~ block }
 expr_stmt      = { expr }
 
@@ -70,20 +70,19 @@ extern_block = { extern_modifier ~ string ~ "{" ~ fun_decl* ~ "}" }
 
 function_type_annotation = { "->" ~ var_type }
 
-struct_decl = { visibility_modifier? ~ "type" ~ ident ~ generic_params? ~ param_list? }
+struct_decl = { visibility_modifier? ~ "type" ~ ident ~ generic_params? ~ param_list? ~ block }
 
 fun_decl = {
-    visibility_modifier? ~ unsafe_modifier? ~ (extern_modifier ~ string)? ~
-    mut_keyword? ~ static_modifier? ~ (inline_keyword | noinline_keyword)? ~
-    (type_expr ~ ".")? ~ ident ~ generic_params? ~ param_list ~ function_type_annotation? ~ (block | arrow_expr | SEMI?)
+    visibility_modifier? ~ unsafe_modifier? ~ (extern_modifier ~ string)? ~ (inline_keyword | noinline_keyword)? ~
+    ident ~ generic_params? ~ param_list ~ function_type_annotation? ~ (block | arrow_expr ~ SEMI?)
 }
 
 own_keyword = { "own" }
 
-param = { visibility_modifier? ~ mut_keyword? ~ own_keyword? ~ var_type ~ ident ~ ("=" ~ expr)? }
+param = { (visibility_modifier? ~ mut_keyword? ~ own_keyword? ~ var_type ~ ident? ~ ("=" ~ expr)?) }
 param_list = { "(" ~ (param ~ ("," ~ param)*)? ~ ")" }
 
-arrow_expr = { "=" ~ expr ~ SEMI? }
+arrow_expr = { "=" ~ expr }
 
 visibility_modifier = { "public" | "private" | "package" | "module" }
 unsafe_modifier     = { "unsafe" }
@@ -106,10 +105,11 @@ expr_list = { expr ~ ("," ~ expr)* }
 tuple_pattern = { "(" ~ (pattern ~ ("," ~ pattern)*)? ~ ")" }
 wildcard_pattern = { "_" }
 
-visibility = _{ public_keyword | private_keyword | protected_keyword }
+visibility = _{ public_keyword | private_keyword | module_keyword | package_keyword }
 public_keyword = { "public" }
 private_keyword = { "private" }
-protected_keyword = { "protected" }
+module_keyword = { "module" }
+package_keyword = { "package" }
 
 mut_keyword = { "mut" }
 keyword = _{ "true" | "false" | "if" | "else" | "while" | "return" | "let" | "for" | "enum" | "type" }
@@ -158,13 +158,15 @@ lambda_expr = { param_list ~ "->" ~ (expr | block) }
 param_type_list = { "(" ~ (param_type ~ ("," ~ param_type)*)? ~ ")" }
 param_type = { var_type }
 
-var_type = { (lambda_type | basic_type) ~ error_prefix? ~ nullable_suffix? }
+var_type = { (lambda_type | basic_type | this_type) ~ error_prefix? ~ nullable_suffix? }
+this_type = { "this" }
+type_list = { var_type ~ ("," ~ var_type)* }
 
 error_prefix = { "!" }
 nullable_suffix = { "?" }
 
 array_suffix = { "[" ~ atom ~ "]" }
-basic_type = { ident | "i32" | "u32" | "f64" | "uf64" | "i64" | "u64" | "i128" | "u128" | "u8" | "i8" | "i16" | "u16" | "boolean" | "str" }
+basic_type = { (ident ~ ("<" ~ type_list ~ ">")?) | "i32" | "u32" | "f64" | "uf64" | "i64" | "u64" | "i128" | "u128" | "u8" | "i8" | "i16" | "u16" | "boolean" }
 
 parenthesized_expr = { "(" ~ expr ~ ")" }
 operator_add_sub = { "+" | "-" }
