@@ -8,6 +8,7 @@ use ir::ssa_ir::{
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use zetaruntime::string_pool::StringPool;
+use crate::midend::ir::ir_conversion::lower_type_hir;
 
 pub struct FunctionLowerer {
     current_block_data: CurrentBlockData,

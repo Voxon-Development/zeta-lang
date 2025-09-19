@@ -1,12 +1,12 @@
 use crate::midend::ir::block_data::CurrentBlockData;
-use crate::midend::ir::lowerer::{lower_operator_bin, lower_type_hir};
-use crate::midend::ir::optimized_string_buffering;
+use crate::midend::ir::{ir_conversion, optimized_string_buffering};
 use ir::hir::{AssignmentOperator, HirClass, HirExpr, Operator, StrId};
 use ir::ir_hasher::FxHashBuilder;
 use ir::ssa_ir::{BinOp, Instruction, Operand, SsaType, Value};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use zetaruntime::string_pool::StringPool;
+use crate::midend::ir::ir_conversion::{assign_op_to_bin_op, lower_operator_bin, lower_type_hir};
 
 pub(super) struct MirExprLowerer<'a> {
     pub(super) current_block_data: &'a mut CurrentBlockData,
