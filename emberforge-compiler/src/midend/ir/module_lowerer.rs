@@ -1,8 +1,11 @@
-use std::collections::HashMap;
+use crate::midend::ir::ir_conversion::lower_type_hir;
+use ir::context::Context;
 use ir::hir::{Hir, HirClass, HirFunc, HirInterface, HirModule, HirParam, HirType, StrId};
 use ir::ir_hasher::FxHashBuilder;
 use ir::ssa_ir::{Function, Module, SsaType};
-use crate::midend::ir::ir_conversion::lower_type_hir;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 
 pub struct MirModuleLowerer {
     pub module: Module,
@@ -16,10 +19,12 @@ pub struct MirModuleLowerer {
     class_vtable_slots: HashMap<StrId, Vec<StrId>, FxHashBuilder>,
     class_method_slots: HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
     class_field_offsets: HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
+
+    context: Rc<RefCell<Context<'static>>>,
 }
 
 impl MirModuleLowerer {
-    pub fn new() -> Self {
+    pub fn new(context: Rc<RefCell<Context<'static>>>) -> Self {
         Self {
             module: Module::new(),
             interface_methods: HashMap::with_hasher(FxHashBuilder),
@@ -29,6 +34,7 @@ impl MirModuleLowerer {
             class_vtable_slots: HashMap::with_hasher(FxHashBuilder),
             class_method_slots: HashMap::with_hasher(FxHashBuilder),
             class_field_offsets: HashMap::with_hasher(FxHashBuilder),
+            context,
         }
     }
 
@@ -52,31 +58,53 @@ impl MirModuleLowerer {
                 _ => {}
             }
         }
-        
+
         self.module
     }
 
     fn lower_interface(&mut self, hir_iface: &HirInterface) {
         let iface_id = self.interface_id_map.len();
-        self.interface_id_map.insert(hir_iface.name.clone(), iface_id);
+        self.interface_id_map
+            .insert(hir_iface.name.clone(), iface_id);
         let mut methods = Vec::new();
         let mut slot_map = HashMap::with_hasher(FxHashBuilder);
         for (i, m) in hir_iface.methods.iter().enumerate() {
-            let param_types = m.params.iter().map(|p| lower_type_hir(&p.param_type)).collect::<Vec<_>>();
-            let ret = m.return_type.as_ref().map(|t| lower_type_hir(t)).unwrap_or(SsaType::Void);
+            let param_types = m
+                .params
+                .iter()
+                .map(|p| match p {
+                    HirParam::Normal {
+                        name: _,
+                        param_type,
+                    } => lower_type_hir(param_type),
+                    HirParam::This { param_type } => {
+                        lower_type_hir(param_type.as_ref().unwrap_or(&HirType::This))
+                    }
+                })
+                .collect::<Vec<_>>();
+            let ret = m
+                .return_type
+                .as_ref()
+                .map(|t| lower_type_hir(t))
+                .unwrap_or(SsaType::Void);
             methods.push((m.name.clone(), param_types, ret));
             slot_map.insert(m.name.clone(), i);
         }
 
-        self.interface_methods.insert(hir_iface.name.clone(), methods);
+        self.interface_methods
+            .insert(hir_iface.name.clone(), methods);
         self.interface_method_slots.insert(hir_iface.name, slot_map);
-        self.module.interfaces.insert(hir_iface.name, hir_iface.clone());
+        self.module
+            .interfaces
+            .insert(hir_iface.name, hir_iface.clone());
     }
 
     fn lower_class(&mut self, hir_class: &HirClass) {
         self.compute_field_offsets(hir_class);
         self.build_class_vtable(hir_class);
-        self.module.classes.insert(hir_class.name, hir_class.clone());
+        self.module
+            .classes
+            .insert(hir_class.name, hir_class.clone());
     }
 
     fn compute_field_offsets(&mut self, hir_class: &HirClass) {
@@ -91,24 +119,38 @@ impl MirModuleLowerer {
 
     fn build_class_vtable(&mut self, hir_class: &HirClass) {
         let mut vtable_slots: Vec<StrId> = Vec::new();
-        let mut class_slot_map: HashMap<StrId, usize, FxHashBuilder> = HashMap::with_hasher(FxHashBuilder);
+        let mut class_slot_map: HashMap<StrId, usize, FxHashBuilder> =
+            HashMap::with_hasher(FxHashBuilder);
         for iface_name in &hir_class.interfaces {
-            let iface_methods = self.interface_methods.get(iface_name).unwrap_or_else(|| panic!("Class {} implements unknown interface {}", hir_class.name, iface_name));
+            let iface_methods = self.interface_methods.get(iface_name).unwrap_or_else(|| {
+                panic!(
+                    "Class {} implements unknown interface {}",
+                    hir_class.name, iface_name
+                )
+            });
             for (midx, (mname, _params, _ret)) in iface_methods.iter().enumerate() {
-                let mangled = self.class_mangled_map.get(&hir_class.name)
+                let mangled = self
+                    .class_mangled_map
+                    .get(&hir_class.name)
                     .and_then(|map| map.get(mname))
-                    .unwrap_or_else(|| panic!("Class {} implements interface {} but does not provide method {}", 
-                                              hir_class.name, iface_name, mname))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "Class {} implements interface {} but does not provide method {}",
+                            hir_class.name, iface_name, mname
+                        )
+                    })
                     .clone();
-                
+
                 let slot_index = vtable_slots.len();
                 vtable_slots.push(mangled.clone());
                 class_slot_map.insert(mname.clone(), slot_index);
                 let _ = midx;
             }
         }
-        self.class_vtable_slots.insert(hir_class.name.clone(), vtable_slots);
-        self.class_method_slots.insert(hir_class.name.clone(), class_slot_map);
+        self.class_vtable_slots
+            .insert(hir_class.name.clone(), vtable_slots);
+        self.class_method_slots
+            .insert(hir_class.name.clone(), class_slot_map);
     }
 
     fn lower_function(&mut self, hir_fn: &HirFunc) {
@@ -119,6 +161,7 @@ impl MirModuleLowerer {
     fn lower_function_inner(&self, hir_fn: &HirFunc) -> Function {
         let mut fl = crate::midend::ir::lowerer::FunctionLowerer::new(
             hir_fn,
+            &self.module.funcs,
             &self.class_field_offsets,
             &self.class_method_slots,
             &self.class_mangled_map,
@@ -126,7 +169,9 @@ impl MirModuleLowerer {
             &self.interface_id_map,
             &self.interface_method_slots,
             &self.module.classes,
-        ).unwrap();
+            self.context.clone(),
+        )
+        .unwrap();
         fl.lower_body(hir_fn.body.as_ref());
         fl.finish()
     }
