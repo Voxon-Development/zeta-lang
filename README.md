@@ -7,14 +7,14 @@ New generation of JIT like you've never seen, High-performance, fearless concurr
 Example:
 
 ```
-main() {
-    println("Hello, World!!!")
-    println(49)
+void main() {
+    println("Hello, World!")
+    println(50)
 
-    let something: boolean = true
+    boolean something = true
     if (something) {
-        let num: i32 = 49 + (23 * 39)
-        println_int(num)
+        i32 num = 50 + (50 * 50)
+        println(num)
     }
 }
 ```
