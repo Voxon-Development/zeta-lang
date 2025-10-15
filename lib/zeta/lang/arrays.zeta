@@ -1,43 +1,43 @@
 package zeta.lang
 
-!enum ArrayError {
+enum ArrayError {
     IndexOutOfBounds
 }
 
-type Array<T, const N: usize>(Ptr<T> ptr);
-
-inline Array.new() -> Array<T, N> {
-    p := intrinsics::stack_alloc<T, N>()
-    Array(p)
-}
-
-inline Array.zeroed() -> Array<T, N> {
-    p := intrinsics::stack_alloc_zeroed<T, N>()
-    Array(p)
-}
-
-inline get<T>(Array<T> array, usize index) -> T? {
-    if (index >= length) {
-        return null
+struct Array<T, const N: usize>(Ptr<T> ptr) {
+    inline Array<T, N> new() {
+        p := intrinsics::stack_alloc<T, N>()
+        Array(p)
     }
-    uncheckedGet(index)
-}
-
-inline set<T>(Array<T> array, usize index, T value) -> void! {
-    if (index >= array.length) {
-        return ArrayError.IndexOutOfBounds
+    
+    inline Array<T, N> zeroed() {
+        p := intrinsics::stack_alloc_zeroed<T, N>()
+        Array(p)
     }
-    uncheckedSet(index, value)
-}
-
-unsafe inline uncheckedGet<T>(Array<T> array, usize index) -> T? {
-    offset := index * sizeOf<T>()
-    p := unsafe { self.ptr.add(offset) }
-    p?.deref()
-}
-
-unsafe inline uncheckedSet<T>(Array<T> array, usize index, T value) {
-    offset := index * sizeOf<T>()
-    p := unsafe { array.ptr.add(offset) }
-    p.store(value)
+    
+    inline Result<T, ArrayError> get(this, usize index) {
+        if (index >= length) {
+            return Err(ArrayError.IndexOutOfBounds)
+        }
+        Ok(uncheckedGet(index))
+    }
+    
+    inline Result<void, ArrayError> set(mut this, usize index, T value) {
+        if (index >= this.length) {
+            return Err(ArrayError.IndexOutOfBounds)
+        }
+        Ok(uncheckedSet(index, value))
+    }
+    
+    unsafe inline T uncheckedGet(this, usize index) {
+        offset := index * sizeOf<T>()
+        p := unsafe { this.ptr.add(offset) }
+        p.deref()
+    }
+    
+    unsafe inline void uncheckedSet(mut this, usize index, T value) {
+        offset := index * sizeOf<T>()
+        p := unsafe { this.ptr.add(offset) }
+        p.store(value)
+    }
 }

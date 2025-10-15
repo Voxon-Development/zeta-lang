@@ -1,32 +1,28 @@
 package zeta.lang
 
-type Range<T>(start: T, end: T) {
-    new(start: T, end: T) -> Range<T> {
-        Range { start, end }
+struct Range<T>(start: T, end: T) {
+    Range<T> new<T>(start: T, end: T) {
+        Range(start, end)
+    }
+
+    boolean contains(this, i64 value) {
+        this.start <= value && value < this.end
+    }
+
+    usize length(this) {
+        this.end - this.start
+    }
+
+    RangeIter iter(this) {
+        RangeIter(this.start, this.end)
     }
 }
 
-Range.new<T>(start: T, end: T) -> Range<T> {
-    Range(start, end)
-}
-
-contains(Range<i32> range, i64 value) -> boolean {
-    range.start <= value && value < range.end
-}
-
-length(Range<i32> range) -> i64 {
-    range.end - range.start
-}
-
-iter(Range<i32> range) -> RangeIter {
-    RangeIter(range.start, range.end)
-}
-
-type RangeIter(i64 current, i64 end);
-
-next(mut Ptr<RangeIter> iter) -> i64? {
-    if iter.current >= iter.end { return null }
-    let val = iter.current
-    iter.current += 1
-    val
+struct RangeIter(i64 current, i64 end) {
+    i64? next(mut Ptr<RangeIter> iter) {
+        if iter.current >= iter.end { return null }
+        let val = iter.current
+        iter.current += 1
+        val
+    }
 }

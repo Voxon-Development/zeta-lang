@@ -1,44 +1,35 @@
-type Vec3f(i32 x, i32 y, i32 z) {
-    multiply(Vec3f by) {
-        this.x *= by.x();
-        this.y *= by.y();
-        this.z *= by.z();
+struct Vec3f { i32 x, i32 y, i32 z } {
+    void multiply(mut this, Vec3f by) {
+        this.x *= by.x()
+        this.y *= by.y()
+        this.z *= by.z()
     }
 
-    x() -> i32 = this.x;
+    i32 x(this) = this.x
+    i32 y(this) = this.y
+    i32 z(this) = this.z
 
-    y() -> i32 = this.y;
-
-    z() -> i32 = this.z;
-
-    sum() -> i32 = this.x + this.y + this.z;
+    i32 sum(this) = this.x + this.y + this.z
 }
 
-type Vec9f(Vec3f x, Vec3f y, Vec3f z) {
-    multiply(Vec3f by) {
-        this.x.multiply(by);
-        this.y.multiply(by);
-        this.z.multiply(by);
+struct Vec9f { Vec3f x, Vec3f y, Vec3f z } {
+    void multiply(mut this, Vec3f by) {
+        this.x.multiply(by)
+        this.y.multiply(by)
+        this.z.multiply(by)
     }
 
-    x() -> Vec3f = this.x;
+    Vec3f x(this) = this.x
+    Vec3f y(this) = this.y
+    Vec3f z(this) = this.z
 
-    y() -> Vec3f = this.y;
-
-    z() -> Vec3f = this.z;
-
-    sum() -> i32 = this.x.sum() + this.y.sum() + this.z.sum();
+    i32 sum(this) = this.x.sum() + this.y.sum() + this.z.sum()
 }
 
-main() {
-    Vec3f firstVec3f = Vec3f { 1, 1, 1 };
-    Vec3f secondVec3f = Vec3f { 1, 1, 1 };
-    Vec3f thirdVec3f = Vec3f { 1, 1, 1 };
-    Vec9f vec9f = Vec9f {
-        firstVec3f,
-        secondVec3f,
-        thirdVec3f
-    };
-    i32 secondSum = vec9f.sum();
-    println_int(secondSum);
+void main() {
+    Vec3f firstVec3f = Vec3f(1, 1, 1)
+    Vec3f secondVec3f = Vec3f(1, 1, 1)
+    Vec3f thirdVec3f = Vec3f(1, 1, 1)
+    Vec9f vec9f = Vec9f(firstVec3f, secondVec3f, thirdVec3f)
+    i32 secondSum = vec9f.sum()
 }

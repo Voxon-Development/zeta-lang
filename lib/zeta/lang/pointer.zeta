@@ -1,15 +1,15 @@
 package zeta.lang
 
-type Ptr<T>(usize raw);
+struct Ptr<T>(usize raw) {
+    inline Ptr<T> new(T value) = Ptr(intrinsics::ptr_cast_to_raw(this))
 
-inline Ptr.new<T>(T value) -> Ptr<T> = Ptr(intrinsics::ptr_cast_to_raw(value))
+    inline Ptr<T> fromAddr(usize addr) = intrinsics::ptr_from_addr<T>(this)
 
-inline Ptr.fromAddr(usize addr) -> Ptr<T> = intrinsics::ptr_from_addr<T>(addr)
+    unsafe inline Ptr<T> add<T>(this, usize bytes) = intrinsics::ptr_add<T>(this, bytes)
 
-unsafe inline add<T>(Ptr<T> ptr, usize bytes) -> Ptr<T> = intrinsics::ptr_add<T>(ptr, bytes)
+    inline T deref(this) = intrinsics::ptr_deref<T>(this)
 
-inline deref<T>(Ptr<T> ptr) -> T = intrinsics::ptr_deref<T>(ptr)
+    inline void store(mut this, T value) = intrinsics::ptr_store<T>(this, value)
 
-inline mut stor<T>(Ptr<T> ptr, T value) = intrinsics::ptr_store<T>(ptr, value)
-
-inline addr<T>(Ptr<T> ptr) -> usize = intrinsics::ptr_addr<T>(ptr)
+    inline usize addr(this) = intrinsics::ptr_addr<T>(this)
+}
