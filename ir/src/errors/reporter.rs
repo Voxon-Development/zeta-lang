@@ -5,7 +5,6 @@ pub struct ErrorReporter {
     pub errors: Vec<TypeError, GrowableBump>,
 }
 
-// Centralized error reporting for type-checking.
 impl ErrorReporter {
     pub fn new() -> ErrorReporter {
         ErrorReporter {
@@ -13,7 +12,6 @@ impl ErrorReporter {
         }
     }
     
-    // Reports a type error with location info and diagnostic hints.
     pub fn add_error(&mut self, error: TypeError) {
         self.errors.push(error);
     }

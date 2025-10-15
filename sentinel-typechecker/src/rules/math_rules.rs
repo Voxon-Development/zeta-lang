@@ -7,7 +7,7 @@ pub struct MathTypeRule;
 impl TypeRule for MathTypeRule {
     fn check_expr(&self, ctx: &mut TypeChecker, expr: &Expr) -> Option<Type> {
         match expr {
-            Expr::Binary { left, op, right } => {
+            Expr::Binary { left, op, right, span } => {
                 let left_ty = ctx.check_expr(left).ok()?;
                 let right_ty = ctx.check_expr(right).ok()?;
 

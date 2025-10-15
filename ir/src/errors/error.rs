@@ -1,6 +1,7 @@
 use std::fmt::{Debug, Display, Formatter};
 use thiserror::Error;
 use crate::ast::{Expr, Type};
+use crate::span::SourceSpan;
 
 // Represents a type-checking error with detailed diagnostic information.
 #[derive(Debug, Error)]
@@ -91,20 +92,6 @@ pub enum TypeError {
         method_name: String,
         location: SourceSpan,
     },
-}
-
-// Represents a source location for better diagnostics.
-#[derive(Debug, Default)]
-pub struct SourceSpan {
-    pub file: String,
-    pub line: usize,
-    pub column: usize,
-}
-
-impl Display for SourceSpan {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}:{}", self.file, self.line, self.column)
-    }
 }
 
 pub type TypeResult<T> = Result<T, TypeError>;

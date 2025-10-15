@@ -1,5 +1,6 @@
 use ir::ssa_ir::{BinOp, Function, Instruction, Module, Operand, SsaType, Value};
 use std::collections::{HashMap, HashSet};
+use ir::ir_hasher::FxHashBuilder;
 
 // A trait for optimization passes over SSA IR
 pub trait SsaPass {
@@ -286,8 +287,8 @@ fn copy_propagation(module: &mut Module) -> bool {
     changed
 }
 
-fn build_const_map(func: &Function) -> HashMap<Value, Operand> {
-    let mut map = HashMap::new();
+fn build_const_map(func: &Function) -> HashMap<Value, Operand, FxHashBuilder> {
+    let mut map = HashMap::with_hasher(FxHashBuilder);
     for block in &func.blocks {
         for inst in &block.instructions {
             if let Instruction::Const { dest, value, .. } = inst { map.insert(*dest, value.clone()); }
@@ -296,7 +297,7 @@ fn build_const_map(func: &Function) -> HashMap<Value, Operand> {
     map
 }
 
-fn rewrite_operands_with_consts(inst: &mut Instruction, const_map: &HashMap<Value, Operand>) -> bool {
+fn rewrite_operands_with_consts(inst: &mut Instruction, const_map: &HashMap<Value, Operand, FxHashBuilder>) -> bool {
     let mut changed = false;
     let mut subst = |op: &mut Operand| {
         if let Operand::Value(v) = op {

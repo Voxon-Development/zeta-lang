@@ -1,6 +1,7 @@
 use std::ops::Deref;
 use ir::ast::{FuncDecl, Stmt, Type};
-use ir::errors::error::{SourceSpan, TypeError};
+use ir::errors::error::{TypeError};
+use ir::span::SourceSpan;
 use crate::rules::rule::TypeRule;
 use crate::type_checker::TypeChecker;
 
