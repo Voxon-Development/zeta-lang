@@ -1,46 +1,65 @@
 use crate::midend::ir::block_data::CurrentBlockData;
-use crate::midend::ir::{ir_conversion, optimized_string_buffering};
+use crate::midend::ir::ir_conversion::{assign_op_to_bin_op, lower_operator_bin, lower_type_hir};
+use crate::midend::ir::optimized_string_buffering;
+use ir::context::Context;
 use ir::hir::{AssignmentOperator, HirClass, HirExpr, Operator, StrId};
 use ir::ir_hasher::FxHashBuilder;
-use ir::ssa_ir::{BinOp, Instruction, Operand, SsaType, Value};
+use ir::ssa_ir::{Function, Instruction, Operand, SsaType, Value};
 use smallvec::SmallVec;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use zetaruntime::string_pool::StringPool;
-use crate::midend::ir::ir_conversion::{assign_op_to_bin_op, lower_operator_bin, lower_type_hir};
+use std::rc::Rc;
 
-pub(super) struct MirExprLowerer<'a> {
-    pub(super) current_block_data: &'a mut CurrentBlockData,
-    pub(super) var_map: &'a mut HashMap<StrId, Value, FxHashBuilder>,
+/// MIR Expr Lowerer, which converts HIR expressions to MIR expressions.
+/// MIR is similar to a higher level representation of assembly which can be optimized in Zeta specific ways.
+/// If we are here this means we passed all type safety, memory safety and semantic checks, and we can safely discard of stuff and all debug like span's
+pub struct MirExprLowerer<'a> {
+    pub current_block_data: &'a mut CurrentBlockData,
+    pub var_map: &'a mut HashMap<StrId, Value, FxHashBuilder>,
+    pub context: Rc<RefCell<Context<'static>>>,
 
-    pub string_pool: &'a mut StringPool,
-
-    // read-only metadata
-    pub(super) class_field_offsets: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
-    pub(super) class_method_slots: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
-    pub(super) class_mangled_map: &'a HashMap<StrId, HashMap<StrId, StrId, FxHashBuilder>, FxHashBuilder>,
-    pub(super) class_vtable_slots: &'a HashMap<StrId, Vec<StrId>, FxHashBuilder>,
-    pub(super) interface_id_map: &'a HashMap<StrId, usize, FxHashBuilder>,
-    pub(super) interface_method_slots: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
-    pub(super) classes: &'a HashMap<StrId, HirClass, FxHashBuilder>,
+    pub funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
+    pub class_field_offsets:
+        &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
+    pub class_method_slots:
+        &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
+    pub class_mangled_map:
+        &'a HashMap<StrId, HashMap<StrId, StrId, FxHashBuilder>, FxHashBuilder>,
+    pub class_vtable_slots: &'a HashMap<StrId, Vec<StrId>, FxHashBuilder>,
+    pub interface_id_map: &'a HashMap<StrId, usize, FxHashBuilder>,
+    pub interface_method_slots:
+        &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
+    pub classes: &'a HashMap<StrId, HirClass, FxHashBuilder>,
 }
 
 impl<'a> MirExprLowerer<'a> {
-    pub(super) fn new(
+    #[inline(always)]
+    pub fn new(
         current_block_data: &'a mut CurrentBlockData,
+        funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
         var_map: &'a mut HashMap<StrId, Value, FxHashBuilder>,
-        string_pool: &'a mut StringPool,
-        class_field_offsets: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
+        context: Rc<RefCell<Context<'static>>>,
+        class_field_offsets: &'a HashMap<
+            StrId,
+            HashMap<StrId, usize, FxHashBuilder>,
+            FxHashBuilder,
+        >,
         class_method_slots: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
         class_mangled_map: &'a HashMap<StrId, HashMap<StrId, StrId, FxHashBuilder>, FxHashBuilder>,
         class_vtable_slots: &'a HashMap<StrId, Vec<StrId>, FxHashBuilder>,
         interface_id_map: &'a HashMap<StrId, usize, FxHashBuilder>,
-        interface_method_slots: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
+        interface_method_slots: &'a HashMap<
+            StrId,
+            HashMap<StrId, usize, FxHashBuilder>,
+            FxHashBuilder,
+        >,
         classes: &'a HashMap<StrId, HirClass, FxHashBuilder>,
     ) -> Self {
         Self {
             current_block_data,
+            funcs,
             var_map,
-            string_pool,
+            context,
             class_field_offsets,
             class_method_slots,
             class_mangled_map,
@@ -51,47 +70,48 @@ impl<'a> MirExprLowerer<'a> {
         }
     }
 
-    pub(super) fn lower_expr(&mut self, expr: &HirExpr) -> Value {
+    pub fn lower_expr(&mut self, expr: &HirExpr) -> Value {
         match expr {
-            HirExpr::Number(n) =>
-                self.lower_expr_number(*n),
+            HirExpr::Number(n) => self.lower_expr_number(*n),
 
-            HirExpr::Binary { left, op, right } =>
-                self.lower_expr_binary(left, op, right),
+            HirExpr::Binary { left, op, right, span: _ } => self.lower_expr_binary(left, op, right),
 
             HirExpr::Ident(name) => self.var_map[name],
 
-            HirExpr::ClassInit { name, args } =>
-                self.lower_class_init(name, args),
+            HirExpr::ClassInit { name, args, span: _ } => self.lower_class_init(name, args),
 
-            HirExpr::FieldAccess { object, field }
-                    | HirExpr::Get { object, field } =>
-                self.lower_field_access(object, *field),
+            HirExpr::FieldAccess { object, field, span: _ } | HirExpr::Get { object, field, span: _ } => {
+                self.lower_field_access(object, *field)
+            }
 
-            HirExpr::Call { callee, args } =>
-                self.lower_call(callee, args),
+            HirExpr::Call { callee, args } => self.lower_call(callee, args),
 
-            HirExpr::InterfaceCall { callee, args, interface } =>
-                self.lower_interface_call(callee, args, *interface),
+            HirExpr::InterfaceCall {
+                callee,
+                args,
+                interface,
+            } => self.lower_interface_call(callee, args, *interface),
 
-            HirExpr::Assignment { target, op, value } =>
-                self.lower_expr_assignment(target, *op, value),
+            HirExpr::Assignment { target, op, value, span: _ } => {
+                self.lower_expr_assignment(target, *op, value)
+            }
 
             other => unimplemented!("Expr {:?} not yet lowered", other),
         }
     }
 
-    fn lower_expr_assignment(&mut self, target: &HirExpr, op: AssignmentOperator, value: &HirExpr) -> Value {
-        // Lower RHS first
+    fn lower_expr_assignment(
+        &mut self,
+        target: &HirExpr,
+        op: AssignmentOperator,
+        value: &HirExpr,
+    ) -> Value {
         let rhs = self.lower_expr(value);
 
         match target {
-            HirExpr::Ident(name) => {
-                self.handle_ident(op, rhs, *name)
-            }
+            HirExpr::Ident(name) => self.handle_ident(op, rhs, *name),
 
-            HirExpr::FieldAccess { object, field }
-                    | HirExpr::Get { object, field } => {
+            HirExpr::FieldAccess { object, field, span: _ } | HirExpr::Get { object, field, span: _ } => {
                 self.handle_field_access(op, rhs, object, *field)
             }
 
@@ -102,7 +122,6 @@ impl<'a> MirExprLowerer<'a> {
     fn handle_ident(&mut self, op: AssignmentOperator, rhs: Value, name: StrId) -> Value {
         let var_val = self.var_map[&name];
 
-        // Determine if this is a simple assign or a compound assign
         let result = match op {
             AssignmentOperator::Assign => rhs,
             AssignmentOperator::AddAssign
@@ -137,12 +156,11 @@ impl<'a> MirExprLowerer<'a> {
         op: AssignmentOperator,
         rhs: Value,
         object: &Box<HirExpr>,
-        field: StrId
+        field: StrId,
     ) -> Value {
         let obj_val = self.lower_expr(object);
         let field_offset = self.get_field_offset(&obj_val, field);
 
-        // Load current field value if compound assign
         let new_value = match op {
             AssignmentOperator::Assign => rhs,
             _ => {
@@ -180,7 +198,7 @@ impl<'a> MirExprLowerer<'a> {
         self.emit(Instruction::Const {
             dest: v,
             ty: SsaType::I64,
-            value: Operand::ConstInt(n)
+            value: Operand::ConstInt(n),
         });
 
         self.current_block_data.value_types.insert(v, SsaType::I64);
@@ -195,29 +213,35 @@ impl<'a> MirExprLowerer<'a> {
             dest: v,
             op: lower_operator_bin(op),
             left: Operand::Value(l),
-            right: Operand::Value(r)
+            right: Operand::Value(r),
         });
         self.current_block_data.value_types.insert(v, SsaType::I64);
         v
     }
 
     fn lower_class_init(&mut self, name: &Box<HirExpr>, args: &Vec<HirExpr>) -> Value {
+        println!("args: {:?}", args);
         let class_name = match &**name {
             HirExpr::Ident(n) => n.clone(),
-            other => panic!("ClassInit name must be identifier; got {:?}", other)
+            other => panic!("ClassInit name must be identifier; got {:?}", other),
         };
 
         let obj = self.new_value();
 
         let args: Vec<Value> = args.iter().map(|arg| self.lower_expr(arg)).collect();
+        println!("args: {:?}", args);
+        let types: Vec<SsaType> = args.iter().map(|arg| self.current_block_data.value_types[arg].clone()).collect();
+        println!("types: {:?}", types);
 
         self.emit(Instruction::Alloc {
             dest: obj,
-            ty: SsaType::User(class_name, Vec::new()),
+            ty: SsaType::User(class_name, types.clone()),
             count: 0,
         });
 
-        self.current_block_data.value_types.insert(obj, SsaType::User(class_name, Vec::new()));
+        self.current_block_data
+            .value_types
+            .insert(obj, SsaType::User(class_name, types.clone()));
         if !args.is_empty() {
             self.init_class_fields_from_args(obj, class_name, &args);
         }
@@ -226,32 +250,51 @@ impl<'a> MirExprLowerer<'a> {
     }
 
     fn init_class_fields_from_args(&mut self, obj: Value, class_name: StrId, args: &Vec<Value>) {
-        let offsets = self.class_field_offsets.get(&class_name)
-            .expect(&format!("Unknown class {} when initializing", self.string_pool.resolve_string(&*class_name)));
+        let offsets = self
+            .class_field_offsets
+            .get(&class_name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "Unknown class {} when initializing",
+                    self.context
+                        .borrow_mut()
+                        .string_pool
+                        .resolve_string(&*class_name)
+                )
+            });
 
         let mut fields_by_offset: Vec<(&StrId, &usize)> = offsets.iter().collect();
         fields_by_offset.sort_by_key(|(_, off)| *off);
 
         for (i, (field_name, _)) in fields_by_offset.iter().enumerate() {
-            if i >= args.len() { break; }
+            if i >= args.len() {
+                break;
+            }
 
             self.emit(Instruction::StoreField {
                 base: Operand::Value(obj),
                 offset: offsets.get(*field_name).copied().unwrap(),
-                value: Operand::Value(args[i])
+                value: Operand::Value(args[i]),
             });
         }
     }
 
     fn store_vtable_if_any(&mut self, obj: Value, class_name: StrId) {
-        let Some(vslots) = self.class_vtable_slots.get(&class_name) else { return; };
-        if vslots.is_empty() { return; }
+        let Some(vslots) = self.class_vtable_slots.get(&class_name) else {
+            return;
+        };
+        if vslots.is_empty() {
+            return;
+        }
 
-        let vtable_name = optimized_string_buffering::make_vtable_name(class_name, self.string_pool);
+        let vtable_name = optimized_string_buffering::make_vtable_name(
+            class_name,
+            self.context.borrow_mut().string_pool,
+        );
         self.emit(Instruction::StoreField {
             base: Operand::Value(obj),
             offset: 0usize,
-            value: Operand::GlobalRef(vtable_name)
+            value: Operand::GlobalRef(vtable_name),
         });
     }
 
@@ -259,32 +302,52 @@ impl<'a> MirExprLowerer<'a> {
         let obj_val = self.lower_expr(object);
 
         let cls_name = match self.current_block_data.value_types.get(&obj_val) {
-            Some(SsaType::User(name, args) ) => {
-                if let Some(inner_value_name) = self.string_pool.resolve_string(name).split("_").last() {
-                   StrId(self.string_pool.intern(inner_value_name))
+            Some(SsaType::User(name, _args)) => {
+                if let Some(inner_value_name) = self
+                    .context
+                    .borrow_mut()
+                    .string_pool
+                    .resolve_string(&name)
+                    .split("_")
+                    .last()
+                {
+                    StrId(
+                        self.context
+                            .borrow_mut()
+                            .string_pool
+                            .intern(inner_value_name),
+                    )
                 } else {
                     panic!("Could not determine object's class for FieldAccess.")
                 }
             }
-            other => panic!("Could not determine object's class for FieldAccess: {:?}", other),
+            other => panic!(
+                "Could not determine object's class for FieldAccess: {:?}",
+                other
+            ),
         };
 
-        let offsets = self.class_field_offsets.get(&cls_name)
-            .expect(&format!("Unknown class {} in FieldAccess", cls_name));
+        let offsets = self
+            .class_field_offsets
+            .get(&cls_name)
+            .unwrap_or_else(|| panic!("Unknown class {} in FieldAccess", cls_name));
 
-        let offset = *offsets.get(&field)
-            .expect(&format!("Unknown field {} on class {}", field, cls_name));
+        let offset = *offsets
+            .get(&field)
+            .unwrap_or_else(|| panic!("Unknown field {} on class {}", field, cls_name));
 
         let dest = self.new_value();
         self.emit(Instruction::LoadField {
             dest,
             base: Operand::Value(obj_val),
-            offset
+            offset,
         });
 
         if let Some(hir_class) = self.classes.get(&cls_name) {
             if let Some(hir_field) = hir_class.fields.iter().find(|f| f.name == field) {
-                self.current_block_data.value_types.insert(dest, lower_type_hir(&hir_field.field_type));
+                self.current_block_data
+                    .value_types
+                    .insert(dest, lower_type_hir(&hir_field.field_type));
             }
         }
         dest
@@ -293,8 +356,8 @@ impl<'a> MirExprLowerer<'a> {
     fn lower_call(&mut self, callee: &Box<HirExpr>, args: &Vec<HirExpr>) -> Value {
         match &**callee {
             HirExpr::Ident(fname) => {
-                // global function call
-                let arg_ops: SmallVec<[Operand; 8]> = args.iter()
+                let arg_ops: SmallVec<[Operand; 8]> = args
+                    .iter()
                     .map(|a| Operand::Value(self.lower_expr(a)))
                     .collect();
 
@@ -307,17 +370,51 @@ impl<'a> MirExprLowerer<'a> {
                 dest
             }
 
-            HirExpr::FieldAccess { object, field }
-                    | HirExpr::Get { object, field } => {
-                // method call via object
+            HirExpr::FieldAccess { object, field, span: _ } | HirExpr::Get { object, field, span: _ } => {
                 self.lower_method_call(object, *field, args)
             }
 
-            other => unimplemented!("Non-identifier callee not yet supported in Call: {:?}", other),
+            other => unimplemented!(
+                "Non-identifier callee not yet supported in Call: {:?}",
+                other
+            ),
         }
     }
 
     fn lower_method_call(&mut self, object: &HirExpr, field: StrId, args: &Vec<HirExpr>) -> Value {
+        // If the object is an identifier that is NOT a local variable, treat this as a
+        // namespaced/static function call like Namespace.func(...), not a method call.
+        if let HirExpr::Ident(scope_name) = object {
+            if !self.var_map.contains_key(scope_name) {
+                let mut operands: SmallVec<[Operand; 8]> = SmallVec::new();
+                for a in args {
+                    operands.push(Operand::Value(self.lower_expr(a)));
+                }
+
+                // Resolve the scope string and create a fully-qualified function name
+                let scope_str = self
+                    .context
+                    .borrow_mut()
+                    .string_pool
+                    .resolve_string(scope_name);
+
+                let direct_name: StrId = optimized_string_buffering::build_scoped_name(
+                    Some(scope_str),
+                    field,
+                    self.context.borrow_mut().string_pool,
+                );
+
+                let dest: Value = self.current_block_data.fresh_value();
+                self.emit(Instruction::Call {
+                    dest: Some(dest),
+                    func: Operand::FunctionRef(direct_name),
+                    args: operands,
+                });
+                return dest;
+            }
+        }
+
+        // Regular instance method call path
         let obj_val: Value = self.lower_expr(object);
         let mut operands: SmallVec<[Operand; 8]> = SmallVec::new();
 
@@ -327,14 +424,23 @@ impl<'a> MirExprLowerer<'a> {
             operands.push(Operand::Value(av));
         }
 
-        let maybe_cls_name: Option<SsaType> = self.current_block_data.value_types.get(&obj_val).cloned();
+        let maybe_cls_name: Option<SsaType> =
+            self.current_block_data.value_types.get(&obj_val).cloned();
         let maybe_cls_name: Option<&str> = match maybe_cls_name {
-            Some(SsaType::User(ref name, _args)) => self.string_pool.resolve_string(name).split("_").last(),
-            _ => None
+            Some(SsaType::User(ref name, _args)) => self
+                .context
+                .borrow_mut()
+                .string_pool
+                .resolve_string(name)
+                .split("_")
+                .last(),
+            _ => None,
         };
 
         let cls_name_id: Option<StrId> = if let Some(cls_name) = maybe_cls_name {
-            Some(StrId(self.string_pool.intern(cls_name)))
+            Some(StrId(
+                self.context.borrow_mut().string_pool.intern(cls_name),
+            ))
         } else {
             None
         };
@@ -343,13 +449,17 @@ impl<'a> MirExprLowerer<'a> {
             return value;
         }
 
-        let direct_name: StrId = optimized_string_buffering::build_scoped_name(maybe_cls_name, field, self.string_pool);
+        let direct_name: StrId = optimized_string_buffering::build_scoped_name(
+            maybe_cls_name,
+            field,
+            self.context.borrow_mut().string_pool,
+        );
 
         let dest: Value = self.current_block_data.fresh_value();
         self.emit(Instruction::Call {
             dest: Some(dest),
             func: Operand::FunctionRef(direct_name),
-            args: operands
+            args: operands,
         });
 
         dest
@@ -360,31 +470,37 @@ impl<'a> MirExprLowerer<'a> {
         field: StrId,
         obj_val: Value,
         operands: &mut SmallVec<[Operand; 8]>,
-        maybe_cls_name: Option<StrId>
+        maybe_cls_name: Option<StrId>,
     ) -> Option<Value> {
-        let Some(cls_name) = maybe_cls_name else { return None };
+        let Some(cls_name) = maybe_cls_name else {
+            return None;
+        };
 
         if let Some(class_slots) = self.class_method_slots.get(&cls_name) {
-            let Some(slot_idx) = class_slots.get(&field) else { return None };
+            let Some(slot_idx) = class_slots.get(&field) else {
+                return None;
+            };
             let dest = self.current_block_data.fresh_value();
             self.emit(Instruction::ClassCall {
                 dest: Some(dest),
                 object: obj_val,
                 method_id: *slot_idx,
-                args: operands.clone()
+                args: operands.clone(),
             });
 
             return Some(dest);
         }
 
         if let Some(mmap) = self.class_mangled_map.get(&cls_name) {
-            let Some(mangled_name) = mmap.get(&field) else { return None };
+            let Some(mangled_name) = mmap.get(&field) else {
+                return None;
+            };
 
             let dest = self.current_block_data.fresh_value();
             self.emit(Instruction::Call {
                 dest: Some(dest),
                 func: Operand::FunctionRef(mangled_name.clone()),
-                args: operands.clone()
+                args: operands.clone(),
             });
 
             return Some(dest);
@@ -393,8 +509,13 @@ impl<'a> MirExprLowerer<'a> {
         None
     }
 
-    fn lower_interface_call(&mut self, callee: &Box<HirExpr>, args: &Vec<HirExpr>, interface: StrId) -> Value {
-        let HirExpr::FieldAccess { object, field } = &**callee else {
+    fn lower_interface_call(
+        &mut self,
+        callee: &Box<HirExpr>,
+        args: &Vec<HirExpr>,
+        interface: StrId,
+    ) -> Value {
+        let HirExpr::FieldAccess { object, field, span: _ } = &**callee else {
             panic!("InterfaceCall callee not FieldAccess; unsupported shape")
         };
 
@@ -406,30 +527,68 @@ impl<'a> MirExprLowerer<'a> {
             operands.push(Operand::Value(self.lower_expr(a)));
         }
 
-        let iface_id = *self.interface_id_map.get(&interface)
-            .unwrap_or_else(|| panic!("Unknown interface {} in InterfaceCall", self.string_pool.resolve_string(&*interface)));
+        let iface_id = *self.interface_id_map.get(&interface).unwrap_or_else(|| {
+            panic!(
+                "Unknown interface {} in InterfaceCall",
+                self.context
+                    .borrow_mut()
+                    .string_pool
+                    .resolve_string(&*interface)
+            )
+        });
 
-        let iface_slot_map = self.interface_method_slots.get(&interface)
-            .unwrap_or_else(|| panic!("Interface {} has no method slots", self.string_pool.resolve_string(&*interface)));
+        let iface_slot_map = self
+            .interface_method_slots
+            .get(&interface)
+            .unwrap_or_else(|| {
+                panic!(
+                    "Interface {} has no method slots",
+                    self.context
+                        .borrow_mut()
+                        .string_pool
+                        .resolve_string(&*interface)
+                )
+            });
 
-        let method_slot_in_iface = iface_slot_map.get(field)
-            .unwrap_or_else(|| panic!("Interface {} has no method {}",
-                                      self.string_pool.resolve_string(&*interface),
-                                      self.string_pool.resolve_string(&*field)));
+        let method_slot_in_iface = iface_slot_map.get(field).unwrap_or_else(|| {
+            panic!(
+                "Interface {} has no method {}",
+                self.context
+                    .borrow_mut()
+                    .string_pool
+                    .resolve_string(&*interface),
+                self.context
+                    .borrow_mut()
+                    .string_pool
+                    .resolve_string(&*field)
+            )
+        });
 
         let interface_val = match self.current_block_data.value_types.get(&obj_val).cloned() {
             Some(SsaType::User(ref name, args)) => {
-                let Some(inner_value_name) = self.string_pool.resolve_string(&*name).split("_").last() else { panic!() };
+                let Some(inner_value_name) = self
+                    .context
+                    .borrow_mut()
+                    .string_pool
+                    .resolve_string(&*name)
+                    .split("_")
+                    .last()
+                else {
+                    panic!()
+                };
+
                 let upcast_dest = self.current_block_data.fresh_value();
                 self.emit(Instruction::UpcastToInterface {
                     dest: upcast_dest,
                     object: obj_val,
-                    interface_id: iface_id
+                    interface_id: iface_id,
                 });
 
-                self.current_block_data.value_types.insert(upcast_dest, SsaType::User(interface, args));
+                self.current_block_data
+                    .value_types
+                    .insert(upcast_dest, SsaType::User(interface, args));
                 upcast_dest
-            },
+            }
             _ => obj_val,
         };
 
@@ -438,7 +597,7 @@ impl<'a> MirExprLowerer<'a> {
             dest: Some(dest),
             object: interface_val,
             method_slot: *method_slot_in_iface,
-            args: operands
+            args: operands,
         });
 
         dest
@@ -446,18 +605,33 @@ impl<'a> MirExprLowerer<'a> {
 
     fn get_field_offset(&mut self, obj: &Value, field: StrId) -> usize {
         let cls_name = match self.current_block_data.value_types.get(obj) {
-            Some(SsaType::User(name, _args)) => optimized_string_buffering::get_type(*name, self.string_pool),
-            other => panic!("Could not determine object's class for FieldAccess: {:?}", other),
+            Some(SsaType::User(name, _args)) => {
+                optimized_string_buffering::get_type(*name, self.context.borrow_mut().string_pool)
+            }
+            other => panic!(
+                "Could not determine object's class for FieldAccess: {:?}",
+                other
+            ),
         };
 
         self.class_field_offsets
             .get(&cls_name)
-            .expect(&format!("Unknown class {} in FieldAccess", cls_name))
+            .unwrap_or_else(|| panic!("Unknown class {} in FieldAccess", cls_name))
             .get(&field)
             .copied()
-            .unwrap_or_else(|| panic!("Unknown field {} on class {}",
-                                      self.string_pool.resolve_string(&*field),
-                                      self.string_pool.resolve_string(&*cls_name)))
+            .unwrap_or_else(|| {
+                panic!(
+                    "Unknown field {} on class {}",
+                    self.context
+                        .borrow_mut()
+                        .string_pool
+                        .resolve_string(&*field),
+                    self.context
+                        .borrow_mut()
+                        .string_pool
+                        .resolve_string(&*cls_name)
+                )
+            })
     }
 
     #[inline(always)]
@@ -468,5 +642,62 @@ impl<'a> MirExprLowerer<'a> {
     #[inline(always)]
     fn new_value(&mut self) -> Value {
         self.current_block_data.fresh_value()
+    }
+
+    /// Infers the SsaType from a HirExpr
+    fn infer_ssa_type(&self, expr: &HirExpr) -> SsaType {
+        match expr {
+            HirExpr::Number(n) => {
+                SsaType::I32
+            }
+            HirExpr::String(_) => SsaType::String,
+            HirExpr::Boolean(_) => SsaType::Bool,
+            HirExpr::Ident(name) => {
+                if let Some(&value) = self.var_map.get(name) {
+                    self.current_block_data.value_types.get(&value)
+                        .cloned()
+                        .unwrap_or(SsaType::Void)
+                } else {
+                    if self.classes.contains_key(name) {
+                        SsaType::User(name.clone(), Vec::new())
+                    } else {
+                        // Default to dyn if type cannot be determined
+                        SsaType::Dyn
+                    }
+                }
+            }
+            HirExpr::Tuple(exprs) => {
+                let types = exprs.iter()
+                    .map(|e| self.infer_ssa_type(e))
+                    .collect();
+                SsaType::Tuple(types)
+            }
+            HirExpr::Decimal(_) => SsaType::F64,
+            HirExpr::Binary { left, op: _, right, span: _ } => {
+                let left_ty = self.infer_ssa_type(left);
+                left_ty
+            }
+            HirExpr::Call { callee, args: _ } => {
+                if let HirExpr::Ident(name) = callee.as_ref() {
+                    if let Some(func) = self.funcs.get(name) {
+                        func.ret_type.clone()
+                    } else {
+                        SsaType::Void
+                    }
+                } else {
+                    SsaType::Dyn
+                }
+            }
+            HirExpr::InterfaceCall { callee: _, args: _, interface: _ } => {
+                SsaType::Dyn
+            }
+            HirExpr::FieldAccess { object, field: _, span: _ } => {
+                self.infer_ssa_type(object)
+            }
+            HirExpr::Assignment { target, op: _, value, span: _ } => {
+                self.infer_ssa_type(target)
+            }
+            _ => SsaType::Dyn,
+        }
     }
 }
