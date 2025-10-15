@@ -991,8 +991,7 @@ name = "sentinel-typechecker"
 version = "0.1.0"
 dependencies = [
  "ir",
- "seahash",
- "thiserror",
+ "zetaruntime",
 ]
 
 [[package]]
