@@ -38,7 +38,7 @@ pub enum SsaType {
     Bool,
     String,
     Void,
-    User(StrId, Vec<SsaType>), // class/interface/enum type
+    User(StrId, Vec<SsaType>),
     Enum(Vec<SsaType>),
     Tuple(Vec<SsaType>),
     Dyn,
@@ -225,4 +225,15 @@ pub enum BinOp {
     BitXor,
     ShiftLeft,
     ShiftRight,
+}
+
+// Insert near top of emit_function (or inline): helper to identify IR terminators
+pub fn inst_is_terminator(inst: &Instruction) -> bool {
+    matches!(
+        inst,
+        Instruction::Jump { .. }
+        | Instruction::Branch { .. }
+        | Instruction::Ret { .. }
+        | Instruction::MatchEnum { .. } // you lower this to br_table (terminator)
+    )
 }

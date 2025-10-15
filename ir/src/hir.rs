@@ -1,7 +1,7 @@
 use std::fmt::{Display, Formatter};
 use std::ops::Deref;
 use zetaruntime::string_pool::VmString;
-
+use crate::span::SourceSpan;
 // =====================================
 // HIR (High-Level IR)
 // =====================================
@@ -29,7 +29,7 @@ impl StrId {
     pub fn into_inner(self) -> VmString {
         self.0
     }
-    
+
     /// Get the hash of the string
     pub fn hash(&self) -> u64 {
         // Use the VmString's hash method if available, or a fallback
@@ -39,12 +39,12 @@ impl StrId {
         std::hash::Hash::hash(&self.0, &mut hasher);
         std::hash::Hasher::finish(&hasher)
     }
-    
+
     /// Get the length of the string in bytes
     pub fn len(&self) -> usize {
         self.0.length
     }
-    
+
     /// Check if the string is empty
     pub fn is_empty(&self) -> bool {
         self.len() == 0
@@ -101,6 +101,8 @@ pub struct HirClass {
     pub generics: Vec<HirGeneric>,
     pub fields: Vec<HirField>,
     pub interfaces: Vec<StrId>, // implemented interfaces
+    pub methods: Vec<HirFunc>,
+    pub constants: Vec<Box<HirStmt>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -141,9 +143,9 @@ pub struct HirField {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct HirParam {
-    pub name: StrId,
-    pub param_type: HirType,
+pub enum HirParam {
+    Normal { name: StrId, param_type: HirType },
+    This { param_type: Option<HirType> },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -178,32 +180,67 @@ pub enum HirType {
     },
     Generic(StrId),
     Void,
+    This,
+    Null,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirStmt {
-    Let { name: StrId, ty: HirType, value: HirExpr, mutable: bool },
+    Let {
+        name: StrId,
+        ty: HirType,
+        value: HirExpr,
+        mutable: bool,
+    },
+    Const {
+        name: StrId,
+        ty: HirType,
+        value: HirExpr,
+    },
     Return(Option<HirExpr>),
     Expr(HirExpr),
-    If { cond: HirExpr, then_block: Box<HirStmt>, else_block: Option<Box<HirStmt>> },
-    While { cond: HirExpr, body: Box<HirStmt> },
-    For { init: Option<Box<HirStmt>>, condition: Option<HirExpr>, increment: Option<HirExpr>, body: Box<HirStmt> },
-    Match { expr: HirExpr, arms: Vec<HirMatchArm> },
-    UnsafeBlock { body: Box<HirStmt> },
-    Block { body: Vec<HirStmt> },
+    If {
+        cond: HirExpr,
+        then_block: Box<HirStmt>,
+        else_block: Option<Box<HirStmt>>,
+    },
+    While {
+        cond: HirExpr,
+        body: Box<HirStmt>,
+    },
+    For {
+        init: Option<Box<HirStmt>>,
+        condition: Option<HirExpr>,
+        increment: Option<HirExpr>,
+        body: Box<HirStmt>,
+    },
+    Match {
+        expr: HirExpr,
+        arms: Vec<HirMatchArm>,
+    },
+    UnsafeBlock {
+        body: Box<HirStmt>,
+    },
+    Block {
+        body: Vec<HirStmt>,
+    },
     Break,
     Continue,
 }
 
 impl FromIterator<HirStmt> for HirStmt {
     fn from_iter<T: IntoIterator<Item = HirStmt>>(iter: T) -> Self {
-        HirStmt::Block { body: iter.into_iter().collect() }
+        HirStmt::Block {
+            body: iter.into_iter().collect(),
+        }
     }
 }
 
 impl FromIterator<Box<HirStmt>> for HirStmt {
     fn from_iter<T: IntoIterator<Item = Box<HirStmt>>>(iter: T) -> Self {
-        HirStmt::Block { body: iter.into_iter().map(|s| *s).collect() }
+        HirStmt::Block {
+            body: iter.into_iter().map(|s| *s).collect(),
+        }
     }
 }
 
@@ -220,7 +257,11 @@ pub enum HirPattern {
     Number(i64),
     String(StrId),
     Tuple(Vec<HirPattern>),
-    EnumVariant { enum_name: StrId, variant: StrId, bindings: Vec<StrId> },
+    EnumVariant {
+        enum_name: StrId,
+        variant: StrId,
+        bindings: Vec<StrId>,
+    },
     Wildcard,
 }
 
@@ -232,21 +273,55 @@ pub enum HirExpr {
     Ident(StrId),
     Tuple(Vec<HirExpr>),
     Decimal(f64),
-    Binary { left: Box<HirExpr>, op: Operator, right: Box<HirExpr> },
-    Call { callee: Box<HirExpr>, args: Vec<HirExpr> },
+    Binary {
+        left: Box<HirExpr>,
+        op: Operator,
+        right: Box<HirExpr>,
+        span: SourceSpan,
+    },
+    Call {
+        callee: Box<HirExpr>,
+        args: Vec<HirExpr>,
+    },
     InterfaceCall {
         callee: Box<HirExpr>,
         args: Vec<HirExpr>,
-        interface: StrId
+        interface: StrId,
     },
-    FieldAccess { object: Box<HirExpr>, field: StrId },
-    Assignment { target: Box<HirExpr>, op: AssignmentOperator, value: Box<HirExpr> },
+    FieldAccess {
+        object: Box<HirExpr>,
+        field: StrId,
+        span: SourceSpan
+    },
+    Assignment {
+        target: Box<HirExpr>,
+        op: AssignmentOperator,
+        value: Box<HirExpr>,
+        span: SourceSpan,
+    },
     InterpolatedString(Vec<InterpolationPart>),
-    EnumInit { enum_name: StrId, variant: StrId, args: Vec<HirExpr> },
-    ExprList(Vec<HirExpr>),
-    Get { object: Box<HirExpr>, field: StrId },
-    ClassInit { name: Box<HirExpr>, args: Vec<HirExpr> },
-    Comparison { left: Box<HirExpr>, op: Operator, right: Box<HirExpr> },
+    EnumInit {
+        enum_name: StrId,
+        variant: StrId,
+        args: Vec<HirExpr>,
+    },
+    ExprList { list: Vec<HirExpr>, span: SourceSpan },
+    Get {
+        object: Box<HirExpr>,
+        field: StrId,
+        span: SourceSpan
+    },
+    ClassInit {
+        name: Box<HirExpr>,
+        args: Vec<HirExpr>,
+        span: SourceSpan
+    },
+    Comparison {
+        left: Box<HirExpr>,
+        op: Operator,
+        right: Box<HirExpr>,
+        span: SourceSpan
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -306,7 +381,7 @@ pub enum Visibility {
     Public,
     Private,
     Module,
-    Package
+    Package,
 }
 
 impl Display for HirType {
@@ -329,16 +404,27 @@ impl Display for HirType {
             HirType::Class(name, args) => Self::write_args(f, name, args),
             HirType::Interface(name, args) => Self::write_args(f, name, args),
             HirType::Enum(name, args) => Self::write_args(f, name, args),
-            HirType::Lambda { params, return_type, concurrent } => {
+            HirType::Lambda {
+                params,
+                return_type,
+                concurrent,
+            } => {
                 let params_str: Vec<_> = params.iter().map(|p| p.to_string()).collect();
                 if *concurrent {
-                    write!(f, "concurrent fn({}) -> {}", params_str.join(", "), return_type)
+                    write!(
+                        f,
+                        "concurrent fn({}) -> {}",
+                        params_str.join(", "),
+                        return_type
+                    )
                 } else {
                     write!(f, "fn({}) -> {}", params_str.join(", "), return_type)
                 }
             }
             HirType::Generic(name) => write!(f, "{}", name),
             HirType::Void => write!(f, "void"),
+            HirType::This => write!(f, "this"),
+            HirType::Null => write!(f, "null"),
         }
     }
 }

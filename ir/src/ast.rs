@@ -1,17 +1,20 @@
-use std::fmt::{Display, Formatter};
 use crate::hir::StrId;
+use crate::span::SourceSpan;
+use std::fmt::{Display, Formatter};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     Import(ImportStmt),
     Package(PackageStmt),
     Let(LetStmt),
+    Const(ConstStmt),
     Return(ReturnStmt),
     If(IfStmt),
     While(WhileStmt),
     For(ForStmt),
     Match(MatchStmt),
     UnsafeBlock(UnsafeBlock),
+    Block(Block),
     FuncDecl(FuncDecl),
     ClassDecl(ClassDecl),
     InterfaceDecl(InterfaceDecl),
@@ -41,6 +44,13 @@ pub struct LetStmt {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct ConstStmt {
+    pub ident: StrId,
+    pub type_annotation: Type,
+    pub value: Box<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ImplDecl {
     pub generics: Option<Vec<Generic>>,
     pub interface: StrId,
@@ -60,7 +70,6 @@ pub struct InterfaceDecl {
 pub struct EnumDecl {
     pub name: StrId,
     pub visibility: Visibility,
-    pub error_viable: bool,
     pub generics: Option<Vec<Generic>>,
     pub variants: Vec<EnumVariant>,
 }
@@ -183,7 +192,7 @@ impl Op {
     pub fn is_math_op(&self) -> bool {
         match self {
             Op::Assign => false,
-            _ => true
+            _ => true,
         }
     }
 }
@@ -195,9 +204,8 @@ pub enum ComparisonOp {
     LessThan,
     LessThanOrEqual,
     GreaterThan,
-    GreaterThanOrEqual
+    GreaterThanOrEqual,
 }
-
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatchStmt {
@@ -243,10 +251,10 @@ pub struct FuncDecl {
 pub struct ClassDecl {
     pub visibility: Visibility,
     pub name: StrId,
-    pub error_viable: bool,
     pub generics: Option<Vec<Generic>>,
     pub params: Option<Vec<Param>>,
-    pub body: Block
+    pub body: Vec<FuncDecl>,
+    pub constants: Vec<ConstStmt>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -254,7 +262,7 @@ pub enum Visibility {
     Public,
     Private,
     Module,
-    Package
+    Package,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -279,7 +287,6 @@ pub struct ThisParam {
     pub is_move: bool,
     pub type_annotation: Option<Type>, // e.g. Ptr<this>, this?, etc
 }
-
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Block {
@@ -309,46 +316,59 @@ pub struct InternalExprStmt {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
-    Number(i64),
-    Decimal(f64),
-    String(StrId),
-    Ident(StrId),
-    Boolean(bool),
+    Number { value: i64, span: SourceSpan },
+    Decimal { value: f64, span: SourceSpan },
+    String { value: StrId, span: SourceSpan },
+    Ident { name: StrId, span: SourceSpan },
+    Boolean { value: bool, span: SourceSpan },
     Comparison {
         lhs: Box<Expr>,
         op: Op,
         rhs: Box<Expr>,
+        span: SourceSpan,
     },
     ClassInit {
         callee: Box<Expr>,
         arguments: Vec<Expr>,
+        positional: bool,
+        span: SourceSpan,
     },
     FieldAccess {
         object: Box<Expr>,
-        field: StrId
+        field: StrId,
+        span: SourceSpan,
     },
     Binary {
         left: Box<Expr>,
         op: Op,
         right: Box<Expr>,
+        span: SourceSpan,
     },
     Call {
         callee: Box<Expr>,
         arguments: Vec<Expr>,
+        span: SourceSpan,
     },
     Get {
         object: Box<Expr>,
-        field: StrId
+        field: StrId,
+        span: SourceSpan,
     },
+    If { if_stmt: Box<IfStmt>, span: SourceSpan },
+    Match { match_stmt: Box<MatchStmt>, span: SourceSpan },
     Assignment {
-        lhs: Box<Expr>, 
+        lhs: Box<Expr>,
         op: Op,
-        rhs: Box<Expr>
+        rhs: Box<Expr>,
+        span: SourceSpan,
     },
     ExprList {
         expressions: Vec<Expr>,
+        span: SourceSpan,
     },
-    Char(char),
+
+    Char { value: char, span: SourceSpan },
+    FieldInit { ident: StrId, expr: Box<Expr>, span: SourceSpan },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -370,11 +390,15 @@ pub enum Type {
     U128,
     UF64,
     Void,
+    Infer,
     Lambda {
         params: Vec<Type>,
         return_type: Box<Type>,
     },
-    Class { name: StrId, generics: Vec<Type> },
+    Class {
+        name: StrId,
+        generics: Vec<Type>,
+    },
     Nullable(Option<Box<Type>>),
     PossibleError(PossibleErrorType),
     This,
@@ -384,19 +408,25 @@ pub enum Type {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PossibleErrorType {
     Some(Box<Type>),
-    Error(Box<Type>)
+    Error(Box<Type>),
 }
 
 impl Type {
     pub fn is_numeric(&self) -> bool {
         match self {
-            Type::Class { name: _, generics: _ }
-                | Type::Lambda { params: _, return_type: _ }
-                | Type::Nullable(_)
-                | Type::PossibleError(_)
-                | Type::This
-                | Type::String => false,
-            _ => true
+            Type::Class {
+                name: _,
+                generics: _,
+            }
+            | Type::Lambda {
+                params: _,
+                return_type: _,
+            }
+            | Type::Nullable(_)
+            | Type::PossibleError(_)
+            | Type::This
+            | Type::String => false,
+            _ => true,
         }
     }
 }
@@ -421,8 +451,11 @@ impl Display for Type {
             Type::U128 => f.write_str("u128"),
             Type::UF64 => f.write_str("uf64"),
             Type::Void => f.write_str("void"),
-            Type::Lambda { params, return_type } => f.write_str(format!("({:?}) -> {}", params, return_type).as_str()),
-            Type::Class(name, generics) => {
+            Type::Lambda {
+                params,
+                return_type,
+            } => f.write_str(format!("({:?}) -> {}", params, return_type).as_str()),
+            Type::Class { name, generics } => {
                 write!(f, "{}", name)?;
                 if !generics.is_empty() {
                     write!(f, "<")?;
@@ -443,13 +476,14 @@ impl Display for Type {
                 } else {
                     f.write_str("null")
                 }
-            },
-            Type::PossibleError(err_type) => {
-                match err_type {
-                    PossibleErrorType::Some(ty) => std::fmt::Display::fmt(&ty, f),
-                    PossibleErrorType::Error(err) => std::fmt::Display::fmt(&err, f)
-                }
             }
+            Type::PossibleError(err_type) => match err_type {
+                PossibleErrorType::Some(ty) => std::fmt::Display::fmt(&ty, f),
+                PossibleErrorType::Error(err) => std::fmt::Display::fmt(&err, f),
+            },
+            Type::This => f.write_str("this"),
+            Type::Infer => todo!(),
         }
     }
 }
+
