@@ -1,7 +1,8 @@
+use ir::{
+    ir_hasher::FxHashBuilder,
+    ssa_ir::{BasicBlock, BlockId, Function, SsaType, Value},
+};
 use std::collections::HashMap;
-use std::mem::MaybeUninit;
-use ir::ir_hasher::FxHashBuilder;
-use ir::ssa_ir::{BasicBlock, BlockId, Function, SsaType, Value};
 
 pub struct CurrentBlockData {
     pub func: Function,
@@ -12,7 +13,13 @@ pub struct CurrentBlockData {
 }
 
 impl CurrentBlockData {
-    pub fn new(func: Function, current_block: BlockId, next_value: usize, next_block: usize, value_types: HashMap<Value, SsaType, FxHashBuilder>) -> Self {
+    pub fn new(
+        func: Function,
+        current_block: BlockId,
+        next_value: usize,
+        next_block: usize,
+        value_types: HashMap<Value, SsaType, FxHashBuilder>,
+    ) -> Self {
         Self {
             func,
             current_block,
@@ -35,7 +42,11 @@ impl CurrentBlockData {
     }
 
     pub fn bb(&mut self) -> &mut BasicBlock {
-        self.func.blocks.iter_mut().find(|b| b.id == self.current_block).unwrap()
+        self.func
+            .blocks
+            .iter_mut()
+            .find(|b| b.id == self.current_block)
+            .unwrap()
     }
 
     pub fn finish(mut self) -> Function {
