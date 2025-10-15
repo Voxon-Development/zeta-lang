@@ -1,5 +1,5 @@
 use cranelift_codegen::ir::condcodes::IntCC;
-use cranelift_codegen::ir::{types, InstBuilder, MemFlags, Signature, Type, Value};
+use cranelift_codegen::ir::{types, InstBuilder, MemFlags, Signature, StackSlotData, StackSlotKind, Type, Value, Function as ClFunction};
 use cranelift_codegen::isa::TargetIsa;
 use cranelift_frontend::FunctionBuilder;
 use ir::hir::HirType;
@@ -11,7 +11,11 @@ pub enum Intrinsic {
     PtrStore,
     PtrFromAddr,
     PtrAddr,
-    PtrCastToRaw
+    PtrCastToRaw,
+    StackAlloc,
+    StackAllocZeroed,
+    SizeOf,
+    AlignOf,
 }
 
 /// Resolve by symbol name to intrinsic enum
@@ -24,6 +28,10 @@ pub fn resolve_intrinsic(name: &str) -> Option<Intrinsic> {
         "ptr_from_addr" => Some(PtrFromAddr),
         "ptr_addr" => Some(PtrAddr),
         "ptr_cast_to_raw" => Some(PtrCastToRaw),
+        "stack_alloc" => Some(StackAlloc),
+        "stack_alloc_zeroed" => Some(StackAllocZeroed),
+        "sizeof" => Some(SizeOf),
+        "alignof" => Some(AlignOf),
         _ => None,
     }
 }/*
@@ -68,18 +76,15 @@ use zetaruntime::string_pool::StringPool;
 
 fn push_param_for_hir_type(sig: &mut Signature, hir_ty: &HirType, isa: &dyn TargetIsa, string_pool: &StringPool) {
     match hir_ty {
-        // detect Array<T> - adapt to how your HirType encodes generics
         HirType::Class(name, args) if string_pool.resolve_string(name) == "Array" && args.len() == 1 => {
             let pt = AbiParam::new(ptr_clif_ty(isa));
             let len = AbiParam::new(usize_clif_ty(isa));
             sig.params.push(pt);
             sig.params.push(len);
         }
-        // Ptr<T> is a single pointer param
         HirType::Class(name, _args) if string_pool.resolve_string(name) == "Ptr" => {
             sig.params.push(AbiParam::new(ptr_clif_ty(isa)));
         }
-        // primitives
         _ => {
             let clif_t = clif_type_of(hir_ty);
             sig.params.push(AbiParam::new(super::clif_type(&clif_t)));
@@ -101,6 +106,30 @@ fn push_return_for_hir_type(sig: &mut Signature, hir_ty: &HirType, isa: &dyn Tar
             sig.returns.push(AbiParam::new(super::clif_type(&clif_type_of(hir_ty))));
         }
     }
+}
+
+pub fn stack_alloc(
+    builder: &mut FunctionBuilder,
+    module: &impl Module,
+    size_bytes: usize,
+) -> Value {
+    assert!(size_bytes > 0, "stack_alloc: size must be > 0");
+
+    let isa = module.isa();
+    let ptr_ty = isa.pointer_type();
+    let aligned_size = round_to_eight_align(size_bytes);
+    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        aligned_size as u32,
+        0
+    ));
+
+    builder.ins().stack_addr(ptr_ty, slot, 0)
+}
+
+#[inline(always)]
+fn round_to_eight_align(size_bytes: usize) -> usize {
+    ((size_bytes + 7) / 8) * 8
 }
 
 fn ptr_clif_ty(isa: &dyn TargetIsa) -> Type {
@@ -153,32 +182,26 @@ pub(super) fn clif_type_of(ty: &HirType) -> SsaType {
 // In your codegen lowering for intrinsics:
 fn lower_syscall(
     builder: &mut FunctionBuilder, 
-    call: &mut cranelift_codegen::ir::function::Function,
+    call: &mut ClFunction,
     ssa_call: &mut Function,
     module: &mut impl Module
 ) -> Value {
-    let (num_val, arg_vals) = extract_args(ssa_call); // all are machine-size ints
-    let sig = runtime_syscall_signature(arg_vals.len()); // e.g., fn(i64,i64,...)->i64
+    let (num_val, arg_vals) = extract_args(ssa_call);
+    let sig = runtime_syscall_signature(arg_vals.len());
+    let name = &format!("syscall{}", arg_vals.len());
 
-    // create/import external function symbol:
-    let callee = module.declare_function(&format!("syscall{}", arg_vals.len()),
-                                         Linkage::Import, &sig)
+    let callee = module
+        .declare_function(name, Linkage::Import, &sig)
         .map(|id| module.declare_func_in_func(id, call)).unwrap();
-    
-    
 
-    // build call operands
     let mut operands = Vec::new();
-    operands.push(num_val); // syscall number first argument
+    operands.push(num_val);
     operands.extend(arg_vals);
 
-    // emit call
     let call_inst = builder.ins().call(callee, &operands);
 
-    // get return value
     let results = builder.inst_results(call_inst);
     results[0]
-    // return or store ret as the intrinsic result
 }
 
 fn runtime_syscall_signature(args_len: usize) -> Signature {
@@ -190,7 +213,7 @@ fn extract_args(function: &Function) -> (Value, Vec<Value>) {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct Layout { pub size: u64, pub align: u64 }
+pub struct Layout { pub size: usize, pub align: usize }
 
 #[derive(Debug)]
 pub enum LayoutError {
@@ -199,7 +222,10 @@ pub enum LayoutError {
     Unknown,
 }
 
-pub fn sizeof(ty: &SsaType, target: &TargetInfo) -> Result<u64, LayoutError> {
+#[derive(Clone, Copy)]
+pub struct TargetInfo { pub ptr_bytes: u64 }
+
+pub fn sizeof(ty: &SsaType, target: &TargetInfo) -> Result<usize, LayoutError> {
     Ok(layout_of(ty, target)?.size)
 }
 
@@ -215,8 +241,8 @@ pub fn layout_of(ty: &SsaType, target: &TargetInfo) -> Result<Layout, LayoutErro
 
         // Tuples/structs: sequential fields with padding between and at end to struct align.
         SsaType::Tuple(fields) | SsaType::User(_, fields) => {
-            let mut off = 0u64;
-            let mut max_align = 1u64;
+            let mut off = 0usize;
+            let mut max_align = 1usize;
             for fty in fields {
                 let f = layout_of(fty, target)?;
                 max_align = max_align.max(f.align);
@@ -248,14 +274,14 @@ pub fn layout_of(ty: &SsaType, target: &TargetInfo) -> Result<Layout, LayoutErro
     }
 }
 
-#[inline]
-fn round_up(x: u64, align: u64) -> u64 {
+#[inline(always)]
+const fn round_up(x: usize, align: usize) -> usize {
     if align <= 1 { return x; }
     let m = align - 1;
     (x + m) & !m
 }
 
-fn tag_bytes(variants: usize) -> u64 {
+fn tag_bytes(variants: usize) -> usize {
     // pick an encoding; here is a simple power-of-two step
     match variants {
         0..=0x100      => 1,
@@ -264,8 +290,6 @@ fn tag_bytes(variants: usize) -> u64 {
         _ => 8,
     }
 }
-
-pub struct TargetInfo { pub ptr_bytes: u64 /* plus anything else you need */ }
 
 /// Codegen an intrinsic. Returns `Some(Value)` if the intrinsic produced a value,
 /// or `None` if it produced no value (like store).
@@ -281,9 +305,59 @@ pub fn codegen_intrinsic(
     ret_hir_types: &[HirType],
     builder: &mut FunctionBuilder,
     isa: &dyn TargetIsa,
+    func_name: Option<&str>,
 ) -> Option<Value> {
     let ptr_ty = isa.pointer_type();
     match intr {
+
+        Intrinsic::StackAlloc | Intrinsic::StackAllocZeroed => {
+            // Parse const generic N from monomorphized function name suffix, e.g., "..._N10_..."
+            let mut n: i64 = 1;
+            if let Some(fname) = func_name {
+                if let Some(pos) = fname.rfind("_N") {
+                    let digits = &fname[pos + 2..];
+                    let mut end = digits.len();
+                    for (i, ch) in digits.char_indices() {
+                        if !ch.is_ascii_digit() { end = i; break; }
+                    }
+                    if end > 0 {
+                        if let Ok(parsed) = digits[..end].parse::<i64>() {
+                            n = parsed.max(1);
+                        }
+                    }
+                }
+            }
+            let elem_size: i64 = 8; // TODO: compute sizeof(T) precisely once type info is threaded through
+            let total_size = n.saturating_mul(elem_size);
+
+            use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
+            let slot = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, total_size as u32, 3));
+            let ptr_ty = isa.pointer_type();
+            let addr = builder.ins().stack_addr(ptr_ty, slot, 0);
+
+            if let Intrinsic::StackAllocZeroed = intr {
+                // best-effort: zero first word
+                let zero = builder.ins().iconst(types::I64, 0);
+                let flags = MemFlags::new();
+                builder.ins().store(flags, zero, addr, 0);
+            }
+
+            Some(addr)
+        }
+
+        Intrinsic::SizeOf => {
+            // Fallback: return pointer width in bytes (until full type layout is wired here)
+            let bytes = (ptr_ty.bits() / 8) as i64;
+            let c = builder.ins().iconst(ptr_ty, bytes as i64);
+            Some(c)
+        }
+
+        Intrinsic::AlignOf => {
+            // Fallback: return pointer alignment in bytes (same as width on most targets)
+            let bytes = (ptr_ty.bits() / 8) as i64;
+            let c = builder.ins().iconst(ptr_ty, bytes as i64);
+            Some(c)
+        }
 
         Intrinsic::PtrCastToRaw => {
             // args: [value]
