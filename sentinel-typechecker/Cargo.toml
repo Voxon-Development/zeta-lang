@@ -7,6 +7,5 @@ edition = "2024"
 opt-level = 3
 
 [dependencies]
-thiserror = "2.0.12"
-seahash = "4.1.0"
+zetaruntime = { path = "../zetaruntime" }
 ir = { path = "../ir" }
