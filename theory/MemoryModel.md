@@ -318,7 +318,7 @@ So when you allocate through `std.pageAllocator`, you’re not passing a runtime
 In other words:
 
 ```
-Ptr<Person, A=PageAllocator>
+Ptr<Person, A=std.pageAllocator>
 ```
 
 is known statically, but at runtime it just knows how to free it.
@@ -351,8 +351,8 @@ return std.pageAllocator.alloc(Person { ... })
 CTRC derives:
 
 ```
-Ptr<Person, A=PageAllocator>
-PVGEdge { src = PageAllocator, dst = callerRegion, kind = Borrow|Own }
+Ptr<Person, A=std.pageAllocator>
+PVGEdge { src = std.pageAllocator, dst = callerRegion, kind = Borrow|Own }
 ```
 
 This gives the compiler enough information to:
@@ -394,12 +394,12 @@ Ptr<Person>? fetchPerson(u32 id) {
 At compile-time, the function’s type is inferred as:
 
 ```
-Ptr<Person, A=PageAllocator>? fetchPerson(id: u32)
+Ptr<Person, A=std.pageAllocator>? fetchPerson(id: u32)
 ```
 
 When returning it, CTRC verifies that:
 
-* The `PageAllocatorRegion` outlives the returned pointer’s region,
+* The `std.pageAllocator>` outlives the returned pointer’s region,
 * Or, if not, automatically promotes it (heapifies) to a globally safe allocator.
 
 ---
@@ -507,23 +507,6 @@ fibers.spawn(unsafe {
 ```
 
 Here, the programmer assumes responsibility for ensuring thread safety; the compiler only checks basic region consistency.
-
----
-
-### Synchronization & Communication
-
-Instead of pervasive atomic wrappers, Zeta defines a minimal concurrency surface:
-
-* **Channels**: always `Sync`, used for structured message passing.
-* **Atomics / Mutexes**: explicitly `Sync`, for low-level shared state.
-
-These are the only building blocks that need synchronization semantics; the rest is statically guaranteed by CTRC and regions.
-
----
-
-`lambda` can take in any value, while `concurrent lambda` needs to take in Sync values, or use `unsafe concurrent lambda` to ensure fast performance at the cost of memory safety.
-
-and In Sha Allah we can make lambda usages as easy as `() -> {}` or (only for concurrency reasons) `unsafe () -> {}`, but if someone tries to mutate outer data inside of a `concurrent lambda` without Sync trait or unsafe, we can't compile the piece of code.
 
 No data races by default? Check. Thread-safety markers? Check
 
