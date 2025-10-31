@@ -47,7 +47,10 @@ Same as before, resolve identifiers, imports, namespaces, types.
 
 ### 3. Type Checking & Kind Inference
 
-Each symbol receives both a **Type** and a **ValueKind**:
+Each symbol receives both a **Type** and a **ValueKind**
+
+If `Copy` -> guaranteed stack lifetime.
+If not -> heap allocated, subject to CTRC constraints:
 
 ```
 TypeInfo {
@@ -56,9 +59,6 @@ TypeInfo {
   mutability: Mut|Const
 }
 ```
-
-If `Copy` -> guaranteed stack lifetime.
-If not -> heap allocated, subject to CTRC constraints.
 
 ---
 
@@ -146,7 +146,7 @@ Transfer rules:
 * Drop -> both lower, upper -= 1 (clamped)
 * Branch/merge -> φ-join(max, min)
 
-The CTRC solver uses a conservative widening strategy for loops: unresolved loops widen to “unbounded” and reporting that a runtime RC would not be needed. To avoid unnecessary fallbacks, the solver will attempt loop-boundedness proofs (constant iteration counts, single induction variable, user annotations). If proof succeeds, counts remain static; otherwise runtime RC is selected.
+The CTRC solver uses a conservative widening strategy for loops (This prevents infinite iteration in the solver by generalizing the count range when convergence stalls): unresolved loops widen to “unbounded” and reporting that a runtime RC would not be needed. To avoid unnecessary fallbacks, the solver will attempt loop-boundedness proofs (constant iteration counts, single induction variable, user annotations). If proof succeeds, counts remain static; otherwise runtime RC is selected.
 
 If at any program point:
 
@@ -167,11 +167,15 @@ Borrows are modeled as flow intervals (program-point ranges) rather than purely 
 
 Borrow exclusivity constraints are flow-sensitive and use φ-joins at merge points; borrows across branches are merged conservatively; spurious rejections are reduced by refining intervals (block-level splitting) or by requiring an explicit annotation when necessary.
 
+you can borrow A mutably, but not while another alias exists; the solver enforces this like C’s restrict
+
 These are enforced symbolically, same as C’s `restrict`, but with static diagnostics.
 
-Allowing for performance optimization, and a guarantee for concurrency
+Allowing for heavy performance optimization, and a guarantee for concurrency
 
 ---
+
+If the solver can’t prove safety because a variable’s lifetime spans too many branches, we split and retry
 
 ### 10. Lifetime Splitting & Re-analysis
 
