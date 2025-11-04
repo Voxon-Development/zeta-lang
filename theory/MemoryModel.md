@@ -465,54 +465,7 @@ Otherwise, the rest of the memory model is the same, RAII, memory safety and con
 
 ## Fearless Concurrency Without Ownership Syntax
 
-In most languages, interacting with threads or fibers safely requires explicit ownership syntax, lifetime annotations, and wrappers such as `Arc`, `Rc`, `Mutex`, or `RefCell`, or they can abandon safety for ease of use and freedom.
-Zeta removes all of these through **CTRC-based ownership inference** and **region verification**.
-
-### Unified Ownership & Lifetime Model
-
-Ownership and lifetimes are not written; they are *inferred and statically proven*.
-CTRC tracks aliasing, references, and mutations across all regions, guaranteeing safety *without runtime reference counting*.
-
-As a result:
-
-* No `Arc`, `Rc`, or `RefCell` needed for shared data.
-* No explicit `Send` or `Sync` traits required for thread transfer or sharing.
-* No manual lifetime syntax; region relationships are deduced from data flow.
-
-Multiple “owners” are statically permitted when proven non-conflicting; otherwise, CTRC promotes the reference to a runtime-verified variant only when necessary.
-
----
-
-### Concurrency Model
-
-Zeta’s concurrency system treats threads and fibers as **regioned execution contexts**.
-
-you pass **function literals** directly to concurrency APIs such as `fibers.spawn`.
-
-```zeta
-fibers.spawn {
-    process(data); // must be thread-safe, channel, mutex, etc
-}
-```
-
-This block is simply a **typed function literal**, with ownership and region constraints checked by CTRC.
-
-If the block captures shared data, CTRC ensures that:
-
-* The captured values are `Sync` (safe for concurrent access), or
-* The compiler promotes them to thread-local copies if shared mutability cannot be proven safe.
-
-For lower-level control, Zeta also allows **unsafe concurrent execution**, which bypasses static `Sync` verification for maximum performance:
-
-```zeta
-fibers.spawn(unsafe {
-    fastOp(raw);
-});
-```
-
-Here, the programmer assumes responsibility for ensuring thread safety; the compiler only checks basic region consistency.
-
-No data races by default? Check. Thread-safety markers? Check
+**TODO** Figure out a good and realistic system to allow for flexibility and memory safe apps combined with concurrency without affecting syntax.
 
 ## Safe aliasing and seamless lifetime management
 So we need to make sure that we have safe aliasing and good lifetime management, which means:
