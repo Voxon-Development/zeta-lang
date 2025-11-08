@@ -235,8 +235,8 @@ CountRange { lower: int | 0, upper: int | ∞ }
 # CTRC Solver Sketch
 
 ```
-solve_CTRC(MIR):
-    G = build_PVG(MIR)
+solve_CTRC(HIR):
+    G = build_PVG(HIR)
     C = gen_constraints(G)
     S = init_state(C)
     repeat
