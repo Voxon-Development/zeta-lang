@@ -7,5 +7,5 @@ edition = "2024"
 opt-level = 3
 
 [dependencies]
-zetaruntime = { path = "../zetaruntime" }
+zetaruntime = { path = "../zeta_utilities" }
 ir = { path = "../ir" }

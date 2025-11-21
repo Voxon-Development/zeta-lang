@@ -1,5 +1,5 @@
 [package]
-name = "ir"
+name = "codex-dependency-graph"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,12 +7,7 @@ edition = "2024"
 opt-level = 3
 
 [dependencies]
-thiserror = "2.0.16"
+thiserror = "2.0.12"
 fxhash = "0.2.1"
 zetaruntime = { path = "../zeta_utilities" }
-parking_lot = "0.12.1"
-smallvec = "1.15.0"
-atty = "0.2"
-
-[dev-dependencies]
-rstest = "0.18.2"
+ir = { path = "../ir" }

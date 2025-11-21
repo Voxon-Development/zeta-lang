@@ -1,5 +1,5 @@
 [package]
-name = "scribe-parser"
+name = "ctrc-graph"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,12 +7,10 @@ edition = "2024"
 opt-level = 3
 
 [dependencies]
-pest = "2.8.1"
-pest_derive = "2.8.1"
 thiserror = "2.0.12"
-itertools = "0.14.0"
-ir = { path = "../ir" }
+fxhash = "0.2.1"
 zetaruntime = { path = "../zeta_utilities" }
-smallvec = "1.15.0"
+iris-math = { path = "../iris-math" }
+ir = { path = "../ir" }
 dashmap = "7.0.0-rc2"
-ctrc-graph = { path = "../ctrc-graph" }
+codex-dependency-graph = { path = "../codex-dependency-graph" }
