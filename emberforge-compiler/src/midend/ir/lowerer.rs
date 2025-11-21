@@ -1,14 +1,13 @@
 use crate::midend::ir::block_data::CurrentBlockData;
 use crate::midend::ir::expr_lowerer::MirExprLowerer;
 use crate::midend::ir::ir_conversion::lower_type_hir;
-use ir::context::Context;
-use ir::hir::{HirClass, HirExpr, HirFunc, HirParam, HirStmt, HirType, StrId};
+use ir::hir::{HirStruct, HirExpr, HirFunc, HirParam, HirStmt, HirType, StrId};
 use ir::ir_hasher::FxHashBuilder;
 use ir::ssa_ir::{BasicBlock, BlockId, Function, Instruction, Operand, SsaType, Value};
 use smallvec::SmallVec;
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
+use zetaruntime::string_pool::StringPool;
 
 pub struct FunctionLowerer<'a> {
     current_block_data: CurrentBlockData,
@@ -22,10 +21,9 @@ pub struct FunctionLowerer<'a> {
     class_vtable_slots: &'a HashMap<StrId, Vec<StrId>, FxHashBuilder>,
     interface_id_map: &'a HashMap<StrId, usize, FxHashBuilder>,
     interface_method_slots: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
-    classes: &'a HashMap<StrId, HirClass, FxHashBuilder>,
+    classes: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
 
-    /// Context is `'static` here by design (see notes below).
-    context: Rc<RefCell<Context<'static>>>,
+    context: Arc<StringPool>,
 }
 
 impl<'a> FunctionLowerer<'a> {
@@ -46,8 +44,8 @@ impl<'a> FunctionLowerer<'a> {
             HashMap<StrId, usize, FxHashBuilder>,
             FxHashBuilder,
         >,
-        classes: &'a HashMap<StrId, HirClass, FxHashBuilder>,
-        context: Rc<RefCell<Context<'static>>>,
+        classes: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
+        context: Arc<StringPool>,
     ) -> Result<Self, std::alloc::AllocError> {
         let mut func = Function {
             name: hir_fn.name.clone(),
@@ -56,28 +54,16 @@ impl<'a> FunctionLowerer<'a> {
             blocks: SmallVec::new(),
             value_types: HashMap::with_hasher(FxHashBuilder),
             entry: BlockId(0),
+            noinline: hir_fn.noinline,
         };
 
         let mut next_value = 0usize;
         let mut next_block = 0usize;
         let mut var_map = HashMap::with_hasher(FxHashBuilder);
         let mut value_types = HashMap::with_hasher(FxHashBuilder);
-        // allocate params
-        for p in &hir_fn.params {
-            let v = Value(next_value);
-            next_value += 1;
-
-            let (name, param_type) = match p {
-                HirParam::Normal { name, param_type } => (*name, param_type),
-                HirParam::This { param_type } => {
-                    let this_str_id = StrId(context.borrow_mut().string_pool.intern("this"));
-                    (this_str_id, param_type.as_ref().unwrap_or(&HirType::This))
-                }
-            };
-            let ty: SsaType = lower_type_hir(param_type);
-            func.params.push((v, ty.clone()));
-            value_types.insert(v, ty);
-            var_map.insert(name, v);
+        if let Some(params) = hir_fn.params {
+            // allocate params
+            Self::insert_existing_params(context.clone(), &mut func, &mut next_value, &mut var_map, &mut value_types, params);
         }
 
         // create entry block
@@ -110,15 +96,43 @@ impl<'a> FunctionLowerer<'a> {
         })
     }
 
-    pub(super) fn lower_body(&mut self, body: Option<&HirStmt>) {
+    fn insert_existing_params(
+        context: Arc<StringPool>,
+        func: &mut Function,
+        next_value: &mut usize,
+        var_map: &mut HashMap<StrId, Value, FxHashBuilder>,
+        value_types: &mut HashMap<Value, SsaType, FxHashBuilder>,
+        params: &[HirParam])
+    {
+        for p in params {
+            let v = Value(*next_value);
+            *next_value += 1;
+
+            let (name, param_type) = match *p {
+                HirParam::Normal { name, param_type } => (name, param_type),
+                HirParam::This { param_type } => {
+                    let this_str_id = StrId(context.intern("this"));
+                    (this_str_id, param_type.unwrap_or(HirType::This))
+                }
+            };
+            let ty: SsaType = lower_type_hir(&param_type);
+            func.params.push((v, ty.clone()));
+            value_types.insert(v, ty);
+            var_map.insert(name.into(), v);
+        }
+    }
+
+    pub(super) fn lower_body(&mut self, body: Option<HirStmt<'a, '_>>) {
         if let Some(b) = body {
             match b {
                 HirStmt::Block { body } => {
+                    println!("{:?}", body.len());
                     for stmt in body {
+                        println!("{:?}", stmt);
                         self.lower_stmt(stmt);
                     }
                 }
-                _ => unimplemented!("Function body must be a block"),
+                _ => panic!()
             }
         }
     }
@@ -134,10 +148,7 @@ impl<'a> FunctionLowerer<'a> {
                     let val = self.allow_lowering_expr(e);
                     Operand::Value(val)
                 });
-                self.current_block_data
-                    .bb()
-                    .instructions
-                    .push(Instruction::Ret { value });
+                self.emit(Instruction::Ret { value });
             }
             HirStmt::Expr(expr) => {
                 let _ = self.allow_lowering_expr(expr);
@@ -166,5 +177,9 @@ impl<'a> FunctionLowerer<'a> {
 
     pub(super) fn finish(self) -> Function {
         self.current_block_data.finish()
+    }
+
+    fn emit(&mut self, instruction: Instruction) {
+        self.current_block_data.bb().instructions.push(instruction);
     }
 }
