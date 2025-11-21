@@ -3,7 +3,8 @@ use smallvec::SmallVec;
 use std::alloc::AllocError;
 
 use std::hash::{BuildHasher, Hash, Hasher};
-
+use std::num::NonZeroU64;
+use std::ptr;
 use std::simd::cmp::SimdPartialEq;
 use std::simd::num::SimdUint;
 use std::simd::Simd;
@@ -13,8 +14,9 @@ use std::str::from_utf8_unchecked;
 use dashmap::DashMap;
 
 const LANES: usize = 32;
-const FX_INIT: u64 = 0;
-const FX_PRIME: u64 = 0x517cc1b727220a95;
+const FX_INIT: u64 = 0xcbf29ce484222325;
+const FX_PRIME: u64 = 0x100000001b3;
+
 
 #[derive(Default, Clone, Copy)]
 struct IdentityHasher(u64);
@@ -40,21 +42,53 @@ impl BuildHasher for IdentityBuild {
 }
 
 #[repr(C, align(32))]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct VmString {
-    offset: *const u8,
+    pub offset: *const u8,
     pub length: usize,
-    hash: u64,
+    
+    // Optimization: use NonZeroU64 instead of u64 to allow for null pointer optimization;
+    // where Option<VmString> has the same alignment and size as VmString, whether it is Some or None.
+    // Using u64 by itself would not allow this optimization, hence worse memory efficiency when thousands to millions of VmString might exist and some of them being `Option<VmString>`
+    pub hash: NonZeroU64,
+}
+
+impl Default for VmString {
+    fn default() -> Self {
+        VmString {
+            hash: NonZeroU64::new(1).unwrap(),
+            //  the rest is default
+            length: 0,
+            offset: ptr::null()
+        }
+    }
 }
 
 impl PartialEq for VmString {
-    fn eq(&self, other: &Self) -> bool {
-        if self.hash == other.hash && self.length != other.length {
-            let a = unsafe { std::slice::from_raw_parts(self.offset, self.length) };
-            let b = unsafe { std::slice::from_raw_parts(other.offset, other.length) };
-            return a == b;
+    fn eq(
+        &self,
+        other: &Self
+    ) -> bool {
+        if self.hash != other.hash || self.length != other.length {
+            return false;
         }
-        false
+
+        let (a, b) = unsafe {
+            (std::slice::from_raw_parts(self.offset, self.length), std::slice::from_raw_parts(other.offset, other.length))
+        };
+
+        let mut i = 0;
+        while i + LANES <= a.len() {
+            let va = Simd::<u8, LANES>::from_slice(&a[i..]);
+            let vb = Simd::<u8, LANES>::from_slice(&b[i..]);
+            if !va.simd_eq(vb).all() { return false; }
+            i += LANES;
+        }
+        while i < a.len() {
+            if a[i] != b[i] { return false; }
+            i += 1;
+        }
+        true
     }
 }
 
@@ -62,34 +96,43 @@ impl Eq for VmString {}
 
 impl Hash for VmString {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u64(self.hash);
+        state.write_u64(self.hash.get());
         state.write_usize(self.length);
     }
 }
 
+unsafe impl Send for VmString {}
+unsafe impl Sync for VmString {}
 
 pub struct StringPool {
-    data_buffer: GrowableAtomicBump,
+    data_buffer: GrowableAtomicBump<'static>,
     interned_strings: DashMap<u64, SmallVec<[VmString; 2]>, IdentityBuild>,
 }
+
+const MEGABYTE: usize = 1024 * 1024;
 
 impl StringPool {
     #[inline(always)]
     pub fn new() -> Result<Self, AllocError> {
         Ok(StringPool {
-            data_buffer: GrowableAtomicBump::with_capacity_and_aligned(4 * 1024 * 1024, 32)?,
+            data_buffer: GrowableAtomicBump::with_capacity_and_aligned(4 * MEGABYTE, 32)?,
             interned_strings: DashMap::with_hasher(IdentityBuild),
         })
     }
 
     #[inline(always)]
-    pub fn intern(&mut self, s: &str) -> VmString {
+    pub fn len(&self) -> usize {
+        self.data_buffer.len()
+    }
+    
+    #[inline(always)]
+    pub fn intern(&self, s: &str) -> VmString {
         self.intern_bytes(s.as_bytes())
     }
 
     #[inline(always)]
-    pub fn intern_bytes(&mut self, bytes: &[u8]) -> VmString {
-        let hash = self.hash_bytes_simd(bytes);
+    pub fn intern_bytes(&self, bytes: &[u8]) -> VmString {
+        let hash = Self::hash_bytes_simd(bytes);
 
         if let Some(collision_list) = self.interned_strings.get(&hash) {
             if let Some(vm_string) = self.find_simd(&collision_list, bytes) {
@@ -97,14 +140,20 @@ impl StringPool {
             }
         }
 
-        let slice: *mut u8 = unsafe { self.data_buffer.alloc_many(bytes).unwrap_unchecked() };
+        self.insert_vm_string(bytes, hash)
+    }
 
-        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), slice, bytes.len()); }
+    fn insert_vm_string(&self, bytes: &[u8], hash: u64) -> VmString {
+        let slice: &mut [u8] = self.data_buffer
+            .alloc_many(bytes)
+            .expect("Failed to allocate string slice");
+
+        unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), slice.as_mut_ptr(), bytes.len()); }
 
         let new_vm_string = VmString {
-            offset: slice as *const u8,
+            offset: slice.as_ptr(),
             length: bytes.len(),
-            hash,
+            hash: NonZeroU64::new(hash).unwrap(),
         };
 
         self.interned_strings.entry(hash).or_default().push(new_vm_string);
@@ -126,13 +175,13 @@ impl StringPool {
     // Private SIMD functions
     // ----------------------
     #[inline(always)]
-    fn eq_simd(&self, a: &[u8], b: &[u8]) -> bool {
+    fn eq_simd(a: &[u8], b: &[u8]) -> bool {
         if a.len() != b.len() { return false; }
 
         let mut i = 0;
         while i + LANES <= a.len() {
-            let va = Simd::<u8, LANES>::from_slice(&a[i..]);
-            let vb = Simd::<u8, LANES>::from_slice(&b[i..]);
+            let va: Simd<u8, 32> = Simd::<u8, LANES>::from_slice(&a[i..]);
+            let vb: Simd<u8, 32> = Simd::<u8, LANES>::from_slice(&b[i..]);
             if !va.simd_eq(vb).all() { return false; }
             i += LANES;
         }
@@ -148,9 +197,7 @@ impl StringPool {
         for &vm_string in collision_list.iter() {
             if vm_string.length != bytes.len() { continue; }
             let stored = self.resolve_bytes(&vm_string);
-            if self.eq_simd(stored, bytes) {
-                return Some(vm_string);
-            }
+            if Self::eq_simd(stored, bytes) { return Some(vm_string); }
         }
         None
     }
@@ -158,21 +205,22 @@ impl StringPool {
     // -----------------------
     // SIMD-accelerated Fx-style hash
     #[inline(always)]
-    fn hash_bytes_simd(&self, bytes: &[u8]) -> u64 {
+    fn hash_bytes_simd(bytes: &[u8]) -> u64 {
         let mut hash = FX_INIT;
         let mut i = 0;
 
         while i + LANES <= bytes.len() {
             let chunk = Simd::<u8, LANES>::from_slice(&bytes[i..]);
-            // Simple sum of bytes as Fx-style reduction
+            // More robust mixing: multiply each byte, sum, then fold
             let sum: u64 = chunk.reduce_sum() as u64;
             hash = hash.wrapping_mul(FX_PRIME).wrapping_add(sum);
+            hash ^= hash >> 33; // small avalanche
             i += LANES;
         }
 
-        // Scalar fallback for remaining bytes
         while i < bytes.len() {
             hash = hash.wrapping_mul(FX_PRIME).wrapping_add(bytes[i] as u64);
+            hash ^= hash >> 33;
             i += 1;
         }
 
@@ -186,7 +234,7 @@ mod tests {
 
     #[test]
     fn test_basic_intern_and_resolve() {
-        let mut pool = StringPool::new().unwrap();
+        let pool = StringPool::new().unwrap();
 
         let hello1 = pool.intern("hello");
         let hello2 = pool.intern("hello");
@@ -207,7 +255,7 @@ mod tests {
 
     #[test]
     fn test_collision_handling() {
-        let mut pool = StringPool::new().unwrap();
+        let pool = StringPool::new().unwrap();
 
         // Create two strings that produce same hash manually if needed
         let s1 = "abcd";
@@ -223,7 +271,7 @@ mod tests {
 
     #[test]
     fn test_simd_equality() {
-        let mut pool = StringPool::new().unwrap();
+        let pool = StringPool::new().unwrap();
 
         let short = pool.intern("short");
         let same = pool.intern("short");
@@ -237,13 +285,13 @@ mod tests {
         let same_bytes = pool.resolve_bytes(&same);
         let diff_bytes = pool.resolve_bytes(&diff);
 
-        assert!(pool.eq_simd(bytes, same_bytes));
-        assert!(!pool.eq_simd(bytes, diff_bytes));
+        assert!(StringPool::eq_simd(bytes, same_bytes));
+        assert!(!StringPool::eq_simd(bytes, diff_bytes));
     }
 
     #[test]
     fn test_unicode_strings() {
-        let mut pool = StringPool::new().unwrap();
+        let pool = StringPool::new().unwrap();
 
         let smile = pool.intern("😊");
         let smile2 = pool.intern("😊");
@@ -258,7 +306,7 @@ mod tests {
 
     #[test]
     fn test_large_string() {
-        let mut pool = StringPool::new().unwrap();
+        let pool = StringPool::new().unwrap();
 
         let long = "a".repeat(1024);
         let vm = pool.intern(&long);

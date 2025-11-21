@@ -1,9 +1,10 @@
 use std::ptr;
+use std::sync::Arc;
 use smallvec::SmallVec;
 use ir::hir::StrId;
 use zetaruntime::string_pool::StringPool;
 
-pub fn build_scoped_name(maybe_cls_name: Option<&str>, field: StrId, pool: &mut StringPool) -> StrId {
+pub fn build_scoped_name(maybe_cls_name: Option<&str>, field: StrId, pool: Arc<StringPool>) -> StrId {
     let cls = maybe_cls_name.unwrap_or("Unknown");
     let sep = "::";
 
@@ -30,7 +31,7 @@ pub fn build_scoped_name(maybe_cls_name: Option<&str>, field: StrId, pool: &mut 
 
 const VTABLE_LEN: usize = 8;
 
-pub fn make_vtable_name(name: StrId, string_pool: &mut StringPool) -> StrId {
+pub fn make_vtable_name(name: StrId, string_pool: Arc<StringPool>) -> StrId {
     let name = string_pool.resolve_string(&*name);
 
     let vtable = b"vtable::";
@@ -49,7 +50,7 @@ pub fn make_vtable_name(name: StrId, string_pool: &mut StringPool) -> StrId {
     StrId(string_pool.intern_bytes(string.as_slice()))
 }
 
-pub fn get_type(name: StrId, string_pool: &mut StringPool) -> StrId {
+pub fn get_type(name: StrId, string_pool: Arc<StringPool>) -> StrId {
     let mut parts = arrayvec::ArrayVec::<&str, 2>::new();
     for part in string_pool.resolve_string(&*name).split('_') {
         if parts.try_push(part).is_err() {
