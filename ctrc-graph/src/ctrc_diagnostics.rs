@@ -19,18 +19,14 @@ impl<'a> CTRCDiagnostics<'a> {
         reporter: &mut ErrorReporter<'a, 'bump>,
         file_name: &'a str,
     ) {
-        // Report potential memory leaks
         for leak_alias in &result.potential_leaks {
             self.report_memory_leak(leak_alias, result, reporter, file_name);
         }
         
-        // Report cyclic references if detected
         self.detect_and_report_cycles(result, reporter, file_name);
         
-        // Report unused allocations
         self.report_unused_allocations(result, reporter, file_name);
         
-        // Report double-free potential
         self.report_potential_double_free(result, reporter, file_name);
     }
     
@@ -41,13 +37,11 @@ impl<'a> CTRCDiagnostics<'a> {
         reporter: &mut ErrorReporter<'a, 'bump>,
         file_name: &'a str,
     ) {
-        // Find the allocation site for this leak
         let allocation_site = result.allocation_sites
             .iter()
             .find(|(_, alias)| *alias == leak_alias)
             .map(|(point, _)| point);
         
-        // Find the variable name associated with this alias
         let variable_name = result.variable_aliases
             .iter()
             .find(|(_, alias)| *alias == leak_alias)
@@ -81,8 +75,6 @@ impl<'a> CTRCDiagnostics<'a> {
         file_name: &'a str,
     ) {
         // Simple cycle detection based on allocation patterns
-        // In a real implementation, this would use the PVG graph structure
-        
         let mut potential_cycles = Vec::new();
         
         // Look for variables that might be involved in cycles
@@ -90,7 +82,6 @@ impl<'a> CTRCDiagnostics<'a> {
         for (var_name, alias_id) in &result.variable_aliases {
             let var_str = self.string_pool.resolve_string(&*var_name);
             
-            // Check if this variable has multiple references or complex patterns
             let drop_count = result.drop_insertions
                 .iter()
                 .filter(|drop| drop.alias_id == *alias_id)
@@ -130,7 +121,6 @@ impl<'a> CTRCDiagnostics<'a> {
         reporter: &mut ErrorReporter<'a, 'bump>,
         file_name: &'a str,
     ) {
-        // Find allocations that have no corresponding drops
         for (allocation_point, alias_id) in &result.allocation_sites {
             let has_drop = result.drop_insertions
                 .iter()
@@ -141,7 +131,6 @@ impl<'a> CTRCDiagnostics<'a> {
                 .any(|call| call.alias_id == *alias_id);
             
             if !has_drop && !has_destructor {
-                // Find variable name for this allocation
                 let variable_name = result.variable_aliases
                     .iter()
                     .find(|(_, var_alias)| *var_alias == alias_id)
@@ -165,7 +154,6 @@ impl<'a> CTRCDiagnostics<'a> {
         reporter: &mut ErrorReporter<'a, 'bump>,
         file_name: &'a str,
     ) {
-        // Check for variables that might be dropped multiple times
         let mut drop_counts: HashMap<AliasID, usize> = HashMap::new();
         
         for drop in &result.drop_insertions {
@@ -211,7 +199,6 @@ impl<'a> CTRCDiagnostics<'a> {
     }
 }
 
-// Helper function to integrate CTRC diagnostics into the main compilation pipeline
 pub fn analyze_ctrc_and_report<'a, 'bump>(
     result: &CTRCAnalysisResult,
     string_pool: &'a StringPool,

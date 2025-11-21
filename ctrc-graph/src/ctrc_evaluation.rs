@@ -59,7 +59,6 @@ impl CTRCGraph {
         self.is_droppable_type(ty)
     }
 
-    // Keep the old recursive method for backward compatibility but delegate to iterative version
     pub(crate) fn analyze_expression(&mut self, expr: &HirExpr<'_, '_>, result: &mut CTRCAnalysisResult) {
         self.analyze_expression_iterative(expr, result);
     }

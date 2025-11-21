@@ -22,25 +22,20 @@ mod prettify_tests {
         let string_pool: Arc<StringPool> = create_demo_string_pool();
         let bump = GrowableBump::new(8192, 16);
 
-        // Create string IDs
         let module_name = create_demo_str_id(&string_pool, "ctrc_demo");
         let person_class = create_demo_str_id(&string_pool, "Person");
         let database_class = create_demo_str_id(&string_pool, "Database");
 
-        // Field names
         let name_field = create_demo_str_id(&string_pool, "name");
         let age_field = create_demo_str_id(&string_pool, "age");
         let connection_field = create_demo_str_id(&string_pool, "connection");
 
-        // Function names
         let main_func_name = create_demo_str_id(&string_pool, "main");
         let create_person_func = create_demo_str_id(&string_pool, "create_person");
 
-        // Variable names
         let person_var = create_demo_str_id(&string_pool, "person");
         let db_var = create_demo_str_id(&string_pool, "db");
 
-        // Create structs with destructors
         let person_destructor = bump.alloc_value(HirStmt::Block { body: &[] });
         let database_destructor = bump.alloc_value(HirStmt::Block { body: &[] });
 

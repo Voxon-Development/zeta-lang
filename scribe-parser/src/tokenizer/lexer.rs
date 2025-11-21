@@ -110,7 +110,6 @@ impl<'a, 'bump> Lexer<'a, 'bump> {
                 '/' => {
                     if let Some(next_ch) = chars.peek() {
                         if *next_ch == '/' {
-                            // Line comment or doc comment
                             chars.next(); // consume second '/'
                             self.pos += 1;
                             

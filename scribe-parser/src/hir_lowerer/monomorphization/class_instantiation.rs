@@ -9,7 +9,6 @@ use dashmap::mapref::one::Ref;
 use zetaruntime::arena::GrowableAtomicBump;
 
 /// Instantiate a generic class for concrete args, caching the result and registering the new class
-// Removed unsafe patterns - now using safe field reconstruction
 pub fn instantiate_class_for_types<'a, 'bump>(
     ctx: &LoweringCtx<'a, 'bump>,
     base_id: StrId,

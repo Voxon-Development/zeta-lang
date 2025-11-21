@@ -30,12 +30,10 @@ where
         }
     }
     
-    /// Get a reference to the bump allocator
     pub fn bump(&self) -> &'bump GrowableBump<'bump> {
         self.bump
     }
     
-    /// Parse a statement
     pub fn parse_stmt(&self, cursor: &mut TokenCursor<'a>) -> Stmt<'a, 'bump> {
         // Check for type inference: `x := value`
         if cursor.peek_kind() == Some(TokenKind::Ident) && 
@@ -88,7 +86,7 @@ where
         let let_stmt = self.bump.alloc_value(LetStmt {
             mutability: false,
             ident,
-            type_annotation: Type::Void, // Type will be inferred
+            type_annotation: Type::Infer, // Type will be inferred
             value,
         });
         Stmt::Let(let_stmt)

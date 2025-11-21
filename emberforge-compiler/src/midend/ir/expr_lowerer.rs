@@ -381,7 +381,6 @@ impl<'a> MirExprLowerer<'a> {
                     operands.push(Operand::Value(self.lower_expr(a)));
                 }
 
-                // Resolve the scope string and create a fully-qualified function name
                 let scope_str = self
                     .context
                     .resolve_string(scope_name);

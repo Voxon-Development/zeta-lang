@@ -61,7 +61,6 @@ impl CTRCHirIntegration {
         }
     }
     
-    /// Create HIR module with CTRC analysis from existing analysis result
     pub fn create_hir_with_ctrc<'a, 'bump>(
         module: HirModule<'a, 'bump>,
         ctrc_result: Option<CTRCAnalysisResult>,
@@ -123,12 +122,10 @@ impl CTRCAnalysisSummary {
     }
 }
 
-/// Convenience functions for working with CTRC-integrated HIR
 pub mod convenience {
     use super::*;
     use ir::pretty::IrPrettyPrinter;
     
-    /// Analyze HIR module and pretty-print with CTRC results
     pub fn analyze_and_pretty_print<'a, 'bump>(
         module: HirModule<'a, 'bump>,
         bump: &'bump GrowableBump<'bump>,
@@ -141,7 +138,6 @@ pub mod convenience {
         IrPrettyPrinter::hir_with_ctrc_to_string(string_pool, &module_with_ctrc)
     }
     
-    /// Pretty-print HIR module with existing CTRC analysis
     pub fn pretty_print_with_ctrc<'a, 'bump>(
         module_with_ctrc: &HirModuleWithCTRC<'a, 'bump>,
         string_pool: Arc<StringPool>,

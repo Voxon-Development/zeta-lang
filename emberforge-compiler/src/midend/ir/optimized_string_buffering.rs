@@ -1,5 +1,6 @@
 use std::ptr;
 use std::sync::Arc;
+use arrayvec::ArrayVec;
 use smallvec::SmallVec;
 use ir::hir::StrId;
 use zetaruntime::string_pool::StringPool;
@@ -51,7 +52,7 @@ pub fn make_vtable_name(name: StrId, string_pool: Arc<StringPool>) -> StrId {
 }
 
 pub fn get_type(name: StrId, string_pool: Arc<StringPool>) -> StrId {
-    let mut parts = arrayvec::ArrayVec::<&str, 2>::new();
+    let mut parts: ArrayVec<&str, 2> = arrayvec::ArrayVec::<&str, 2>::new();
     for part in string_pool.resolve_string(&*name).split('_') {
         if parts.try_push(part).is_err() {
             panic!("Unexpected type name with too many parts: {}", string_pool.resolve_string(&*name));

@@ -26,7 +26,6 @@ pub fn parse_to_type<'a, 'bump>(token_type: &str, token_kind: TokenKind, context
     
     let token_type = token_type.trim();
 
-    // Handle generic types like "Ptr<this>"
     if let Some(open_angle) = token_type.find('<') {
         let close_angle: usize = token_type
             .rfind('>')

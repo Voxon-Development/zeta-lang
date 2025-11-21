@@ -102,12 +102,10 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             return value;
         }
 
-        // Check if this is a call to an inline function
         if let HirExpr::Ident(func_name) = &lowered_callee {
             if let Some(func_entry) = self.ctx.functions.get(func_name) {
                 let func = func_entry.value();
                 if func.inline {
-                    // Inline the function call
                     if let Some(inlined) = self.try_inline_function(func, arguments) {
                         return inlined;
                     }
@@ -145,7 +143,6 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     }
 
     pub(super) fn find_interface_method(&self, object: &HirExpr, method: StrId) -> Option<StrId> {
-        // Resolve class name from variable types or direct identifier equal to class name
         let class_name: StrId = match object {
             HirExpr::Ident(var) => {
                 if let Some(entry) = self.ctx.variable_types.get(var) {
@@ -266,17 +263,13 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         }
     }
 
-    /// Try to inline a function call by substituting parameters with arguments
     fn try_inline_function(&self, func: &HirFunc<'a, 'bump>, arguments: &'bump [Expr]) -> Option<HirExpr<'a, 'bump>> {
-        // Only inline if function has a body
         let body = func.body?;
         
-        // Build parameter substitution map
         let mut param_map: HashMap<StrId, HirExpr<'a, 'bump>, FxHashBuilder> = HashMap::with_hasher(FxHashBuilder);
         
         if let Some(params) = func.params {
             if params.len() != arguments.len() {
-                // Argument count mismatch, cannot inline
                 return None;
             }
             
@@ -294,12 +287,10 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             }
         }
         
-        // Inline the function body with parameter substitution
         let inlined_body = self.inline_stmt_as_expr(&body, &param_map)?;
         Some(inlined_body)
     }
     
-    /// Convert a statement to an expression for inlining, applying parameter substitution
     fn inline_stmt_as_expr(&self, stmt: &HirStmt<'a, 'bump>, param_map: &HashMap<StrId, HirExpr<'a, 'bump>, FxHashBuilder>) -> Option<HirExpr<'a, 'bump>> {
         match stmt {
             HirStmt::Return(Some(expr)) => {

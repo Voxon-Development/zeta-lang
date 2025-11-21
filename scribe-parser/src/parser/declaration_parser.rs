@@ -81,7 +81,6 @@ where
     }
 
     pub(crate) fn parse_function_decl(&self, cursor: &mut TokenCursor<'a>) -> FuncDecl<'a, 'bump> {
-        // Parse visibility modifiers
         let visibility = Self::fetch_visibility(cursor);
 
         let mut is_unsafe = false;
@@ -90,7 +89,6 @@ where
         let mut inline = false;
         let mut noinline = false;
 
-        // Parse modifiers
         loop {
             match cursor.peek_kind() {
                 Some(TokenKind::Unsafe) => {
@@ -113,8 +111,6 @@ where
                 _ => break,
             }
         }
-
-        // Parse return type (required for functions)
         
         let return_type: Option<Type> = match cursor.peek_kind() {
             Some(TokenKind::Void) => {
@@ -150,7 +146,6 @@ where
             _ => None,
         };
 
-        // Parse function name
         let name = match cursor.consume_ident() {
             Some(name) => name,
             None => {
@@ -158,7 +153,6 @@ where
             }
         };
 
-        // Parse generics if present
         let generics: Option<&[Generic]> = if cursor.peek_kind() == Some(TokenKind::Lt) {
             cursor.advance_kind(); // consume '<'
             self.parse_generics(cursor)
@@ -166,7 +160,6 @@ where
             None
         };
 
-        // Parse parameters
         let params: Option<&[Param]> = if cursor.peek_kind() == Some(TokenKind::LParen) {
             cursor.advance_kind(); // consume '('
             self.parse_function_params(cursor)

@@ -134,9 +134,6 @@ const fn round_to_eight_align(size_bytes: usize) -> usize {
 }
 
 fn usize_clif_ty(isa: &dyn TargetIsa) -> Type {
-    // If you want isize vs usize semantics, change accordingly.
-    // Usually `usize` is same bitwidth as pointer type but an integer type:
-    // we will map usize to the pointer-width integer type.
     ptr_clif_ty(isa)
 }*/
 
@@ -249,7 +246,7 @@ pub fn layout_of(ty: &SsaType, target: &TargetInfo) -> Result<Layout, LayoutErro
             Ok(Layout { size, align: max_align })
         }
 
-        // Enums/sum types: choose your scheme. Simple tagged union:
+        // Enums/sum types: Simple tagged union:
         SsaType::Enum(variants) => {
             if variants.is_empty() { return Ok(Layout { size: 0, align: 1 }); }
             let mut max_variant = Layout { size: 0, align: 1 };
@@ -278,7 +275,6 @@ const fn round_up(x: usize, align: usize) -> usize {
 }
 
 fn tag_bytes(variants: usize) -> usize {
-    // pick an encoding; here is a simple power-of-two step
     match variants {
         0..=0x100      => 1,
         0x101..=0x1_0000 => 2,
@@ -416,7 +412,6 @@ pub fn codegen_intrinsic(
             let p_ty = builder.func.dfg.value_type(p);
             let p = ensure_value_is_ptr_width(builder, p, ptr_ty, p_ty);
 
-            // Determine CLIF load type from return HirType
             let ret_hir = &ret_hir_types[0];
             let clif_ret = clif_type_of(&ret_hir);
 

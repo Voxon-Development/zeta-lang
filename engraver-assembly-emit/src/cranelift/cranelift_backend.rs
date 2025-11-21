@@ -163,10 +163,9 @@ impl CraneliftBackend {
             }
 
             Instruction::Phi { dest, incomings: _ } => {
-                // For phi lowering we map (block, dest) -> param index, and we read that param
                 let idx = phi_param_map
                     .get(&(curr_bb, *dest))
-                    .or_else(|| phi_param_map.get(&(curr_bb, *dest))) // redundant but explicit
+                    .or_else(|| phi_param_map.get(&(curr_bb, *dest)))
                     .expect("phi param mapping missing for dest");
                 let clif_bb = block_map
                     .get(&curr_bb)
@@ -178,7 +177,6 @@ impl CraneliftBackend {
             }
 
             Instruction::Jump { target } => {
-                // collect BlockArg values for target's phi params
                 let mut args: Vec<BlockArg> = Vec::new();
                 let target_bb_info = func
                     .blocks
@@ -187,7 +185,6 @@ impl CraneliftBackend {
                     .expect("target block missing");
                 for inst in &target_bb_info.instructions {
                     if let Instruction::Phi { incomings, .. } = inst {
-                        // find incoming value from curr_bb
                         let mut found = false;
                         for (pred, val) in incomings {
                             if pred == &curr_bb {
@@ -200,12 +197,11 @@ impl CraneliftBackend {
                             }
                         }
                         if !found {
-                            // invalid IR; use zero to avoid panic
                             let z = builder.ins().iconst(types::I64, 0);
                             args.push(BlockArg::Value(z));
                         }
                     } else {
-                        break; // phis are expected first
+                        break;
                     }
                 }
                 builder.ins().jump(block_map[target], &args);
@@ -220,7 +216,6 @@ impl CraneliftBackend {
                     _ => unimplemented!(),
                 };
 
-                // then args
                 let mut then_args: Vec<BlockArg> = Vec::new();
                 let then_info = func.blocks.iter().find(|b| b.id == *then_bb).expect("then block missing");
                 for inst in &then_info.instructions {
@@ -244,7 +239,6 @@ impl CraneliftBackend {
                     }
                 }
 
-                // else args
                 let mut else_args: Vec<BlockArg> = Vec::new();
                 let else_info = func.blocks.iter().find(|b| b.id == *else_bb).expect("else block missing");
                 for inst in &else_info.instructions {
@@ -291,7 +285,6 @@ impl CraneliftBackend {
                 var_map.insert(*dest, var);
             }
             Instruction::LoadField { dest, base, offset } => {
-                // Get base pointer value
                 let base_val = match base {
                     Operand::Value(bv) => {
                         let vref = var_map.get(bv).expect("LoadField: base value undefined");
@@ -325,7 +318,6 @@ impl CraneliftBackend {
                     _ => panic!("StoreField base must be a Value"),
                 };
 
-                // value to store
                 let value_val = match value {
                     Operand::Value(vv) => {
                         let vref = var_map.get(vv).expect("StoreField: value undefined");
@@ -340,11 +332,9 @@ impl CraneliftBackend {
                 let addr = builder.ins().iadd(base_val, off_val);
 
                 let flags = MemFlags::new();
-                // store value_val at addr + 0
                 builder.ins().store(flags, value_val, addr, 0);
             }
             Instruction::Call { dest, func, args } => {
-                // Resolve callee name
                 let (func_name_id, func_name): (Option<&StrId>, &str) = match func {
                     Operand::FunctionRef(s) => {
                         (Some(s), self.context.resolve_string(&*s))
@@ -354,7 +344,6 @@ impl CraneliftBackend {
 
                 let func_name_id = func_name_id.unwrap();
 
-                // Build arg vals
                 let mut arg_vals = Vec::new();
                 for a in args {
                     let val = match a {
@@ -373,6 +362,7 @@ impl CraneliftBackend {
                     .rsplit(|c| c == ':' || c == '.')
                     .next()
                     .unwrap_or(func_name);
+
                 if let Some(intr) = crate::cranelift::cranelift_intrinsics::resolve_intrinsic(short_name) {
                     // Lower intrinsic directly (including stack alloc and zeroed)
                     use crate::cranelift::cranelift_intrinsics::codegen_intrinsic;
@@ -424,10 +414,6 @@ impl CraneliftBackend {
                 }
             }
 
-
-            /*_ => {
-                // unhandled instructions left as TODO / unimplemented
-            }*/
             Instruction::Unary { .. } => {}
             Instruction::ClassCall { .. } => {}
             Instruction::InterfaceDispatch { .. } => {}
@@ -488,7 +474,6 @@ impl CraneliftBackend {
         builder.append_block_params_for_function_params(entry);
         builder.switch_to_block(entry);
 
-        // Call the Zeta main function
         let zeta_main_ref = self.module.declare_func_in_func(zeta_main_fid, &mut builder.func);
         let call = builder.ins().call(zeta_main_ref, &[]);
 
@@ -517,7 +502,6 @@ impl Backend for CraneliftBackend {
     fn emit_module(&mut self, module: &Module) {
         let mut zeta_main_fid = None;
 
-        // First pass: declare all functions
         for (name, func) in &module.funcs {
             let mut sig = Signature::new(self.module.isa().default_call_conv());
             for param in &func.params {
@@ -543,12 +527,10 @@ impl Backend for CraneliftBackend {
             self.func_ids.insert(name.clone(), fid);
         }
 
-        // Second pass: emit all function bodies
         for func in module.funcs.values() {
             self.emit_function(func);
         }
 
-        // If we found a main function, create the C wrapper
         if let Some(zeta_main_name) = zeta_main_fid {
             let fid = self.func_ids[&zeta_main_name];
             self.emit_main_wrapper(fid);

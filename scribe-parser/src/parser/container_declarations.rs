@@ -13,14 +13,11 @@ where
     pub fn parse_enum(&self, cursor: &mut TokenCursor<'a>) -> Stmt<'a, 'bump> {
         cursor.expect_kind(TokenKind::Enum);
 
-        // Parse visibility (default public)
         let visibility = Self::fetch_visibility(cursor);
 
-        // Parse enum name
         let name = cursor.consume_ident()
             .expect("Expected enum name");
 
-        // Parse generics if present
         let generics = if cursor.peek_kind() == Some(TokenKind::Lt) {
             cursor.advance_kind();
             self.parse_generics(cursor)
@@ -30,7 +27,6 @@ where
 
         cursor.expect_kind(TokenKind::LBrace);
 
-        // Parse variants
         let mut variants_vec = Vec::new();
         while cursor.peek_kind() != Some(TokenKind::RBrace) && !cursor.at_end() {
             let variant_name = match cursor.consume_ident() {
@@ -44,7 +40,6 @@ where
 
             let mut fields_vec: Vec<Field> = Vec::new();
 
-            // Check for tuple-like variant with fields
             if cursor.peek_kind() == Some(TokenKind::LParen) {
                 cursor.advance_kind(); // consume '('
 
@@ -119,7 +114,6 @@ where
 
             let to_state: StateRef = self.parse_state_ref(cursor);
 
-            // Optional action block
             let action = if cursor.peek_kind() == Some(TokenKind::LBrace) {
                 self.parse_block(cursor)
             } else {
@@ -166,10 +160,8 @@ where
     pub fn parse_interface(&self, cursor: &mut TokenCursor<'a>) -> Stmt<'a, 'bump> {
         cursor.expect_kind(TokenKind::Interface);
 
-        // Parse visibility (default public)
         let visibility = Self::fetch_visibility(cursor);
 
-        // Parse sealed keyword
         let sealed = if cursor.peek_kind() == Some(TokenKind::Sealed) {
             cursor.advance_kind();
             true
@@ -340,7 +332,6 @@ where
 
                 destructor = self.parse_block(cursor);
             } else if cursor.peek_kind() == Some(TokenKind::Const) {
-                // Parse const - simplified for now
                 cursor.advance_kind();
                 // Skip const parsing for now
                 while cursor.peek_kind() != Some(TokenKind::Semicolon) && !cursor.at_end() {

@@ -25,11 +25,9 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
         func: &HirFunc<'a, 'bump>,
         substitutions: &HashMap<StrId, HirType<'a, 'bump>, FxHashBuilder>,
     ) -> HirFunc<'a, 'bump> {
-        // clone and apply substitutions to signature
         let mut new_func = func.clone();
         self.apply_substitutions_to_func(&mut new_func, substitutions);
 
-        // rename function to specialized name (cache)
         let suffix = suffix_for_subs(self.ctx.context.clone(), substitutions);
         let orig_name: StrId = new_func.name.clone();
         let specialized_name: StrId = match self
@@ -57,9 +55,8 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
             .functions
             .insert(new_func.name.clone(), new_func.clone());
 
-        // monomorphize body if present
         if let Some(body) = new_func.body {
-            let new_body = self.monomorphize_stmt_safe(&body, substitutions);
+            let new_body = self.monomorphize_stmt(&body, substitutions);
             new_func.body = Some(*self.ctx.bump.alloc_value_immutable(new_body));
         }
 
@@ -72,7 +69,6 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
         substitutions: &HashMap<StrId, HirType<'_, 'a>, FxHashBuilder>,
     ) {
         if let Some(params) = func.params {
-            // Safe approach: create new params array
             let mut new_params: Vec<HirParam> = Vec::new();
             for param in params.iter() {
                 let new_param = match param {
@@ -96,8 +92,7 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
             *ret = substitute_type(ret, substitutions, self.ctx.bump.clone());
         }
     }
-    // Safe version that creates new statements instead of mutating
-    pub fn monomorphize_stmt_safe(
+    pub fn monomorphize_stmt(
         &self,
         stmt: &HirStmt<'a, 'bump>,
         substitutions: &HashMap<StrId, HirType<'_, 'a>, FxHashBuilder>,
@@ -105,19 +100,19 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
         match stmt {
             HirStmt::Block { body } => {
                 let new_body: Vec<HirStmt> = body.iter()
-                    .map(|s| self.monomorphize_stmt_safe(s, substitutions))
+                    .map(|s| self.monomorphize_stmt(s, substitutions))
                     .collect();
                 let body_slice = self.ctx.bump.alloc_slice(&new_body);
                 HirStmt::Block { body: body_slice }
             }
             HirStmt::If { cond, then_block, else_block } => {
-                let new_cond = self.monomorphize_expr_safe(cond, substitutions);
+                let new_cond = self.monomorphize_expr(cond, substitutions);
                 let new_then: Vec<HirStmt> = then_block.iter()
-                    .map(|s| self.monomorphize_stmt_safe(s, substitutions))
+                    .map(|s| self.monomorphize_stmt(s, substitutions))
                     .collect();
                 let then_slice = self.ctx.bump.alloc_slice(&new_then);
                 let new_else = else_block.map(|e| {
-                    let new_stmt = self.monomorphize_stmt_safe(e, substitutions);
+                    let new_stmt = self.monomorphize_stmt(e, substitutions);
                     self.ctx.bump.alloc_value_immutable(new_stmt)
                 });
                 HirStmt::If {
@@ -127,8 +122,8 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
                 }
             }
             HirStmt::While { cond, body } => {
-                let new_cond = self.monomorphize_expr_safe(cond, substitutions);
-                let new_body = self.monomorphize_stmt_safe(body, substitutions);
+                let new_cond = self.monomorphize_expr(cond, substitutions);
+                let new_body = self.monomorphize_stmt(body, substitutions);
                 HirStmt::While {
                     cond: self.ctx.bump.alloc_value_immutable(new_cond),
                     body: self.ctx.bump.alloc_value_immutable(new_body),
@@ -136,7 +131,7 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
             }
             HirStmt::Let { name, ty, value, mutable } => {
                 let new_ty = substitute_type(ty, substitutions, self.ctx.bump.clone());
-                let new_value = self.monomorphize_expr_safe(value, substitutions);
+                let new_value = self.monomorphize_expr(value, substitutions);
                 HirStmt::Let {
                     name: *name,
                     ty: new_ty,
@@ -146,37 +141,36 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
             }
             HirStmt::Return(opt) => {
                 let new_opt = opt.map(|e| {
-                    let new_expr = self.monomorphize_expr_safe(e, substitutions);
+                    let new_expr = self.monomorphize_expr(e, substitutions);
                     self.ctx.bump.alloc_value_immutable(new_expr)
                 });
                 HirStmt::Return(new_opt)
             }
             HirStmt::Expr(e) => {
-                let new_expr = self.monomorphize_expr_safe(e, substitutions);
+                let new_expr = self.monomorphize_expr(e, substitutions);
                 HirStmt::Expr(self.ctx.bump.alloc_value_immutable(new_expr))
             }
             HirStmt::UnsafeBlock { body } => {
-                let new_body = self.monomorphize_stmt_safe(body, substitutions);
+                let new_body = self.monomorphize_stmt(body, substitutions);
                 HirStmt::UnsafeBlock {
                     body: self.ctx.bump.alloc_value_immutable(new_body),
                 }
             }
-            // For other variants, just clone them as-is
+
             _ => stmt.clone(),
         }
     }
 
-    // Safe version that creates new expressions instead of mutating
-    pub fn monomorphize_expr_safe(
+    pub fn monomorphize_expr(
         &self,
         expr: &HirExpr<'a, 'bump>,
         subs: &HashMap<StrId, HirType, FxHashBuilder>,
     ) -> HirExpr<'a, 'bump> {
         match expr {
             HirExpr::Call { callee, args } => {
-                let new_callee = self.monomorphize_expr_safe(callee, subs);
+                let new_callee = self.monomorphize_expr(callee, subs);
                 let new_args: Vec<HirExpr> = args.iter()
-                    .map(|a| self.monomorphize_expr_safe(a, subs))
+                    .map(|a| self.monomorphize_expr(a, subs))
                     .collect();
                 let args_slice = self.ctx.bump.alloc_slice(&new_args);
                 HirExpr::Call {
@@ -185,9 +179,9 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
                 }
             }
             HirExpr::InterfaceCall { callee, interface, args } => {
-                let new_callee = self.monomorphize_expr_safe(callee, subs);
+                let new_callee = self.monomorphize_expr(callee, subs);
                 let new_args: Vec<HirExpr> = args.iter()
-                    .map(|a| self.monomorphize_expr_safe(a, subs))
+                    .map(|a| self.monomorphize_expr(a, subs))
                     .collect();
                 let args_slice = self.ctx.bump.alloc_slice(&new_args);
                 HirExpr::InterfaceCall {
@@ -197,9 +191,9 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
                 }
             }
             HirExpr::ClassInit { name, args, span } => {
-                let new_name = self.monomorphize_expr_safe(name, subs);
+                let new_name = self.monomorphize_expr(name, subs);
                 let new_args: Vec<HirExpr> = args.iter()
-                    .map(|a| self.monomorphize_expr_safe(a, subs))
+                    .map(|a| self.monomorphize_expr(a, subs))
                     .collect();
                 let args_slice = self.ctx.bump.alloc_slice(&new_args);
                 HirExpr::ClassInit {
@@ -209,7 +203,7 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
                 }
             }
             HirExpr::FieldAccess { object, field, span } => {
-                let new_object = self.monomorphize_expr_safe(object, subs);
+                let new_object = self.monomorphize_expr(object, subs);
                 HirExpr::FieldAccess {
                     object: self.ctx.bump.alloc_value_immutable(new_object),
                     field: *field,
@@ -217,7 +211,7 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
                 }
             }
             HirExpr::Get { object, field, span } => {
-                let new_object = self.monomorphize_expr_safe(object, subs);
+                let new_object = self.monomorphize_expr(object, subs);
                 HirExpr::Get {
                     object: self.ctx.bump.alloc_value_immutable(new_object),
                     field: *field,
@@ -225,8 +219,8 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
                 }
             }
             HirExpr::Binary { left, op, right, span } => {
-                let new_left = self.monomorphize_expr_safe(left, subs);
-                let new_right = self.monomorphize_expr_safe(right, subs);
+                let new_left = self.monomorphize_expr(left, subs);
+                let new_right = self.monomorphize_expr(right, subs);
                 HirExpr::Binary {
                     left: self.ctx.bump.alloc_value_immutable(new_left),
                     op: *op,
@@ -235,8 +229,8 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
                 }
             }
             HirExpr::Assignment { target, op, value, span } => {
-                let new_target = self.monomorphize_expr_safe(target, subs);
-                let new_value = self.monomorphize_expr_safe(value, subs);
+                let new_target = self.monomorphize_expr(target, subs);
+                let new_value = self.monomorphize_expr(value, subs);
                 HirExpr::Assignment {
                     target: self.ctx.bump.alloc_value_immutable(new_target),
                     op: *op,
@@ -246,7 +240,7 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
             }
             HirExpr::ExprList { list, span } => {
                 let new_list: Vec<HirExpr> = list.iter()
-                    .map(|e| self.monomorphize_expr_safe(e, subs))
+                    .map(|e| self.monomorphize_expr(e, subs))
                     .collect();
                 let list_slice = self.ctx.bump.alloc_slice(&new_list);
                 HirExpr::ExprList {
@@ -255,8 +249,8 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
                 }
             }
             HirExpr::Comparison { left, op, right, span } => {
-                let new_left = self.monomorphize_expr_safe(left, subs);
-                let new_right = self.monomorphize_expr_safe(right, subs);
+                let new_left = self.monomorphize_expr(left, subs);
+                let new_right = self.monomorphize_expr(right, subs);
                 HirExpr::Comparison {
                     left: self.ctx.bump.alloc_value_immutable(new_left),
                     op: *op,
@@ -264,7 +258,6 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
                     span: *span,
                 }
             }
-            // For other variants, just clone them as-is
             _ => expr.clone(),
         }
     }

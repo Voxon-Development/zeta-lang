@@ -11,7 +11,7 @@ use zetaruntime::bump::GrowableBump;
 use zetaruntime::string_pool::StringPool;
 use scribe_parser::hir_lowerer::HirLowerer;
 use scribe_parser::parser::descent_parser::ParserError;
-use ctrc_graph::diagnostics::analyze_ctrc_and_report;
+use ctrc_graph::ctrc_diagnostics::analyze_ctrc_and_report;
 use ir::ast::Stmt;
 use ir::hir::HirModule;
 use ir::ssa_ir::Module;
@@ -142,7 +142,7 @@ async fn process_frontend<'a, 'bump>(
     let parallelism = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-    // choose a sane multiplier; tweak if you want more/less concurrency
+
     let max_concurrent = std::cmp::max(1, parallelism.saturating_mul(2));
     let sem = Arc::new(Semaphore::new(max_concurrent));
 
@@ -152,19 +152,15 @@ async fn process_frontend<'a, 'bump>(
         let context_clone = context.clone();
         let sem_clone = sem.clone();
 
-        // Acquire permit before spawning so we don't create thousands of tasks.
-        // This effectively limits the number of live tasks and helps keep memory bounded.
         let permit = sem_clone.acquire_owned().await
             .expect("Semaphore closed unexpectedly");
 
-        // move the permit into the task so it is released when the task ends
         handles.push(tokio::spawn(async move {
             let _permit = permit;
             process_single_file(context_clone, path).await
         }));
     }
 
-    // Wait for all tasks to finish
     // Vec<tokio::runtime::task::Result<Result<ModuleWithArena, CompilerError>>>
     let results = join_all(handles).await;
     let mut modules: Vec<ModuleWithArena> = Vec::new();
@@ -207,7 +203,6 @@ where 'a: 'bump, 'bump: 'a {
         GrowableAtomicBump::with_capacity_and_aligned(initial_capacity, 8)
             .map_err(|_| CompilerError::FailedToAllocateBump)?);
 
-    // File name handling
     let path_file_name: &OsStr = path.file_name().unwrap();
     let file_name_string = path_file_name
         .to_str()
@@ -215,7 +210,6 @@ where 'a: 'bump, 'bump: 'a {
             path_file_name.to_string_lossy().as_bytes().to_vec(),
         ))?;
 
-    // Allocate file_name in the bump allocator to get 'static lifetime
     let file_name_bytes = file_name_string.as_bytes();
     let file_name_static = {
         let bytes_static = bump.alloc_many(file_name_bytes)
