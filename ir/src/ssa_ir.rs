@@ -3,7 +3,7 @@
 // =====================================
 
 use std::collections::HashMap;
-use crate::hir::{HirClass, HirEnum, HirInterface, StrId};
+use crate::hir::{HirStruct, HirEnum, HirInterface, StrId};
 use crate::ir_hasher::FxHashBuilder;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -169,9 +169,10 @@ pub struct Function {
     pub blocks: SmallVec<[BasicBlock; 12]>,
     pub value_types: HashMap<Value, SsaType, FxHashBuilder>,
     pub entry: BlockId,
+    pub noinline: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct MethodInfo {
     pub name: StrId,
     pub slot: usize, // index in vtable
@@ -189,11 +190,11 @@ pub struct InterfaceLayout {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct Module {
+pub struct Module<'a, 'bump: 'a> {
     pub funcs: HashMap<StrId, Function, FxHashBuilder>,
-    pub classes: HashMap<StrId, HirClass, FxHashBuilder>,
-    pub interfaces: HashMap<StrId, HirInterface, FxHashBuilder>,
-    pub enums: HashMap<StrId, HirEnum, FxHashBuilder>,
+    pub classes: HashMap<StrId, HirStruct<'a, 'bump>, FxHashBuilder>,
+    pub interfaces: HashMap<StrId, HirInterface<'a, 'bump>, FxHashBuilder>,
+    pub enums: HashMap<StrId, HirEnum<'a, 'bump>, FxHashBuilder>,
     pub types: HashMap<StrId, SsaType, FxHashBuilder>,
 
     pub class_layouts: HashMap<StrId, ClassLayout, FxHashBuilder>,
@@ -210,8 +211,8 @@ pub enum Type {
 }
 
 
-impl Module {
-    pub fn new() -> Module {
+impl<'a, 'bump> Module<'a, 'bump> {
+    pub fn new() -> Module<'a, 'bump> {
         Module::default()
     }
 }
