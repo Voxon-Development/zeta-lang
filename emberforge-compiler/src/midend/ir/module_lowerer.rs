@@ -1,14 +1,13 @@
 use crate::midend::ir::ir_conversion::lower_type_hir;
-use ir::context::Context;
-use ir::hir::{Hir, HirClass, HirFunc, HirInterface, HirModule, HirParam, HirType, StrId};
+use ir::hir::{Hir, HirStruct, HirFunc, HirInterface, HirModule, HirParam, HirType, StrId};
 use ir::ir_hasher::FxHashBuilder;
 use ir::ssa_ir::{Function, Module, SsaType};
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
+use zetaruntime::string_pool::StringPool;
 
-pub struct MirModuleLowerer {
-    pub module: Module,
+pub struct MirModuleLowerer<'a, 'bump> {
+    pub module: Module<'a, 'bump>,
 
     // HIR -> SSA metadata for interfaces / classes
     interface_methods: HashMap<StrId, Vec<(StrId, Vec<SsaType>, SsaType)>, FxHashBuilder>,
@@ -20,11 +19,11 @@ pub struct MirModuleLowerer {
     class_method_slots: HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
     class_field_offsets: HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
 
-    context: Rc<RefCell<Context<'static>>>,
+    context: Arc<StringPool>,
 }
 
-impl MirModuleLowerer {
-    pub fn new(context: Rc<RefCell<Context<'static>>>) -> Self {
+impl<'a, 'bump> MirModuleLowerer<'a, 'bump> {
+    pub fn new(context: Arc<StringPool>) -> Self {
         Self {
             module: Module::new(),
             interface_methods: HashMap::with_hasher(FxHashBuilder),
@@ -38,23 +37,14 @@ impl MirModuleLowerer {
         }
     }
 
-    pub fn lower_module(mut self, hir_mod: &HirModule) -> Module {
-        for item in &hir_mod.items {
-            if let Hir::Interface(iface) = item {
-                self.lower_interface(iface);
-            }
-        }
-
-        for item in &hir_mod.items {
+    pub fn lower_module(mut self, hir_mod: HirModule<'a, 'bump>) -> Module<'a, 'bump> {
+        for item in hir_mod.items {
             match item {
-                Hir::Class(class) => self.lower_class(class),
-                _ => {}
-            }
-        }
-
-        for item in &hir_mod.items {
-            match item {
-                Hir::Func(func) => self.lower_function(func),
+                Hir::Struct(class) => self.lower_class(*class),
+                Hir::Interface(iface) => self.lower_interface(*iface),
+                Hir::Func(func) => {
+                    self.lower_function(*func)
+                },
                 _ => {}
             }
         }
@@ -62,21 +52,22 @@ impl MirModuleLowerer {
         self.module
     }
 
-    fn lower_interface(&mut self, hir_iface: &HirInterface) {
+    fn lower_interface(&mut self, hir_iface: &HirInterface<'a, 'bump>) {
         let iface_id = self.interface_id_map.len();
         self.interface_id_map
-            .insert(hir_iface.name.clone(), iface_id);
+            .insert(hir_iface.name, iface_id);
         let mut methods = Vec::new();
         let mut slot_map = HashMap::with_hasher(FxHashBuilder);
-        for (i, m) in hir_iface.methods.iter().enumerate() {
-            let param_types = m
+        for (i, m) in hir_iface.methods.unwrap().iter().enumerate() {
+            let param_types: Vec<SsaType> = m
                 .params
+                .unwrap_or_default()
                 .iter()
                 .map(|p| match p {
                     HirParam::Normal {
                         name: _,
                         param_type,
-                    } => lower_type_hir(param_type),
+                    } => lower_type_hir(&param_type),
                     HirParam::This { param_type } => {
                         lower_type_hir(param_type.as_ref().unwrap_or(&HirType::This))
                     }
@@ -99,7 +90,7 @@ impl MirModuleLowerer {
             .insert(hir_iface.name, hir_iface.clone());
     }
 
-    fn lower_class(&mut self, hir_class: &HirClass) {
+    fn lower_class(&mut self, hir_class: &HirStruct<'a, 'bump>) {
         self.compute_field_offsets(hir_class);
         self.build_class_vtable(hir_class);
         self.module
@@ -107,9 +98,9 @@ impl MirModuleLowerer {
             .insert(hir_class.name, hir_class.clone());
     }
 
-    fn compute_field_offsets(&mut self, hir_class: &HirClass) {
+    fn compute_field_offsets(&mut self, hir_class: &HirStruct<'a, 'bump>) {
         let mut offsets = HashMap::with_hasher(FxHashBuilder);
-        let has_interfaces = !hir_class.interfaces.is_empty();
+        let has_interfaces = hir_class.interfaces.is_some_and(|i| !i.is_empty());
         let field_start = if has_interfaces { 1usize } else { 0usize };
         for (i, f) in hir_class.fields.iter().enumerate() {
             offsets.insert(f.name, field_start + i);
@@ -117,11 +108,16 @@ impl MirModuleLowerer {
         self.class_field_offsets.insert(hir_class.name, offsets);
     }
 
-    fn build_class_vtable(&mut self, hir_class: &HirClass) {
+    fn build_class_vtable(&mut self, hir_class: &HirStruct<'a, 'bump>) {
         let mut vtable_slots: Vec<StrId> = Vec::new();
         let mut class_slot_map: HashMap<StrId, usize, FxHashBuilder> =
             HashMap::with_hasher(FxHashBuilder);
-        for iface_name in &hir_class.interfaces {
+        
+        let Some(interfaces) = hir_class.interfaces else {
+            return;
+        };
+        
+        for iface_name in interfaces {
             let iface_methods = self.interface_methods.get(iface_name).unwrap_or_else(|| {
                 panic!(
                     "Class {} implements unknown interface {}",
@@ -153,12 +149,13 @@ impl MirModuleLowerer {
             .insert(hir_class.name.clone(), class_slot_map);
     }
 
-    fn lower_function(&mut self, hir_fn: &HirFunc) {
+    fn lower_function(&mut self, hir_fn: &HirFunc<'a, 'bump>) {
+        println!("{:?}", hir_fn);
         let func = self.lower_function_inner(hir_fn);
         self.module.funcs.insert(func.name.clone(), func);
     }
 
-    fn lower_function_inner(&self, hir_fn: &HirFunc) -> Function {
+    fn lower_function_inner(&self, hir_fn: &HirFunc<'a, 'bump>) -> Function {
         let mut fl = crate::midend::ir::lowerer::FunctionLowerer::new(
             hir_fn,
             &self.module.funcs,
@@ -172,7 +169,8 @@ impl MirModuleLowerer {
             self.context.clone(),
         )
         .unwrap();
-        fl.lower_body(hir_fn.body.as_ref());
+        println!("{:?}", hir_fn.body);
+        fl.lower_body(hir_fn.body);
         fl.finish()
     }
 }
