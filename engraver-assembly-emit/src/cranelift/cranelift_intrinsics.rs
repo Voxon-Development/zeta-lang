@@ -68,13 +68,10 @@ fn ensure_value_is_ptr_width(
         val
     }
 }
-
-use cranelift::prelude::AbiParam;
 use cranelift_module::{Linkage, Module};
 use ir::ssa_ir::{Function, SsaType};
-use zetaruntime::string_pool::StringPool;
 
-fn push_param_for_hir_type(sig: &mut Signature, hir_ty: &HirType, isa: &dyn TargetIsa, string_pool: &StringPool) {
+/*fn push_param_for_hir_type(sig: &mut Signature, hir_ty: &HirType, isa: &dyn TargetIsa, string_pool: &StringPool) {
     match hir_ty {
         HirType::Class(name, args) if string_pool.resolve_string(name) == "Array" && args.len() == 1 => {
             let pt = AbiParam::new(ptr_clif_ty(isa));
@@ -90,10 +87,10 @@ fn push_param_for_hir_type(sig: &mut Signature, hir_ty: &HirType, isa: &dyn Targ
             sig.params.push(AbiParam::new(super::clif_type(&clif_t)));
         }
     }
-}
+}*/
 
 // For returns, same idea: push one or two return types depending on Array<T>.
-fn push_return_for_hir_type(sig: &mut Signature, hir_ty: &HirType, isa: &dyn TargetIsa, string_pool: &StringPool) {
+/*fn push_return_for_hir_type(sig: &mut Signature, hir_ty: &HirType, isa: &dyn TargetIsa, string_pool: &StringPool) {
     match hir_ty {
         HirType::Class(name, args) if string_pool.resolve_string(name) == "Array" && args.len() == 1 => {
             sig.returns.push(AbiParam::new(ptr_clif_ty(isa)));
@@ -106,7 +103,7 @@ fn push_return_for_hir_type(sig: &mut Signature, hir_ty: &HirType, isa: &dyn Tar
             sig.returns.push(AbiParam::new(super::clif_type(&clif_type_of(hir_ty))));
         }
     }
-}
+}*/
 
 pub fn stack_alloc(
     builder: &mut FunctionBuilder,
@@ -128,11 +125,11 @@ pub fn stack_alloc(
 }
 
 #[inline(always)]
-fn round_to_eight_align(size_bytes: usize) -> usize {
+const fn round_to_eight_align(size_bytes: usize) -> usize {
     ((size_bytes + 7) / 8) * 8
 }
 
-fn ptr_clif_ty(isa: &dyn TargetIsa) -> Type {
+/*fn ptr_clif_ty(isa: &dyn TargetIsa) -> Type {
     isa.pointer_type()
 }
 
@@ -141,9 +138,9 @@ fn usize_clif_ty(isa: &dyn TargetIsa) -> Type {
     // Usually `usize` is same bitwidth as pointer type but an integer type:
     // we will map usize to the pointer-width integer type.
     ptr_clif_ty(isa)
-}
+}*/
 
-/// Ensure `val` has CLIF type `target_ty`. Widen/truncate if necessary.
+/*
 fn ensure_val_ty(builder: &mut FunctionBuilder, val: Value, target_ty: Type) -> Value {
     let cur_ty = builder.func.dfg.value_type(val);
     if cur_ty == target_ty {
@@ -155,7 +152,7 @@ fn ensure_val_ty(builder: &mut FunctionBuilder, val: Value, target_ty: Type) -> 
     } else {
         val
     }
-}
+}*/
 pub(super) fn clif_type_of(ty: &HirType) -> SsaType {
     match ty {
         HirType::I8 => SsaType::I8,
@@ -179,7 +176,6 @@ pub(super) fn clif_type_of(ty: &HirType) -> SsaType {
     }
 }
 
-// In your codegen lowering for intrinsics:
 fn lower_syscall(
     builder: &mut FunctionBuilder, 
     call: &mut ClFunction,
@@ -204,11 +200,11 @@ fn lower_syscall(
     results[0]
 }
 
-fn runtime_syscall_signature(args_len: usize) -> Signature {
+fn runtime_syscall_signature(_args_len: usize) -> Signature {
     todo!()
 }
 
-fn extract_args(function: &Function) -> (Value, Vec<Value>) {
+fn extract_args(_function: &Function) -> (Value, Vec<Value>) {
     todo!()
 }
 

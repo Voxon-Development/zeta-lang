@@ -1,6 +1,6 @@
 //! SSA Backend switched to Cranelift code generation with full ADT and interpolation support
 
-use std::cell::RefCell;
+use smallvec::SmallVec;
 use crate::backend::Backend;
 use crate::cranelift::{clif_type, cranelift_intrinsics};
 use cranelift::prelude::EntityRef;
@@ -10,24 +10,24 @@ use cranelift_codegen::isa;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClifModule};
 use cranelift_object::{ObjectBuilder, ObjectModule};
-use ir::context::Context;
 use ir::hir::StrId;
 use ir::ssa_ir::{inst_is_terminator, BasicBlock, BinOp, BlockId, Function, Instruction, InterpolationOperand, Module, Operand, SsaType, Value};
 use leapfrog::LeapMap;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
+use cranelift_codegen::entity::ListPool;
 use ir::ir_hasher::FxHashBuilder;
-use zetaruntime::string_pool::VmString;
+use zetaruntime::string_pool::{StringPool, VmString};
 use crate::cranelift::cranelift_intrinsics::{TargetInfo};
 
-pub struct CraneliftBackend<'a> {
+pub struct CraneliftBackend {
     module: ObjectModule,
     string_data: LeapMap<VmString, ZetaDataId>,
     interp_func: FuncId,
     enum_new: FuncId,
     enum_tag: FuncId,
     func_ids: HashMap<StrId, FuncId, FxHashBuilder>,
-    context: Rc<RefCell<Context<'a>>>,
+    context: Arc<StringPool>,
     target: TargetInfo,
     emit_asm: bool
 }
@@ -38,7 +38,7 @@ struct ZetaDataId(DataId);
 
 impl leapfrog::Value for ZetaDataId {
     fn is_redirect(&self) -> bool {
-        false // or whatever your semantics are
+        false
     }
 
     fn is_null(&self) -> bool {
@@ -54,8 +54,8 @@ impl leapfrog::Value for ZetaDataId {
     }
 }
 
-impl<'a> CraneliftBackend<'a> {
-    pub fn new(context: Rc<RefCell<Context<'a>>>) -> Self {
+impl CraneliftBackend {
+    pub fn new(context: Arc<StringPool>) -> Self {
         let isa = isa::lookup_by_name("x86_64").unwrap()
             .finish(cranelift_codegen::settings::Flags::new(cranelift_codegen::settings::builder()));
         let builder = ObjectBuilder::new(isa.unwrap(), "zetamir", cranelift_module::default_libcall_names()).unwrap();
@@ -282,7 +282,7 @@ impl<'a> CraneliftBackend<'a> {
                 };
                 builder.ins().return_(&[rv]);
             }
-            Instruction::Alloc { dest, ty, count } => {
+            Instruction::Alloc { dest, ty, count: _ } => {
                 let size_bytes = cranelift_intrinsics::sizeof(ty, &self.target).unwrap();
                 println!("Allocating {:?} (size = {} bytes)", ty, size_bytes);
                 let ptr = cranelift_intrinsics::stack_alloc(builder, &mut self.module, size_bytes as usize);
@@ -345,11 +345,9 @@ impl<'a> CraneliftBackend<'a> {
             }
             Instruction::Call { dest, func, args } => {
                 // Resolve callee name
-                let mut func_name_id: Option<&StrId> = None;
-                let func_name = match func {
+                let (func_name_id, func_name): (Option<&StrId>, &str) = match func {
                     Operand::FunctionRef(s) => {
-                        func_name_id = Some(s);
-                        self.context.borrow_mut().string_pool.resolve_string(&*s)
+                        (Some(s), self.context.resolve_string(&*s))
                     },
                     _ => panic!("Call target must be a FunctionRef in current lowering"),
                 };
@@ -427,9 +425,16 @@ impl<'a> CraneliftBackend<'a> {
             }
 
 
-            _ => {
+            /*_ => {
                 // unhandled instructions left as TODO / unimplemented
-            }
+            }*/
+            Instruction::Unary { .. } => {}
+            Instruction::ClassCall { .. } => {}
+            Instruction::InterfaceDispatch { .. } => {}
+            Instruction::UpcastToInterface { .. } => {}
+            Instruction::Interpolate { .. } => {}
+            Instruction::EnumConstruct { .. } => {}
+            Instruction::MatchEnum { .. } => {}
         }
     }
 
@@ -449,7 +454,7 @@ impl<'a> CraneliftBackend<'a> {
             .unwrap();
 
         let mut data_ctx = DataDescription::new();
-        data_ctx.define(self.context.borrow_mut().string_pool.resolve_bytes(s).to_vec().into_boxed_slice());
+        data_ctx.define(self.context.resolve_bytes(s).to_vec().into_boxed_slice());
         self.module.define_data(id, &data_ctx).unwrap();
 
         // Insert into LeapMap
@@ -457,64 +462,128 @@ impl<'a> CraneliftBackend<'a> {
 
         id
     }
+
+    fn emit_main_wrapper(&mut self, zeta_main_fid: FuncId) {
+        // Create C-compatible main signature: int main(int argc, char** argv)
+        let mut sig = Signature::new(self.module.isa().default_call_conv());
+        sig.params.push(AbiParam::new(types::I32)); // argc
+        sig.params.push(AbiParam::new(types::I64)); // argv (pointer)
+        sig.returns.push(AbiParam::new(types::I32)); // return int
+
+        // Declare the C main function
+        let main_fid = self.module
+            .declare_function("main", Linkage::Export, &sig)
+            .expect("failed to declare main wrapper");
+
+        let mut ctx = self.module.make_context();
+        ctx.func = ClifFunction::with_name_signature(
+            cranelift_codegen::ir::UserFuncName::user(0, main_fid.as_u32()),
+            sig,
+        );
+
+        let mut fbctx = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+
+        // Call the Zeta main function
+        let zeta_main_ref = self.module.declare_func_in_func(zeta_main_fid, &mut builder.func);
+        let call = builder.ins().call(zeta_main_ref, &[]);
+
+        // Get return value from Zeta main (if any) or default to 0
+        let results: Vec<cranelift_codegen::ir::Value> = builder.inst_results(call).to_vec();
+        let ret_val = if !results.is_empty() {
+            // Truncate i64 to i32 for C main return
+            builder.ins().ireduce(types::I32, results[0])
+        } else {
+            builder.ins().iconst(types::I32, 0)
+        };
+
+        builder.ins().return_(&[ret_val]);
+        builder.seal_all_blocks();
+        builder.finalize();
+
+        self.module
+            .define_function(main_fid, &mut ctx)
+            .expect("failed to define main wrapper");
+
+        self.module.clear_context(&mut ctx);
+    }
 }
 
-impl<'a> Backend for CraneliftBackend<'a> {
+impl Backend for CraneliftBackend {
     fn emit_module(&mut self, module: &Module) {
+        let mut zeta_main_fid = None;
+
+        // First pass: declare all functions
         for (name, func) in &module.funcs {
             let mut sig = Signature::new(self.module.isa().default_call_conv());
             for param in &func.params {
                 sig.params.push(AbiParam::new(clif_type(&param.1)));
             }
-            sig.returns.push(AbiParam::new(clif_type(&func.ret_type)));
 
-            let resolved_name = self.context.borrow_mut().string_pool.resolve_string(&*name);
-            let linkage = if resolved_name == "main" { Linkage::Export } else { Linkage::Local };
-            println!("declaring function: {} with linkage {:?}", resolved_name, linkage);
-            let fid = self.module.declare_function(resolved_name, linkage, &sig)
-                .expect(&format!("failed to declare function {}", name));
+            if func.ret_type != SsaType::Void {
+                sig.returns.push(AbiParam::new(clif_type(&func.ret_type)));
+            }
+
+            let resolved_name = self.context.resolve_string(&*name);
+
+            // Rename user's "main" to "_zeta_main" to avoid conflicts
+            let (actual_name, linkage) = if resolved_name == "main" {
+                zeta_main_fid = Some(name.clone());
+                ("_zeta_main", Linkage::Local)
+            } else {
+                (resolved_name, Linkage::Local)
+            };
+
+            let fid = self.module.declare_function(actual_name, linkage, &sig)
+                .unwrap_or_else(|_| panic!("failed to declare function {}", actual_name));
             self.func_ids.insert(name.clone(), fid);
         }
 
+        // Second pass: emit all function bodies
         for func in module.funcs.values() {
             self.emit_function(func);
         }
-    }
 
-    fn emit_extern(&mut self, func: &Function) {
-        let mut sig = Signature::new(self.module.isa().default_call_conv());
-        for param in &func.params {
-            sig.params.push(AbiParam::new(clif_type(&param.1)));
+        // If we found a main function, create the C wrapper
+        if let Some(zeta_main_name) = zeta_main_fid {
+            let fid = self.func_ids[&zeta_main_name];
+            self.emit_main_wrapper(fid);
         }
-        sig.returns.push(AbiParam::new(clif_type(&func.ret_type)));
-
-        self.module.declare_function(
-            self.context.borrow_mut().string_pool.resolve_string(&*func.name),
-            Linkage::Import,
-            &sig,
-        ).unwrap();
     }
 
-    fn finish(self) {
-        let obj = self.module.finish();
-        std::fs::write("out.o", obj.emit().unwrap()).unwrap();
-    }
-
+    // Update emit_function to use the renamed main
     fn emit_function(&mut self, func: &Function) {
         let mut sig = Signature::new(self.module.isa().default_call_conv());
         for param in &func.params {
             sig.params.push(AbiParam::new(clif_type(&param.1)));
         }
-        sig.returns.push(AbiParam::new(clif_type(&func.ret_type)));
+        if func.ret_type != SsaType::Void {
+            sig.returns.push(AbiParam::new(clif_type(&func.ret_type)));
+        }
 
-        let resolved_name = self.context.borrow_mut().string_pool.resolve_string(&*func.name);
-        let linkage = if resolved_name == "main" { Linkage::Export } else { Linkage::Local };
-        let fid = self.module.declare_function(resolved_name, linkage, &sig).unwrap();
+        let resolved_name = self.context.resolve_string(&*func.name);
+
+        // Use renamed main
+        let (actual_name, linkage) = if resolved_name == "main" {
+            ("_zeta_main", Linkage::Local)
+        } else {
+            (resolved_name, Linkage::Local)
+        };
+
+        let fid = self.module.declare_function(actual_name, linkage, &sig).unwrap();
         let mut ctx = self.module.make_context();
         ctx.func = ClifFunction::with_name_signature(
             cranelift_codegen::ir::UserFuncName::user(0, fid.as_u32()),
             sig,
         );
+
+        if func.noinline {
+            // Cranelift hint for noinline
+        }
 
         let mut fbctx = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
@@ -532,8 +601,6 @@ impl<'a> Backend for CraneliftBackend<'a> {
                     builder.append_block_param(clif_bb, types::I64);
                     let idx = builder.block_params(clif_bb).len() - 1;
                     phi_param_map.insert((bb.id, *dest), idx);
-                } else {
-                    // continue scanning; robust even if phis are not strictly first
                 }
             }
         }
@@ -569,7 +636,6 @@ impl<'a> Backend for CraneliftBackend<'a> {
                     }
                 }
             }
-
         }
 
         builder.seal_all_blocks();
@@ -578,91 +644,59 @@ impl<'a> Backend for CraneliftBackend<'a> {
 
         if self.emit_asm {
             println!("==========================");
-            println!("Assembly for function `{}`:", resolved_name);
+            println!("Assembly for function `{}`:", actual_name);
             println!("==========================");
-
-            // 🟩 Show the high-level Cranelift IR
             println!("--- Cranelift IR ---");
             println!("{}", ctx.func.display());
         }
         self.module.clear_context(&mut ctx);
     }
+
+    fn emit_extern(&mut self, func: &Function) {
+        let mut sig = Signature::new(self.module.isa().default_call_conv());
+        for param in &func.params {
+            sig.params.push(AbiParam::new(clif_type(&param.1)));
+        }
+        // Only add return type if function is not void
+        if func.ret_type != SsaType::Void {
+            sig.returns.push(AbiParam::new(clif_type(&func.ret_type)));
+        }
+
+        self.module.declare_function(
+            self.context.resolve_string(&*func.name),
+            Linkage::Import,
+            &sig,
+        ).unwrap();
+    }
+
+    fn finish(self) {
+        let obj = self.module.finish();
+        std::fs::write("out.o", obj.emit().unwrap()).unwrap();
+    }
 }
 
-impl<'a> CraneliftBackend<'a> {
-    fn lower_instructions(&mut self, func: &Function, mut builder: &mut FunctionBuilder, mut block_map: &mut HashMap<BlockId, Block, FxHashBuilder>, phi_param_map: &mut HashMap<(BlockId, Value), usize, FxHashBuilder>, mut var_map: &mut HashMap<Value, Variable, FxHashBuilder>, bb: &&BasicBlock) {
+impl CraneliftBackend {
+    fn lower_instructions(
+        &mut self,
+        func: &Function,
+        mut builder: &mut FunctionBuilder,
+        block_map: &mut HashMap<BlockId, Block, FxHashBuilder>,
+        phi_param_map: &mut HashMap<(BlockId, Value), usize, FxHashBuilder>,
+        mut var_map: &mut HashMap<Value, Variable, FxHashBuilder>,
+        bb: &&BasicBlock
+    ) {
         for inst in &bb.instructions {
             match inst {
                 Instruction::Interpolate { dest, parts } => {
-                    let var = builder.declare_var(types::I64);
-                    let count = parts.len() as i64;
-                    let mut args = Vec::new();
-                    for p in parts {
-                        match p {
-                            InterpolationOperand::Literal(s) => {
-                                let did = self.get_or_create_string(s);
-                                let gv = self.module.declare_data_in_func(did, &mut builder.func);
-                                args.push(builder.ins().global_value(types::I64, gv));
-                            }
-                            InterpolationOperand::Value(v) => {
-                                let vref = var_map.get(v).expect("undefined interpolation value");
-                                args.push(builder.use_var(*vref));
-                            }
-                        }
-                    }
-                    let arr_ptr = args[0];
-
-                    let func_ref = self.module.declare_func_in_func(self.enum_new, &mut builder.func);
-                    let x = &[arr_ptr, builder.ins().iconst(types::I64, count)];
-                    let call = builder.ins().call(func_ref, x);
-
-                    let res = builder.inst_results(call)[0];
-                    builder.def_var(var, res);
-                    var_map.insert(*dest, var);
+                    self.process_interpolate_instruction(&mut builder, &mut var_map, dest, parts);
                 }
 
                 Instruction::EnumConstruct { dest, variant, .. } => {
-                    let var = builder.declare_var(types::I64);
-                    let tag = self.context.borrow_mut().string_pool.resolve_string(&*variant).parse::<i64>().unwrap_or(0);
-
-                    let func_ref = self.module.declare_func_in_func(self.enum_new, &mut builder.func);
-                    let x = &[builder.ins().iconst(types::I64, tag)];
-                    let call = builder.ins().call(func_ref, x);
-                    let res = builder.inst_results(call)[0];
-                    builder.def_var(var, res);
-                    var_map.insert(*dest, var);
+                    self.process_enum_construct_instruction(&mut builder, &mut var_map, dest, variant);
                 }
 
                 Instruction::MatchEnum { value, arms } => {
-                    let val = {
-                        let vv = var_map.get(value).expect("undefined value in match enum");
-                        builder.use_var(*vv)
-                    };
-
-                    let func_ref = self.module.declare_func_in_func(self.enum_tag, &mut builder.func);
-                    let call = builder.ins().call(func_ref, &[val]);
-                    let tag = builder.inst_results(call)[0];
-
-                    let targets: Vec<_> = arms.iter().map(|(_, bbid)| block_map[bbid]).collect();
-
-                    let mut value_list_pool = ValueListPool::new();
-                    let mut block_calls: Vec<BlockCall> = Vec::new();
-
-                    for target in &targets {
-                        block_calls.push(BlockCall::new(*target, core::iter::empty(), &mut value_list_pool));
-                    }
-
-                    let jt_data = JumpTableData::new(
-                        BlockCall::new(
-                            *targets.first().unwrap(),
-                            core::iter::once(BlockArg::Value(val)),
-                            &mut value_list_pool,
-                        ),
-                        &block_calls,
-                    );
-
-                    let jt = builder.func.create_jump_table(jt_data);
-                    builder.ins().br_table(tag, jt);
+                    self.process_match_instruction(&mut builder, block_map, &mut var_map, value, arms);
                 }
 
                 other => {
@@ -670,5 +704,78 @@ impl<'a> CraneliftBackend<'a> {
                 }
             }
         }
+    }
+
+    fn process_match_instruction(&mut self, builder: &mut FunctionBuilder, block_map: &mut HashMap<BlockId, Block, FxHashBuilder>, var_map: &mut &mut HashMap<Value, Variable, FxHashBuilder>, value: &Value, arms: &SmallVec<[(StrId, BlockId); 8]>) {
+        let val = {
+            let vv = var_map.get(value)
+                .unwrap_or_else(|| panic!("undefined value in match enum"));
+            builder.use_var(*vv)
+        };
+
+        let func_ref = self.module.declare_func_in_func(self.enum_tag, &mut builder.func);
+        let call = builder.ins().call(func_ref, &[val]);
+        let tag = builder.inst_results(call)[0];
+
+        let targets: Vec<Block> = arms.iter().map(|(_, bbid)| block_map[bbid]).collect();
+
+        let mut value_list_pool: ListPool<cranelift_codegen::ir::Value> = ValueListPool::new();
+        let mut block_calls: Vec<BlockCall> = Vec::new();
+
+        for target in &targets {
+            block_calls.push(BlockCall::new(*target, core::iter::empty(), &mut value_list_pool));
+        }
+
+        let jt_data: JumpTableData = JumpTableData::new(
+            BlockCall::new(
+                *targets.first().unwrap(),
+                core::iter::once(BlockArg::Value(val)),
+                &mut value_list_pool,
+            ),
+            &block_calls,
+        );
+
+        let jt = builder.func.create_jump_table(jt_data);
+        builder.ins().br_table(tag, jt);
+    }
+
+    fn process_enum_construct_instruction(&mut self, builder: &mut FunctionBuilder, var_map: &mut &mut HashMap<Value, Variable, FxHashBuilder>, dest: &Value, variant: &StrId) {
+        let var = builder.declare_var(types::I64);
+        let tag = self.context.resolve_string(&*variant).parse::<i64>().unwrap_or(0);
+
+        let func_ref = self.module.declare_func_in_func(self.enum_new, &mut builder.func);
+        let x = &[builder.ins().iconst(types::I64, tag)];
+        let call = builder.ins().call(func_ref, x);
+        let res = builder.inst_results(call)[0];
+        builder.def_var(var, res);
+        var_map.insert(*dest, var);
+    }
+
+    fn process_interpolate_instruction(&mut self, builder: &mut FunctionBuilder, var_map: &mut HashMap<Value, Variable, FxHashBuilder>, dest: &Value, parts: &SmallVec<[InterpolationOperand; 4]>) {
+        let var = builder.declare_var(types::I64);
+        let count = parts.len() as i64;
+        let mut args = Vec::new();
+        for p in parts {
+            match p {
+                InterpolationOperand::Literal(s) => {
+                    let did = self.get_or_create_string(s);
+                    let gv = self.module.declare_data_in_func(did, &mut builder.func);
+                    args.push(builder.ins().global_value(types::I64, gv));
+                }
+                InterpolationOperand::Value(v) => {
+                    let vref = var_map.get(v).expect("undefined interpolation value");
+                    args.push(builder.use_var(*vref));
+                }
+            }
+        }
+        let arr_ptr = args[0];
+
+        let func_ref = self.module.declare_func_in_func(self.interp_func, &mut builder.func);
+        let x = &[arr_ptr, builder.ins().iconst(types::I64, count)];
+        let call = builder.ins().call(func_ref, x);
+
+        let res = builder.inst_results(call)[0];
+        builder.def_var(var, res);
+        var_map.insert(*dest, var);
     }
 }
