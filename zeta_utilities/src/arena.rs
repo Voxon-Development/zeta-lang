@@ -1,8 +1,12 @@
 use crate::bump::align_up;
-use std::alloc::Layout;
-use std::ptr::NonNull;
+use std::alloc::{Layout};
+use std::ptr::{slice_from_raw_parts_mut, NonNull};
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
-use std::{mem::{size_of, align_of}, ptr};
+use std::mem::size_of;
+use std::mem::align_of;
+use std::ptr;
+use std::hint::likely;
+use std::marker::PhantomData;
 
 /// Lock-free growable bump allocator with a small cached free-list of chunks.
 /// Highly unsafe but optimized for speed. Use only in contexts that guarantee
@@ -39,7 +43,7 @@ impl Chunk {
         }
 
         let layout = Layout::from_size_align(capacity, align).map_err(|_| std::alloc::AllocError)?;
-        let mem = std::alloc::alloc(layout);
+        let mem: *mut u8 = unsafe { std::alloc::alloc(layout) };
         if mem.is_null() {
             return Err(std::alloc::AllocError);
         }
@@ -59,15 +63,17 @@ impl Chunk {
         if chunk.is_null() {
             return;
         }
-        let c = &*chunk;
-        let layout = Layout::from_size_align_unchecked(c.capacity, c.align);
-        std::alloc::dealloc(c.ptr.as_ptr(), layout);
-        drop(Box::from_raw(chunk));
+        unsafe {
+            let c = &*chunk;
+            let layout = Layout::from_size_align_unchecked(c.capacity, c.align);
+            std::alloc::dealloc(c.ptr.as_ptr(), layout);
+            drop(Box::from_raw(chunk));
+        }
     }
 }
 
 #[derive(Debug)]
-pub struct GrowableAtomicBump {
+pub struct GrowableAtomicBump<'bump> {
     head: AtomicPtr<Chunk>,
     base_capacity: usize,
     align: usize,
@@ -75,12 +81,14 @@ pub struct GrowableAtomicBump {
     cache_head: AtomicPtr<Chunk>,
     cache_len: AtomicUsize,
     cache_len_limit: usize,
+    
+    phantom_data: PhantomData<&'bump ()>
 }
 
-unsafe impl Send for GrowableAtomicBump {}
-unsafe impl Sync for GrowableAtomicBump {}
+unsafe impl<'bump> Send for GrowableAtomicBump<'bump> {}
+unsafe impl<'bump> Sync for GrowableAtomicBump<'bump> {}
 
-impl GrowableAtomicBump {
+impl<'bump> GrowableAtomicBump<'bump> {
     pub fn new() -> Self {
         Self::with_capacity_and_aligned_and_cache(4096, 8, 8).expect("Failed to allocate arena")
     }
@@ -109,6 +117,7 @@ impl GrowableAtomicBump {
             cache_head: AtomicPtr::new(ptr::null_mut()),
             cache_len: AtomicUsize::new(0),
             cache_len_limit: cache_limit.max(1),
+            phantom_data: PhantomData
         })
     }
 
@@ -117,7 +126,6 @@ impl GrowableAtomicBump {
         self.head.load(Ordering::Acquire)
     }
 
-    /// Returns a safe checked slice from the head chunk.
     #[inline]
     pub fn get_slice(&self, start: usize, end: usize) -> &[u8] {
         let head = self.current_head();
@@ -135,7 +143,6 @@ impl GrowableAtomicBump {
         }
     }
 
-    /// Helper: find which chunk contains the given pointer.
     fn chunk_containing_ptr(&self, ptr: *const u8) -> Option<*mut Chunk> {
         let mut cur = self.head.load(Ordering::Acquire);
         while !cur.is_null() {
@@ -159,49 +166,80 @@ impl GrowableAtomicBump {
         len: usize,
     ) -> &'a [u8] {
         debug_assert!(self.chunk_containing_ptr(ptr).is_some());
-        std::slice::from_raw_parts(ptr, len)
+        unsafe { std::slice::from_raw_parts(ptr, len) }
+    }
+
+    fn alloc_aligned_bytes(&self, size: usize, align: usize) -> &mut [u8] {
+        if size == 0 {
+            return &mut [];
+        }
+        
+        if size > isize::MAX as usize / 2 {
+            panic!("ERROR: Attempted to allocate {} bytes (exceeds limit)", size);
+        }
+
+        let allocation: &mut [u8] = self.try_alloc_in_head_aligned(size, align);
+        if likely(!allocation.is_empty()) {
+            return allocation;
+        }
+
+        self.allocate_new_chunk_aligned(size, align)
     }
 
     #[inline]
-    fn try_alloc_in_head(&self, size: usize) -> Option<*mut u8> {
+    fn try_alloc_in_head(&self, size: usize) -> &mut [u8] {
+        self.try_alloc_in_head_aligned(size, self.align)
+    }
+
+    #[inline]
+    fn try_alloc_in_head_aligned(&self, size: usize, align: usize) -> &mut [u8] {
         let head = self.current_head();
         if head.is_null() {
-            return None;
+            return &mut [];
         }
-        unsafe {
-            let h = &*head;
-            let ptr_base = h.ptr.as_ptr() as usize;
-            loop {
-                let old = h.offset.load(Ordering::Relaxed);
-                let aligned_addr = align_up(ptr_base + old, h.align);
-                let end = aligned_addr.checked_add(size)?;
-                let new_offset = end - ptr_base;
-                if new_offset > h.capacity {
-                    return None;
-                }
-                if h.offset
-                    .compare_exchange(old, new_offset, Ordering::AcqRel, Ordering::Relaxed)
-                    .is_ok()
-                {
-                    return Some(aligned_addr as *mut u8);
-                }
+
+        let h = unsafe { &*head };
+        let ptr_base = h.ptr.as_ptr() as usize;
+        loop {
+            let old = h.offset.load(Ordering::Relaxed);
+            let aligned_addr = align_up(ptr_base + old, align);
+            let end = aligned_addr.checked_add(size).unwrap_or(usize::MAX);
+            let new_offset = end - ptr_base;
+            if new_offset > h.capacity {
+                return &mut [];
+            }
+
+            if h.offset
+                .compare_exchange(old, new_offset, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                return unsafe { &mut *slice_from_raw_parts_mut(aligned_addr as *mut u8, size) };
             }
         }
     }
 
-    pub fn alloc_bytes(&self, size: usize) -> Option<*mut u8> {
-        if size == 0 || size > isize::MAX as usize / 2 {
-            return None;
+    pub fn alloc_bytes(&self, size: usize) -> &mut [u8] {
+        if size == 0 {
+            return &mut [];
         }
 
-        if let Some(p) = self.try_alloc_in_head(size) {
-            return Some(p);
+        if size > isize::MAX as usize / 2 {
+            panic!("ERROR: Attempted to allocate {} bytes (exceeds limit)", size);
         }
 
-        // slow path
+        let allocation: &mut [u8] = self.try_alloc_in_head(size);
+        if likely(!allocation.is_empty()) {
+            return allocation;
+        }
+
+        self.allocate_new_chunk(size)
+    }
+
+    #[cold]
+    fn allocate_new_chunk_aligned(&self, size: usize, align: usize) -> &mut [u8] {
         let mut cap = self.base_capacity;
         while cap < size {
-            cap = cap.checked_mul(2)?;
+            cap = cap.checked_mul(2).unwrap_or(isize::MAX as usize / 2);
             if cap > isize::MAX as usize / 2 {
                 cap = size.max(self.base_capacity);
                 break;
@@ -212,19 +250,24 @@ impl GrowableAtomicBump {
             unsafe {
                 (*reuse).offset.store(0, Ordering::Relaxed);
                 self.push_new_head(reuse);
-                return self.try_alloc_in_head(size);
             }
+            return self.try_alloc_in_head_aligned(size, align);
         }
 
-        let new_chunk = unsafe { Chunk::new_raw(cap, self.align).ok()? };
+        let new_chunk = unsafe { Chunk::new_raw(cap, self.align).ok().expect("Failed to allocate chunk") };
         unsafe { self.push_new_head(new_chunk) };
-        self.try_alloc_in_head(size)
+        self.try_alloc_in_head_aligned(size, align)
+    }
+
+    #[cold]
+    fn allocate_new_chunk(&self, size: usize) -> &mut [u8] {
+        self.allocate_new_chunk_aligned(size, self.align)
     }
 
     unsafe fn push_new_head(&self, new_chunk: *mut Chunk) {
         loop {
             let old_head = self.head.load(Ordering::Acquire);
-            (*new_chunk).next.store(old_head, Ordering::Relaxed);
+            unsafe { (*new_chunk).next.store(old_head, Ordering::Relaxed); }
             if self
                 .head
                 .compare_exchange(old_head, new_chunk, Ordering::AcqRel, Ordering::Acquire)
@@ -235,23 +278,67 @@ impl GrowableAtomicBump {
         }
     }
 
-    pub fn alloc<T>(&self, val: T) -> Option<&'static mut T> {
+    pub fn alloc_value<T>(&self, val: T) -> &'bump mut T {
         let size = size_of::<T>();
-        let align = align_of::<T>().max(self.align);
-        let bytes = self.alloc_bytes(size + align)?;
-        let addr = bytes as usize;
-        let aligned = align_up(addr, align);
-        let ptr = aligned as *mut T;
+        let align = align_of::<T>();
+
+        let ptr: *mut T = self.alloc_aligned_bytes(size, align).as_mut_ptr() as *mut T;
         unsafe {
             ptr.write(val);
-            Some(&mut *ptr)
+            &mut *ptr
         }
     }
 
-    pub fn alloc_many(&self, data: &[u8]) -> Option<*mut u8> {
+    pub fn alloc_value_immutable<T>(&self, val: T) -> &'bump T {
+        let size = size_of::<T>();
+        let align = align_of::<T>();
+
+        let ptr = self.alloc_aligned_bytes(size, align).as_mut_ptr() as *mut T;
+        unsafe {
+            ptr.write(val);
+            &*ptr
+        }
+    }
+
+    pub fn alloc_slice<T>(&self, data: &[T]) -> &'bump mut [T] {
+        if data.is_empty() {
+            return &mut [];
+        }
+
+        let len = data.len();
+        let type_size = size_of::<T>();
+        let size = type_size.checked_mul(len).unwrap_or(usize::MAX);
+        let align = align_of::<T>();
+
+        let ptr: *mut T = self.alloc_aligned_bytes(size, align).as_mut_ptr() as *mut T;
+
+        unsafe {
+            ptr::copy_nonoverlapping(data.as_ptr(), ptr, len);
+            std::slice::from_raw_parts_mut(ptr, len)
+        }
+    }
+
+    pub fn alloc_slice_immutable<T>(&self, data: &[T]) -> Option<&'bump [T]> {
+        if data.is_empty() {
+            return Some(&[]);
+        }
+
+        let len = data.len();
+        let size = size_of::<T>().checked_mul(len)?;
+        let align = align_of::<T>();
+
+        let ptr: *mut T = self.alloc_aligned_bytes(size, align).as_mut_ptr() as *mut T;
+
+        unsafe {
+            ptr::copy_nonoverlapping(data.as_ptr(), ptr, len);
+            Some(std::slice::from_raw_parts(ptr, len))
+        }
+    }
+
+    pub fn alloc_many(&self, data: &[u8]) -> Option<&mut [u8]> {
         let size = data.len();
-        let p = self.alloc_bytes(size)?;
-        unsafe { ptr::copy_nonoverlapping(data.as_ptr(), p, size) };
+        let p: &mut [u8] = self.alloc_bytes(size);
+        unsafe { ptr::copy_nonoverlapping(data.as_ptr(), p.as_mut_ptr(), size) };
         Some(p)
     }
 
@@ -389,7 +476,7 @@ impl GrowableAtomicBump {
     }
 }
 
-impl Drop for GrowableAtomicBump {
+impl<'bump> Drop for GrowableAtomicBump<'bump> {
     fn drop(&mut self) {
         let mut head = self.head.load(Ordering::Acquire);
         while !head.is_null() {
@@ -420,14 +507,12 @@ mod tests {
     #[test]
     fn basic_alloc_and_reset() {
         let mut a = GrowableAtomicBump::with_capacity(128);
-        let r = a.alloc(42u32).unwrap();
+        let r = a.alloc_value(42u32);
         assert_eq!(*r, 42u32);
 
         let p = a.alloc_many(&[1u8, 2, 3]).unwrap();
-        unsafe {
-            let s = a.get_slice_from_ptr_unchecked(p as *const u8, 3);
-            assert_eq!(s, &[1u8, 2, 3]);
-        }
+        let s = unsafe { a.get_slice_from_ptr_unchecked(p.as_ptr(), 3) };
+        assert_eq!(s, &[1u8, 2, 3]);
 
         a.reset();
         assert_eq!(a.head_used(), 0);
@@ -441,7 +526,7 @@ mod tests {
             let ca = a.clone();
             handles.push(thread::spawn(move || {
                 for _ in 0..1000 {
-                    let _ = ca.alloc(42u32);
+                    let _ = ca.alloc_value(42u32);
                 }
             }));
         }
