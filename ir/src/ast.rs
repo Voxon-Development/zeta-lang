@@ -2,121 +2,153 @@ use crate::hir::StrId;
 use crate::span::SourceSpan;
 use std::fmt::{Display, Formatter};
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Stmt {
-    Import(ImportStmt),
-    Package(PackageStmt),
-    Let(LetStmt),
-    Const(ConstStmt),
-    Return(ReturnStmt),
-    If(IfStmt),
-    While(WhileStmt),
-    For(ForStmt),
-    Match(MatchStmt),
-    UnsafeBlock(UnsafeBlock),
-    Block(Block),
-    FuncDecl(FuncDecl),
-    ClassDecl(ClassDecl),
-    InterfaceDecl(InterfaceDecl),
-    ImplDecl(ImplDecl),
-    EnumDecl(EnumDecl),
-    ExprStmt(InternalExprStmt),
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Stmt<'a, 'bump> where 'bump: 'a {
+    Import(&'bump ImportStmt),
+    Package(&'bump PackageStmt),
+    Let(&'bump LetStmt<'a, 'bump>),
+    Const(&'bump ConstStmt<'a, 'bump>),
+    Return(&'bump ReturnStmt<'a, 'bump>),
+    If(&'bump IfStmt<'a, 'bump>),
+    While(&'bump WhileStmt<'a, 'bump>),
+    For(&'bump ForStmt<'a, 'bump>),
+    Match(&'bump MatchStmt<'a, 'bump>),
+    UnsafeBlock(&'bump UnsafeBlock<'a, 'bump>),
+    Block(&'bump Block<'a, 'bump>),
+    FuncDecl(&'bump FuncDecl<'a, 'bump>),
+    ClassDecl(&'bump ClassDecl<'a, 'bump>),
+    InterfaceDecl(&'bump InterfaceDecl<'a, 'bump>),
+    ImplDecl(&'bump ImplDecl<'a, 'bump>),
+    EnumDecl(&'bump EnumDecl<'a, 'bump>),
+    StateMachineDecl(&'bump StateMachineDecl<'a, 'bump>),
+    EffectDecl(&'bump EffectDecl<'a, 'bump>),
+    Defer(&'bump DeferStmt<'a, 'bump>),
+    ExprStmt(&'bump InternalExprStmt<'a, 'bump>),
     Break,
     Continue,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ImportStmt {
     pub path: StrId,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PackageStmt {
     pub path: StrId,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct LetStmt {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LetStmt<'a, 'bump> 
+where
+    'bump: 'a,
+{
     pub mutability: bool,
     pub ident: StrId,
-    pub type_annotation: Type,
-    pub value: Box<Expr>,
+    pub type_annotation: Type<'a, 'bump>,
+    pub value: &'bump Expr<'a, 'bump>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ConstStmt {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ConstStmt<'a, 'bump> 
+where
+    'bump: 'a,
+{
     pub ident: StrId,
-    pub type_annotation: Type,
-    pub value: Box<Expr>,
+    pub type_annotation: Type<'a, 'bump>,
+    pub value: &'bump Expr<'a, 'bump>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ImplDecl {
-    pub generics: Option<Vec<Generic>>,
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImplDecl<'a, 'bump> 
+where
+    'bump: 'a,
+{
+    pub generics: Option<&'bump [Generic<'a>]>,
     pub interface: StrId,
     pub target: StrId,
-    pub methods: Option<Vec<FuncDecl>>,
+    pub methods: Option<&'bump [FuncDecl<'a, 'bump>]>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct InterfaceDecl {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InterfaceDecl<'a, 'bump> 
+where
+    'bump: 'a,
+{
     pub name: StrId,
     pub visibility: Visibility,
-    pub methods: Option<Vec<FuncDecl>>,
-    pub generics: Option<Vec<Generic>>,
+    pub sealed: bool,
+    pub permits: Option<&'bump PermitsExpr<'a, 'bump>>,
+    pub methods: Option<&'bump [FuncDecl<'a, 'bump>]>,
+    pub generics: Option<&'bump [Generic<'a>]>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct EnumDecl {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EnumDecl<'a, 'bump> {
     pub name: StrId,
     pub visibility: Visibility,
-    pub generics: Option<Vec<Generic>>,
-    pub variants: Vec<EnumVariant>,
+    pub generics: Option<&'bump [Generic<'a>]>,
+    pub variants: &'bump [EnumVariant<'a, 'bump>],
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct EnumVariant {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EnumVariant<'a, 'bump> {
     pub name: StrId,
-    pub fields: Vec<Field>,
+    pub fields: &'bump [Field<'a, 'bump>],
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Field {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Field<'a, 'bump> {
     pub name: StrId,
-    pub field_type: Type,
+    pub field_type: Type<'a, 'bump>,
     pub visibility: Visibility,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ReturnStmt {
-    pub value: Option<Box<Expr>>,
+pub struct ReturnStmt<'a, 'bump> 
+where
+    'bump: 'a,
+{
+    pub value: Option<&'bump Expr<'a, 'bump>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IfStmt<'a, 'bump> 
+where
+    'bump: 'a,
+{
+    pub condition: &'bump Expr<'a, 'bump>,
+    pub then_branch: &'bump Block<'a, 'bump>,
+    pub else_branch: Option<&'bump ElseBranch<'a, 'bump>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ElseBranch<'a, 'bump> 
+where
+    'bump: 'a,
+{
+    If(&'bump IfStmt<'a, 'bump>),
+    Else(&'bump Block<'a, 'bump>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct IfStmt {
-    pub condition: Expr,
-    pub then_branch: Block,
-    pub else_branch: Option<Box<ElseBranch>>,
+pub struct WhileStmt<'a, 'bump> 
+where
+    'bump: 'a,
+{
+    pub condition: &'bump Expr<'a, 'bump>,
+    pub block: &'bump Block<'a, 'bump>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ElseBranch {
-    If(Box<IfStmt>),
-    Else(Block),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct WhileStmt {
-    pub condition: Box<Expr>,
-    pub block: Block,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ForStmt {
-    pub let_stmt: Option<LetStmt>,
-    pub condition: Option<Box<Expr>>,
-    pub increment: Option<Box<Expr>>,
-    pub block: Block,
+pub struct ForStmt<'a, 'bump> 
+where
+    'bump: 'a,
+{
+    pub let_stmt: Option<&'bump LetStmt<'a, 'bump>>,
+    pub condition: Option<&'bump Expr<'a, 'bump>>,
+    pub increment: Option<&'bump Expr<'a, 'bump>>,
+    pub block: &'bump Block<'a, 'bump>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -148,11 +180,15 @@ pub enum Op {
     Lte,
     Gt,
     Gte,
+    BitNot,
+    LogicalNot,
 }
 
-impl Into<Op> for &str {
-    fn into(self) -> Op {
-        match self {
+impl TryFrom<&str> for Op {
+    type Error = &'static str;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        Ok(match s {
             "+" => Op::Add,
             "-" => Op::Sub,
             "*" => Op::Mul,
@@ -183,15 +219,15 @@ impl Into<Op> for &str {
             ">" => Op::Gt,
             ">=" => Op::Gte,
 
-            other => panic!("Unknown operator string: {}", other),
-        }
+            _ => return Err("Unknown operator string"),
+        })
     }
 }
 
 impl Op {
     pub fn is_math_op(&self) -> bool {
         match self {
-            Op::Assign => false,
+            Op::Assign | Op::Eq | Op::Neq | Op::Lt | Op::Lte | Op::Gt | Op::Gte => false,
             _ => true,
         }
     }
@@ -207,57 +243,76 @@ pub enum ComparisonOp {
     GreaterThanOrEqual,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct MatchStmt {
-    pub expr: Expr,
-    pub arms: Vec<MatchArm>,
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MatchStmt<'a, 'bump> where 'bump: 'a {
+    pub expr: &'bump Expr<'a, 'bump>,
+    pub arms: &'bump [MatchArm<'a, 'bump>],
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct MatchArm {
-    pub pattern: Pattern,
-    pub guard: Option<Expr>,
-    pub block: Block,
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MatchArm<'a, 'bump> 
+where
+    'bump: 'a,
+{
+    pub pattern: Pattern<'bump>,
+    pub guard: Option<&'bump Expr<'a, 'bump>>,
+    pub block: &'bump Block<'a, 'bump>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Pattern {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Pattern<'bump> {
     Ident(StrId),
     Number(i64),
     String(StrId),
-    Tuple(Vec<Pattern>),
+    Boolean(bool),
+    Tuple(&'bump [Pattern<'bump>]),
+    Array(&'bump [Pattern<'bump>]),
+    Struct { name: StrId, fields: &'bump [(StrId, Pattern<'bump>)] },
+    Or(&'bump [Pattern<'bump>]),
     Wildcard,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct UnsafeBlock {
-    pub block: Block,
+pub struct UnsafeBlock<'a, 'bump> 
+where
+    'bump: 'a,
+{
+    pub block: &'bump Block<'a, 'bump>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct FuncDecl {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FuncDecl<'a, 'bump> 
+where
+    'bump: 'a,
+{
     pub visibility: Visibility,
     pub is_unsafe: bool,
     pub is_extern: bool,
+    pub inline: bool,
+    pub noinline: bool,
     pub extern_string: Option<StrId>,
     pub name: StrId,
-    pub generics: Option<Vec<Generic>>,
-    pub params: Vec<Param>,
-    pub return_type: Option<Type>,
-    pub body: Option<Block>,
+    pub generics: Option<&'bump [Generic<'a>]>,
+    pub params: Option<&'bump [Param<'a, 'bump>]>,
+    pub return_type: Option<Type<'a, 'bump>>,
+    pub body: Option<&'bump Block<'a, 'bump>>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ClassDecl {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClassDecl<'a, 'bump> 
+where
+    'bump: 'a,
+{
     pub visibility: Visibility,
     pub name: StrId,
-    pub generics: Option<Vec<Generic>>,
-    pub params: Option<Vec<Param>>,
-    pub body: Vec<FuncDecl>,
-    pub constants: Vec<ConstStmt>,
+    pub generics: Option<&'bump [Generic<'a>]>,
+    pub params: Option<&'bump [Param<'a, 'bump>]>,
+    pub body: &'bump [FuncDecl<'a, 'bump>],
+    pub constants: &'bump [ConstStmt<'a, 'bump>],
+    pub destructor: Option<&'bump Block<'a, 'bump>>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Visibility {
     Public,
     Private,
@@ -265,114 +320,134 @@ pub enum Visibility {
     Package,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Param {
-    Normal(NormalParam),
-    This(ThisParam),
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Param<'a, 'bump> 
+where
+    'bump: 'a,
+{
+    Normal(&'bump NormalParam<'a, 'bump>),
+    This(&'bump ThisParam<'a, 'bump>),
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct NormalParam {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NormalParam<'a, 'bump> 
+where
+    'bump: 'a,
+{
     pub is_mut: bool,
     pub is_move: bool,
     pub name: StrId,
-    pub type_annotation: Type,
+    pub type_annotation: Type<'a, 'bump>,
     pub visibility: Visibility,
-    pub default_value: Option<Expr>,
+    pub default_value: Option<&'bump Expr<'a, 'bump>>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ThisParam {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ThisParam<'a, 'bump> {
     pub is_mut: bool,
     pub is_move: bool,
-    pub type_annotation: Option<Type>, // e.g. Ptr<this>, this?, etc
+    pub type_annotation: Option<Type<'a, 'bump>>, // e.g. Ptr<this>, this?, etc
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Block {
-    pub block: Vec<Stmt>,
+#[derive(Debug, Clone, PartialEq, Copy, Default)]
+pub struct Block<'a, 'bump> 
+where
+    'bump: 'a,
+{
+    pub block: &'bump [Stmt<'a, 'bump>],
 }
 
-impl IntoIterator for Block {
-    type Item = Stmt;
-    type IntoIter = std::vec::IntoIter<Stmt>;
+impl<'a, 'bump> IntoIterator for &'bump Block<'a, 'bump> 
+where
+    'bump: 'a,
+{
+    type Item = &'bump Stmt<'a, 'bump>;
+    type IntoIter = std::slice::Iter<'bump, Stmt<'a, 'bump>>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.block.into_iter()
+        self.block.iter()
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Generic {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Generic<'bump> {
     pub const_generic: bool,
     pub type_name: StrId,
-    pub constraints: Vec<StrId>,
+    pub constraints: &'bump [StrId],
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct InternalExprStmt {
-    pub expr: Box<Expr>,
+pub struct InternalExprStmt<'a, 'bump> 
+where
+    'bump: 'a,
+{
+    pub expr: &'bump Expr<'a, 'bump>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Expr {
-    Number { value: i64, span: SourceSpan },
-    Decimal { value: f64, span: SourceSpan },
-    String { value: StrId, span: SourceSpan },
-    Ident { name: StrId, span: SourceSpan },
-    Boolean { value: bool, span: SourceSpan },
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Expr<'a, 'bump> 
+where
+    'bump: 'a,
+{
+    Number { value: i64, span: SourceSpan<'a> },
+    Decimal { value: f64, span: SourceSpan<'a> },
+    String { value: StrId, span: SourceSpan<'a> },
+    Ident { name: StrId, span: SourceSpan<'a> },
+    Boolean { value: bool, span: SourceSpan<'a> },
     Comparison {
-        lhs: Box<Expr>,
+        lhs: &'bump Expr<'a, 'bump>,
         op: Op,
-        rhs: Box<Expr>,
-        span: SourceSpan,
+        rhs: &'bump Expr<'a, 'bump>,
+        span: SourceSpan<'a>,
     },
     ClassInit {
-        callee: Box<Expr>,
-        arguments: Vec<Expr>,
+        callee: &'bump Expr<'a, 'bump>,
+        arguments: &'bump [Expr<'a, 'bump>],
         positional: bool,
-        span: SourceSpan,
+        span: SourceSpan<'a>,
     },
     FieldAccess {
-        object: Box<Expr>,
+        object: &'bump Expr<'a, 'bump>,
         field: StrId,
-        span: SourceSpan,
+        span: SourceSpan<'a>,
     },
     Binary {
-        left: Box<Expr>,
+        left: &'bump Expr<'a, 'bump>,
         op: Op,
-        right: Box<Expr>,
-        span: SourceSpan,
+        right: &'bump Expr<'a, 'bump>,
+        span: SourceSpan<'a>,
     },
     Call {
-        callee: Box<Expr>,
-        arguments: Vec<Expr>,
-        span: SourceSpan,
+        callee: &'bump Expr<'a, 'bump>,
+        arguments: &'bump [Expr<'a, 'bump>],
+        span: SourceSpan<'a>,
     },
     Get {
-        object: Box<Expr>,
+        object: &'bump Expr<'a, 'bump>,
         field: StrId,
-        span: SourceSpan,
+        span: SourceSpan<'a>,
     },
-    If { if_stmt: Box<IfStmt>, span: SourceSpan },
-    Match { match_stmt: Box<MatchStmt>, span: SourceSpan },
+    If { if_stmt: &'bump IfStmt<'a, 'bump>, span: SourceSpan<'a> },
+    Match { match_stmt: &'bump MatchStmt<'a, 'bump>, span: SourceSpan<'a> },
     Assignment {
-        lhs: Box<Expr>,
+        lhs: &'bump Expr<'a, 'bump>,
         op: Op,
-        rhs: Box<Expr>,
-        span: SourceSpan,
+        rhs: &'bump Expr<'a, 'bump>,
+        span: SourceSpan<'a>,
     },
     ExprList {
-        expressions: Vec<Expr>,
-        span: SourceSpan,
+        expressions: &'bump [Expr<'a, 'bump>],
+        span: SourceSpan<'a>,
     },
 
-    Char { value: char, span: SourceSpan },
-    FieldInit { ident: StrId, expr: Box<Expr>, span: SourceSpan },
+    Char { value: char, span: SourceSpan<'a> },
+    FieldInit { ident: StrId, expr: &'bump Expr<'a, 'bump>, span: SourceSpan<'a> },
+    Unary { op: Op, operand: &'bump Expr<'a, 'bump>, span: SourceSpan<'a> },
+    ArrayIndex { expr: &'bump Expr<'a, 'bump>, index: &'bump Expr<'a, 'bump>, span: SourceSpan<'a> },
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Type {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Type<'a, 'bump> where 'bump: 'a {
     U8,
     I8,
     U16,
@@ -392,46 +467,36 @@ pub enum Type {
     Void,
     Infer,
     Lambda {
-        params: Vec<Type>,
-        return_type: Box<Type>,
+        params: &'bump [Type<'a, 'bump>],
+        return_type: &'a Type<'a, 'bump>,
     },
     Class {
         name: StrId,
-        generics: Vec<Type>,
+        generics: &'bump [Type<'a, 'bump>],
     },
-    Nullable(Option<Box<Type>>),
-    PossibleError(PossibleErrorType),
+    Nullable(Option<&'a Type<'a, 'bump>>),
+    PossibleError(PossibleErrorType<'a, 'bump>),
     This,
     Char,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum PossibleErrorType {
-    Some(Box<Type>),
-    Error(Box<Type>),
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PossibleErrorType<'a, 'bump> {
+    Ok(&'a Type<'a, 'bump>),
+    Err(&'a Type<'a, 'bump>),
 }
 
-impl Type {
+impl<'a, 'bump> Type<'a, 'bump> {
     pub fn is_numeric(&self) -> bool {
-        match self {
-            Type::Class {
-                name: _,
-                generics: _,
-            }
-            | Type::Lambda {
-                params: _,
-                return_type: _,
-            }
-            | Type::Nullable(_)
-            | Type::PossibleError(_)
-            | Type::This
-            | Type::String => false,
-            _ => true,
-        }
+        matches!(self,
+            Type::U8 | Type::I8 | Type::U16 | Type::I16 | Type::I32 |
+            Type::I64 | Type::I128 | Type::U32 | Type::U64 | Type::U128 |
+            Type::F32 | Type::F64 | Type::UF32 | Type::UF64
+        )
     }
 }
 
-impl Display for Type {
+impl<'a, 'bump> Display for Type<'a, 'bump> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Type::U8 => f.write_str("u8"),
@@ -454,7 +519,7 @@ impl Display for Type {
             Type::Lambda {
                 params,
                 return_type,
-            } => f.write_str(format!("({:?}) -> {}", params, return_type).as_str()),
+            } => write!(f, "({:?}) -> {}", params, return_type),
             Type::Class { name, generics } => {
                 write!(f, "{}", name)?;
                 if !generics.is_empty() {
@@ -470,16 +535,17 @@ impl Display for Type {
                 Ok(())
             }
             Type::Char => f.write_str("char"),
-            Type::Nullable(ty) => {
-                if let Some(ty) = ty {
-                    std::fmt::Display::fmt(&ty, f)
+            Type::Nullable(opt) => {
+                if let Some(ty) = opt {
+                    write!(f, "{}?", ty)
                 } else {
                     f.write_str("null")
                 }
             }
+
             Type::PossibleError(err_type) => match err_type {
-                PossibleErrorType::Some(ty) => std::fmt::Display::fmt(&ty, f),
-                PossibleErrorType::Error(err) => std::fmt::Display::fmt(&err, f),
+                PossibleErrorType::Ok(ty) => std::fmt::Display::fmt(&ty, f),
+                PossibleErrorType::Err(err) => std::fmt::Display::fmt(&err, f),
             },
             Type::This => f.write_str("this"),
             Type::Infer => todo!(),
@@ -487,3 +553,67 @@ impl Display for Type {
     }
 }
 
+// New AST types for grammar features
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StateMachineDecl<'a, 'bump> 
+where
+    'bump: 'a,
+{
+    pub name: StrId,
+    pub transitions: &'bump [Transition<'a, 'bump>],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Transition<'a, 'bump> 
+where
+    'bump: 'a,
+{
+    pub from_state: StateRef,
+    pub to_state: StateRef,
+    pub action: Option<&'bump Block<'a, 'bump>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum StateRef {
+    Named(StrId),
+    Wildcard, // *
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EffectDecl<'a, 'bump> 
+where
+    'bump: 'a,
+{
+    pub name: StrId,
+    pub visibility: Visibility,
+    pub sealed: bool,
+    pub permits: Option<&'bump [Type<'a, 'bump>]>,
+    pub params: Option<&'bump [Param<'a, 'bump>]>,
+    pub body: Option<&'bump Block<'a, 'bump>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DeferStmt<'a, 'bump> 
+where
+    'bump: 'a,
+{
+    pub action: DeferAction<'a, 'bump>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DeferAction<'a, 'bump> 
+where
+    'bump: 'a,
+{
+    Block(&'bump Block<'a, 'bump>),
+    Stmt(&'bump Stmt<'a, 'bump>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PermitsExpr<'a, 'bump> 
+where
+    'bump: 'a,
+{
+    pub types: &'bump [Type<'a, 'bump>],
+}
