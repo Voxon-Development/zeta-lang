@@ -10,18 +10,21 @@ use ir::hir::StrId;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use ir::errors::error::TypeError;
 use ir::ir_hasher::FxHashBuilder;
+use ir::span::SourceSpan;
 use zetaruntime::bump::GrowableBump;
+use zetaruntime::string_pool::StringPool;
 
-pub struct TypeChecker<'a> {
-    rules: Vec<TypeCheckerRule, GrowableBump>,
-    pub ctx: TypeCheckerCtx,
-    symbol_table: HashMap<StrId, Type, FxHashBuilder>,
-    pub context: Rc<RefCell<Context<'a>>>,
+pub struct TypeChecker<'a, 'bump> {
+    rules: Vec<TypeCheckerRule, GrowableBump<'bump>>,
+    pub ctx: TypeCheckerCtx<'a, 'bump>,
+    symbol_table: HashMap<StrId, Type<'a, 'bump>, FxHashBuilder>,
+    pub context: &'a StringPool,
 }
 
-impl<'a> TypeChecker<'a> {
-    pub fn new(context: Rc<RefCell<Context<'a>>>) -> Self {
+impl<'a, 'bump> TypeChecker<'a, 'bump> {
+    pub fn new(context: &'a StringPool) -> Self {
         Self {
             rules: Vec::new_in(GrowableBump::new(size_of::<TypeCheckerRule>() * 1024, align_of::<TypeCheckerRule>())),
             ctx: TypeCheckerCtx::new(),
@@ -30,7 +33,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub fn get_expr_type(&mut self, expr: &Expr) -> Type {
+    pub fn get_expr_type(&mut self, expr: &Expr) -> Type<'a, 'bump> {
         match expr {
             _ => I8,
         }
@@ -40,8 +43,8 @@ impl<'a> TypeChecker<'a> {
         self.rules.push(TypeCheckerRule::External(Box::new(rule)));
     }
 
-    pub fn check_program(&mut self, stmts: &[Stmt]) -> Result<(), Vec<String>> {
-        let mut errors = Vec::new();
+    pub fn check_program(&mut self, stmts: &'bump [Stmt<'a, 'bump>]) -> Result<(), Vec<TypeError<'a, 'bump>>> {
+        let mut errors: Vec<TypeError> = Vec::new();
 
         // First pass: collect declarations
         for stmt in stmts {
@@ -64,7 +67,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn collect_declarations(&mut self, stmt: &Stmt) -> Result<(), String> {
+    fn collect_declarations(&mut self, stmt: &Stmt<'a, 'bump>) -> Result<(), TypeError> {
         match stmt {
             Stmt::Let(LetStmt {
                 ident,
@@ -89,7 +92,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn check_stmt(&mut self, stmt: &Stmt) -> Result<(), String> {
+    fn check_stmt(&mut self, stmt: &Stmt<'a, 'bump>) -> Result<(), TypeError<'a, 'bump>> {
         match stmt {
             Stmt::Let(LetStmt {
                 ident: _,
@@ -99,10 +102,11 @@ impl<'a> TypeChecker<'a> {
             }) => {
                 let value_ty = self.check_expr(value)?;
                 if &value_ty != type_annotation {
-                    return Err(format!(
-                        "Type mismatch: expected {}, found {}",
-                        type_annotation, value_ty
-                    ));
+                    return Err(TypeError::Mismatch {
+                        expected: *type_annotation,
+                        found: value_ty,
+                        location: SourceSpan::default()
+                    });
                 }
                 Ok(())
             }
@@ -120,10 +124,10 @@ impl<'a> TypeChecker<'a> {
                 self.check_condition(condition)?;
                 self.check_block(then_branch)?;
                 if let Some(else_branch) = else_branch {
-                    match else_branch.as_ref() {
+                    match else_branch {
                         ElseBranch::Else(block) => self.check_block(block)?,
                         ElseBranch::If(if_stmt) => {
-                            self.check_stmt(&Stmt::If(if_stmt.as_ref().clone()))?
+                            self.check_stmt(&Stmt::If(if_stmt.clone()))?
                         }
                     }
                 }
@@ -158,11 +162,11 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn check_block(&mut self, block: &Block) -> Result<(), String> {
-        let mut errors = Vec::new();
-        let old_scope = self.symbol_table.clone();
+    fn check_block(&mut self, block: &Block<'a, 'bump>) -> Result<(), Vec<TypeError<'a, 'bump>>> {
+        let mut errors: Vec<TypeError> = Vec::new();
+        let old_scope: HashMap<StrId, Type, FxHashBuilder> = self.symbol_table.clone();
 
-        for stmt in &block.block {
+        for stmt in block.block {
             if let Err(e) = self.check_stmt(stmt) {
                 errors.push(e);
             }
@@ -173,19 +177,23 @@ impl<'a> TypeChecker<'a> {
         if errors.is_empty() {
             Ok(())
         } else {
-            Err(errors.join("\n"))
+            Err(errors)
         }
     }
 
-    pub fn check_condition(&mut self, expr: &Expr) -> Result<(), String> {
+    pub fn check_condition(&mut self, expr: &Expr<'a, 'bump>) -> Result<(), TypeError<'a, 'bump>> {
         let ty = self.check_expr(expr)?;
         if ty != Type::Boolean {
-            return Err(format!("Condition must be boolean, found {}", ty));
+            return Err(TypeError::Mismatch {
+                expected: Type::Boolean,
+                found: ty,
+                location: SourceSpan::default()
+            });
         }
         Ok(())
     }
 
-    pub fn check_expr(&mut self, expr: &Expr) -> Result<Type, String> {
+    pub fn check_expr(&mut self, expr: &Expr<'a, 'bump>) -> Result<Type<'a, 'bump>, TypeError<'a, 'bump>> {
         match expr {
             Expr::Number { .. } => Ok(Type::I32),
             Expr::Decimal { .. } => Ok(Type::F64),
@@ -193,7 +201,7 @@ impl<'a> TypeChecker<'a> {
             Expr::String { .. } => Ok(Type::String),
             Expr::Char { .. } => Ok(Type::Char),
             Expr::Binary { left, op, right, .. } => {
-                let left_ty = self.check_expr(left)?;
+                /*let left_ty = self.check_expr(left)?;
                 let right_ty = self.check_expr(right)?;
 
                 match op {
@@ -224,19 +232,23 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     _ => Err(format!("Unsupported operation: {:?}", op)),
-                }
+                }*/
+                Ok(Type::I32)
             }
-            Expr::Ident { name, .. } => self
+            Expr::Ident { name, span } => self
                 .symbol_table
                 .get(name)
                 .cloned()
-                .ok_or_else(|| format!("Undefined variable: {}", self.context.borrow_mut().string_pool.resolve_string(&*name))),
+                .ok_or_else(|| TypeError::UndefinedSymbol {
+                    name: self.context.resolve_string(&*name).to_string(),
+                    location: *span
+                }),
             Expr::Call {
                 callee: _,
                 arguments, ..
             } => {
                 // For now, just check the arguments
-                for arg in arguments {
+                for arg in *arguments {
                     self.check_expr(arg)?;
                 }
 

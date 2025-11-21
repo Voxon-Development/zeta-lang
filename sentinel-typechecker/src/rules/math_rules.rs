@@ -2,7 +2,7 @@ use ir::ast::{Expr, Type, Op};
 use crate::rules::rule::TypeRule;
 use crate::type_checker::TypeChecker;
 
-pub struct MathTypeRule;
+pub struct MathTypeRule;/*
 
 impl TypeRule for MathTypeRule {
     fn check_expr(&self, ctx: &mut TypeChecker, expr: &Expr) -> Option<Type> {
@@ -41,4 +41,4 @@ impl TypeRule for MathTypeRule {
             _ => None,
         }
     }
-}
+}*/
