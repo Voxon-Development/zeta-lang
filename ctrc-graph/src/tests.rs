@@ -16,7 +16,6 @@ mod tests {
         StrId::new(VmString {
             offset: s.as_ptr(),
             length: s.len(),
-            hash: NonZeroU64::new(1).unwrap(),
         })
     }
 
@@ -123,6 +122,7 @@ mod tests {
             name: field_name,
             field_type: HirType::String,
             visibility: Visibility::Public,
+            generics: None
         };
 
         let fields_slice = bump.alloc_slice(&[field]);
@@ -177,11 +177,13 @@ mod tests {
             name: next_field_name,
             field_type: HirType::Class(node_class_name, &[]),
             visibility: Visibility::Public,
+            generics: None
         };
         let data_field = HirField {
             name: data_field_name,
             field_type: HirType::I32,
             visibility: Visibility::Public,
+            generics: None
         };
 
         let fields = bump.alloc_slice(&[next_field, data_field]);
@@ -308,6 +310,7 @@ mod tests {
             name: self_field,
             field_type: HirType::Class(self_ref_class, &[]),
             visibility: Visibility::Public,
+            generics: None
         };
 
         let fields = bump.alloc_slice(&[field]);
@@ -411,6 +414,7 @@ mod tests {
             name: next_field,
             field_type: HirType::Class(node_class, &[]),
             visibility: Visibility::Public,
+            generics: None
         };
 
         let fields = bump.alloc_slice(&[field]);

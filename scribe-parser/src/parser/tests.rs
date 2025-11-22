@@ -125,7 +125,7 @@ mod parser_tests {
         let stmts = parser.parse(tokens);
         println!("{:?}", stmts);
         let atomic_bump = Arc::new(GrowableAtomicBump::new());
-        let lowerer = HirLowerer::new(context.clone(), atomic_bump);
+        let mut lowerer = HirLowerer::new(context.clone(), atomic_bump);
         let module = lowerer.lower_module(stmts);
 
 
@@ -161,7 +161,7 @@ mod parser_tests {
         let stmts = parser.parse(tokens);
         println!("{:#?}", stmts);
         let atomic_bump = Arc::new(GrowableAtomicBump::new());
-        let lowerer = HirLowerer::new(context.clone(), atomic_bump);
+        let mut lowerer = HirLowerer::new(context.clone(), atomic_bump);
         let module = lowerer.lower_module(stmts);
 
 

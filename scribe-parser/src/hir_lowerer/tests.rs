@@ -1,12 +1,13 @@
 #[cfg(test)]
 mod hir_lowerer_tests {
-    use crate::tokenizer::lexer::Lexer;
+    use ir::ir_hasher::HashMap;
+use crate::tokenizer::lexer::Lexer;
     use crate::parser::descent_parser::DescentParser;
     use crate::hir_lowerer::context::HirLowerer;
     use crate::hir_lowerer::monomorphization::Monomorphizer;
-    use ir::hir::{Hir, HirType, HirFunc, HirStmt, HirExpr, HirModule};
+    use ir::hir::{Hir, HirType, HirFunc, HirStmt, HirExpr, HirModule, StrId};
     use ir::ir_hasher::FxHashBuilder;
-    use std::collections::HashMap;
+    use std::mem::transmute;
     use std::sync::Arc;
     use ctrc_graph::hir_integration::convenience::analyze_and_pretty_print;
     use zetaruntime::bump::GrowableBump;
@@ -33,7 +34,7 @@ mod hir_lowerer_tests {
         
         // Create HIR lowerer
         let atomic_bump = Arc::new(GrowableAtomicBump::new());
-        let lowerer = HirLowerer::new(context.clone(), atomic_bump);
+        let mut lowerer = HirLowerer::new(context.clone(), atomic_bump);
         let module = lowerer.lower_module(stmts);
 
         (module, context)
@@ -177,13 +178,13 @@ mod hir_lowerer_tests {
         let (context, _bump) = create_test_context();
         let atomic_bump = Arc::new(GrowableAtomicBump::new());
         let lowerer = HirLowerer::new(context.clone(), atomic_bump.clone());
-        let monomorphizer = Monomorphizer::new(lowerer.ctx.clone());
-        
+        let monomorphizer = Monomorphizer::new(context.clone(), atomic_bump.clone(), unsafe { transmute(&lowerer.ctx) });
+
         // Create type substitutions: T -> i32
-        let mut substitutions = HashMap::with_hasher(FxHashBuilder);
+        let mut substitutions = HashMap::default();
         let t_name = context.intern("T");
         substitutions.insert(ir::hir::StrId(t_name), HirType::I32);
-        
+
         // Verify substitutions map was created
         assert_eq!(substitutions.len(), 1);
         assert!(substitutions.contains_key(&ir::hir::StrId(t_name)));
@@ -240,7 +241,7 @@ mod hir_lowerer_tests {
         let (context, _bump) = create_test_context();
         
         // Create type substitutions
-        let mut substitutions = HashMap::with_hasher(FxHashBuilder);
+        let mut substitutions: HashMap<StrId, HirType> = HashMap::default();
         let t_name = context.intern("T");
         substitutions.insert(ir::hir::StrId(t_name), HirType::I32);
         
@@ -295,6 +296,32 @@ mod hir_lowerer_tests {
         
         println!("Identity functions found: {:?}", identity_functions);
         assert!(identity_functions.len() >= 1, "Should have at least one identity function");
+    }
+
+    #[test]
+    fn test_generic_field_types() {
+        let source = r#"
+            struct Container<T> {
+                value: T,
+                optional: Option<T>,
+            }
+            
+            fn main() {
+                let container = Container {
+                    value: 42,
+                    optional: Some(42),
+                };
+            }
+        "#;
+
+        let (_module, _context) = parse_and_lower(source);
+        
+        // The test passes if it compiles and runs without panicking
+        // In a more complete test, we would:
+        // 1. Get the struct definition from the module
+        // 2. Verify the field types include the generic parameters
+        // 3. Check that the generic parameters are properly substituted
+        // 4. Verify that the instantiated types are correct
     }
 
     #[test]
