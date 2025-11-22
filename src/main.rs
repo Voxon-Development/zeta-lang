@@ -3,32 +3,27 @@
 
 use codex_dependency_graph::module_collection_builder::ModuleBuilder;
 use codex_dependency_graph::topo::topo_sort;
+use ctrc_graph::ctrc_diagnostics::analyze_ctrc_and_report;
 use emberforge_compiler::midend::ir::module_lowerer::MirModuleLowerer;
 use engraver_assembly_emit::backend::Backend;
 use engraver_assembly_emit::cranelift::cranelift_backend::{CraneliftBackend, EmitError};
+use ir::errors::reporter::ErrorReporter;
+use ir::hir::HirModule;
+use scribe_parser::hir_lowerer::HirLowerer;
+use scribe_parser::parser::descent_parser::ParserError;
 use zetaruntime::arena::GrowableAtomicBump;
 use zetaruntime::bump::GrowableBump;
 use zetaruntime::string_pool::StringPool;
-use scribe_parser::hir_lowerer::HirLowerer;
-use scribe_parser::parser::descent_parser::ParserError;
-use ctrc_graph::ctrc_diagnostics::analyze_ctrc_and_report;
-use ir::ast::Stmt;
-use ir::hir::HirModule;
-use ir::ssa_ir::Module;
-use ir::errors::reporter::ErrorReporter;
 
-use std::ffi::OsStr;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use std::panic::AssertUnwindSafe;
 
+use futures::FutureExt;
+use snmalloc_rs::SnMalloc;
 use thiserror::Error;
 use walkdir::{DirEntry, WalkDir};
-use snmalloc_rs::SnMalloc;
-use futures::FutureExt;
-use ctrc_graph::hir_integration::convenience::analyze_and_pretty_print;
 
 #[global_allocator]
 static ALLOCATOR: SnMalloc = SnMalloc;
@@ -38,7 +33,6 @@ use rayon::prelude::*;
 // entry point
 fn main() -> Result<(), CompilerError> {
     let start = Instant::now();
-
     for _ in 1..1000 {
         let result = std::panic::catch_unwind(|| run_compiler());
 
@@ -187,7 +181,7 @@ where
     )
         .map_err(CompilerError::ParserError)?;
 
-    let lowerer = HirLowerer::new(context.clone(), bump.clone());
+    let mut lowerer = HirLowerer::new(context.clone(), bump.clone());
     let module = lowerer.lower_module(stmts);
 
     let temp_bump = GrowableBump::new(4096, 8);
