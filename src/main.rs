@@ -17,6 +17,7 @@ use zetaruntime::string_pool::StringPool;
 
 use std::io;
 use std::path::PathBuf;
+use std::process::exit;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -29,31 +30,32 @@ use walkdir::{DirEntry, WalkDir};
 static ALLOCATOR: SnMalloc = SnMalloc;
 
 use rayon::prelude::*;
+use ctrc_graph::CTRCAnalysisResult;
+use ctrc_graph::hir_integration::convenience::analyze_and_pretty_print;
 
 // entry point
 fn main() -> Result<(), CompilerError> {
     let start = Instant::now();
-    for _ in 1..1000 {
-        let result = std::panic::catch_unwind(|| run_compiler());
+    let result = std::panic::catch_unwind(|| run_compiler());
 
-        let duration = start.elapsed();
-        let millis = duration.as_millis();
-        let nanos = duration.as_nanos();
+    let duration = start.elapsed();
+    let millis = duration.as_millis();
+    let nanos = duration.as_nanos();
 
-        match result {
-            Ok(Ok(_)) => {
-                println!("Finished build in {}ms (or {}ns)", millis, nanos);
-            }
-            Ok(Err(e)) => {
-                eprintln!("Compilation failed after {}ms (or {}ns) \nError: {:?}", millis, nanos, e);
-            }
-            Err(_) => {
-                eprintln!("Panic occurred after {}ms (or {}ns)", millis, nanos);
-            }
+    match result {
+        Ok(Ok(_)) => {
+            println!("Finished build in {}ms (or {}ns)", millis, nanos);
+            Ok(())
+        }
+        Ok(Err(e)) => {
+            eprintln!("Compilation failed after {}ms (or {}ns) \nError: {:?}", millis, nanos, e);
+            Err(e)
+        }
+        Err(e) => {
+            eprintln!("Panic occurred after {}ms (or {}ns)", millis, nanos);
+            exit(1);
         }
     }
-
-    Ok(())
 }
 
 fn run_compiler() -> Result<(), CompilerError> {
@@ -64,11 +66,9 @@ fn run_compiler() -> Result<(), CompilerError> {
         .into_iter()
         .filter_map(|entry| entry.ok())
         .filter(|entry| {
-            entry.file_type().is_file()
-                && entry.path()
+            entry.file_type().is_file() && entry.path()
                 .extension()
-                .and_then(|ext| ext.to_str())
-                == Some("zeta")
+                .and_then(|ext| ext.to_str()) == Some("zeta")
         })
         .map(DirEntry::into_path)
         .collect();
@@ -81,30 +81,29 @@ fn run_compiler() -> Result<(), CompilerError> {
     let arc = Arc::new(string_pool);
     let error_reporter = ErrorReporter::new();
 
-    // Rayon parallelism: simple, efficient, zero futex circus.
     let modules_with_ctrc: Vec<ModuleWithArena> = files
-        .par_iter()
+        .iter()
         .map(|path| process_single_file(arc.clone(), path.clone()))
         .filter_map(|result| match result {
             Ok(v) if v.valid => Some(v),
-            Ok(_) => None,
             Err(e) => {
                 eprintln!("Error: {:?}", e);
                 None
             }
+            _ => None
         })
         .collect();
 
     error_reporter.report_all();
     if error_reporter.has_errors() {
-        std::process::exit(1);
+        exit(1);
     }
 
     println!("Processed {} modules", modules_with_ctrc.len());
 
     let hir_modules: Vec<HirModule> = modules_with_ctrc.iter().map(|m| m.module).collect();
     let builder = ModuleBuilder::run(&hir_modules, arc.clone());
-    let indexes = topo_sort(&builder.modules);
+    let indexes: Vec<usize> = topo_sort(&builder.modules);
 
     let mut backend = CraneliftBackend::new(arc.clone());
 
@@ -159,8 +158,7 @@ where
 
         std::str::from_utf8(unsafe {
             std::slice::from_raw_parts(stored.as_ptr(), bytes.len())
-        })
-            .unwrap()
+        }).unwrap()
     };
 
     let contents_static = {
@@ -169,8 +167,7 @@ where
             .ok_or(CompilerError::FailedToAllocateBump)?;
         std::str::from_utf8(unsafe {
             std::slice::from_raw_parts(stored.as_ptr(), contents_bytes.len())
-        })
-            .unwrap()
+        }).unwrap()
     };
 
     let stmts = scribe_parser::parser::parse_program(
@@ -178,18 +175,20 @@ where
         file_name_static,
         context.clone(),
         bump.clone(),
-    )
-        .map_err(CompilerError::ParserError)?;
+    ).map_err(CompilerError::ParserError)?;
 
     let mut lowerer = HirLowerer::new(context.clone(), bump.clone());
     let module = lowerer.lower_module(stmts);
 
     let temp_bump = GrowableBump::new(4096, 8);
-    let ctrc = ctrc_graph::analyze_hir_for_ctrc(&module, &temp_bump);
+    let ctrc: CTRCAnalysisResult = ctrc_graph::analyze_hir_for_ctrc(&module, &temp_bump);
 
     let mut temp_reporter = ErrorReporter::new();
     temp_reporter.add_source_file(file_name_static.into(), contents_static.into());
     analyze_ctrc_and_report(&ctrc, &*context, &mut temp_reporter, file_name_static);
+
+    /*let string = analyze_and_pretty_print(module, &temp_bump, context.clone()).unwrap();
+    println!("{}", string);*/
 
     if temp_reporter.has_errors() {
         temp_reporter.report_all();
