@@ -303,9 +303,8 @@ impl CraneliftBackend {
                 let off_val = builder.ins().iconst(types::I64, offset_bytes);
                 let addr = builder.ins().iadd(base_val, off_val);
 
-                // Load an i64 from addr with zero offset
-                let flags = MemFlags::new();
-                // If field is narrower than i64 (e.g., i32), change types::I64 -> types::I32 and extend if needed.
+                // Load an i64 because that's the only meaningful type
+                let flags = MemFlags::new()
                 let loaded = builder.ins().load(types::I64, flags, addr, 0);
 
                 let var = builder.declare_var(types::I64);
