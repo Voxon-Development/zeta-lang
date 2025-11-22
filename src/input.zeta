@@ -1,32 +1,32 @@
 struct Vec3f { i32 x, i32 y, i32 z } {
-    void multiply(mut this, Vec3f by) {
+    func multiply(mut this, Vec3f by) {
         this.x *= by.x();
         this.y *= by.y();
         this.z *= by.z();
     }
 
-    i32 x(this) { this.x }
-    i32 y(this) { this.y }
-    i32 z(this) { this.z }
+    func x(this): i32 { this.x }
+    func y(this): i32 { this.y }
+    func z(this): i32 { this.z }
 
-    i32 sum(this) { this.x + this.y + this.z }
+    func sum(this): i32 { this.x + this.y + this.z }
 }
 
 struct Vec9f { Vec3f x, Vec3f y, Vec3f z } {
-    void multiply(mut this, Vec3f by) {
+    func multiply(mut this, Vec3f by) {
         this.x.multiply(by);
         this.y.multiply(by);
         this.z.multiply(by);
     }
 
-    Vec3f x(this) { this.x }
-    Vec3f y(this) { this.y }
-    Vec3f z(this) { this.z }
+    func x(this): Vec3f { this.x }
+    func y(this): Vec3f { this.y }
+    func z(this): Vec3f { this.z }
 
-    i32 sum(this) { this.x.sum() + this.y.sum() + this.z.sum() }
+    func sum(this): i32 { this.x.sum() + this.y.sum() + this.z.sum() }
 }
 
-void main() {
+func main() {
     let firstVec3f: Vec3f = Vec3f(1, 1, 1);
     let secondVec3f: Vec3f = Vec3f(1, 1, 1);
     let thirdVec3f: Vec3f = Vec3f(1, 1, 1);
