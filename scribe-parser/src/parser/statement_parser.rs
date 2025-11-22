@@ -86,7 +86,7 @@ where
         let let_stmt = self.bump.alloc_value(LetStmt {
             mutability: false,
             ident,
-            type_annotation: Type::Infer, // Type will be inferred
+            type_annotation: Type::Infer,
             value,
         });
         Stmt::Let(let_stmt)
@@ -106,11 +106,9 @@ where
         let ident = cursor.consume_ident()
             .expect("Expected identifier in let/const statement");
         
-        // Parse optional type annotation
         let type_annotation = if cursor.peek_kind() == Some(TokenKind::Colon) {
             cursor.advance_kind(); // consume ':'
             
-            // Handle both primitive types (I32, U32, etc.) and custom types (Ident)
             match cursor.peek_kind() {
                 Some(TokenKind::I32) => {
                     cursor.advance_kind();
@@ -219,10 +217,8 @@ where
             cursor.advance_kind();
             
             if cursor.peek_kind() == Some(TokenKind::If) {
-                // Build else-if chain iteratively
-                let mut if_chain = Vec::new();
+                let mut if_chain: Vec<(&Expr, &Block)> = Vec::new();
                 
-                // Parse the first else-if
                 cursor.expect_kind(TokenKind::If);
                 cursor.expect_kind(TokenKind::LParen);
                 let elif_condition = self.parse_expr_placeholder(cursor);
@@ -231,7 +227,6 @@ where
                 
                 if_chain.push((elif_condition, elif_then));
                 
-                // Parse additional else-if blocks
                 while cursor.peek_kind() == Some(TokenKind::Else) {
                     cursor.advance_kind();
                     
@@ -243,10 +238,8 @@ where
                         let elif_then = self.parse_block(cursor).expect("Expected then branch");
                         if_chain.push((elif_condition, elif_then));
                     } else {
-                        // Final else block
                         let else_block = self.parse_block(cursor);
                         
-                        // Build the chain from right to left
                         let mut current_else: Option<&ElseBranch> = else_block.map(|b| self.bump.alloc_value_immutable(ElseBranch::Else(b)));
                         
                         for (elif_condition, elif_then) in if_chain.into_iter().rev() {
@@ -280,7 +273,6 @@ where
                 
                 current_else
             } else {
-                // else block
                 let else_block = self.parse_block(cursor);
                 else_block.map(|b| self.bump.alloc_value_immutable(ElseBranch::Else(b)))
             }
@@ -316,7 +308,6 @@ where
         cursor.expect_kind(TokenKind::For);
         cursor.expect_kind(TokenKind::LParen);
         
-        // Parse initializer (let statement)
         let let_stmt: Option<&LetStmt> = if cursor.peek_kind() == Some(TokenKind::Let) {
             if let Stmt::Let(ls) = self.parse_let_or_const(cursor) {
                 Some(ls)
@@ -328,7 +319,6 @@ where
             None
         };
         
-        // Parse condition
         let condition = if cursor.peek_kind() != Some(TokenKind::Semicolon) {
             Some(self.parse_expr_placeholder(cursor))
         } else {
@@ -336,7 +326,6 @@ where
         };
         cursor.expect_kind(TokenKind::Semicolon);
         
-        // Parse increment
         let increment = if cursor.peek_kind() != Some(TokenKind::RParen) {
             Some(self.parse_expr_placeholder(cursor))
         } else {
@@ -349,7 +338,6 @@ where
             Some(block) => block,
             None => {
                 eprintln!("Error: Expected block after for header");
-                // Create empty block as fallback
                 let empty_stmts = self.bump.alloc_slice(&[]);
                 self.bump.alloc_value(Block { block: empty_stmts })
             }
@@ -377,10 +365,8 @@ where
         let mut arms_vec: Vec<MatchArm<'a, 'bump>> = Vec::new();
         
         while cursor.peek_kind() != Some(TokenKind::RBrace) && !cursor.at_end() {
-            // Parse pattern with support for struct, tuple, array, and or patterns
             let pattern: Pattern<'bump> = self.parse_pattern(cursor);
             
-            // Parse optional guard (if expression)
             let guard = if cursor.peek_kind() == Some(TokenKind::If) {
                 cursor.advance_kind();
                 Some(self.parse_expr_placeholder(cursor))
@@ -389,13 +375,12 @@ where
                 None
             };
             
-            cursor.expect_kind(TokenKind::FatArrow); // =>
+            cursor.expect_kind(TokenKind::FatArrow);
             
             let block = match self.parse_block(cursor) {
                 Some(block) => block,
                 None => {
                     eprintln!("Error: Expected block in match arm");
-                    // Create empty block as fallback
                     let empty_stmts = self.bump.alloc_slice(&[]);
                     self.bump.alloc_value(Block { block: empty_stmts })
                 }
@@ -500,13 +485,11 @@ where
     
     fn parse_primary_pattern(&self, cursor: &mut TokenCursor<'a>) -> Pattern<'bump> {
         match cursor.peek_kind() {
-            // Wildcard: `_`
             Some(TokenKind::Underscore) => {
                 cursor.advance_kind();
                 Pattern::Wildcard
             }
             
-            // Number literal
             Some(TokenKind::Number) => {
                 let text_id = cursor.consume_number().unwrap();
                 let text = self.context.resolve_string(&text_id);
@@ -514,17 +497,16 @@ where
                 Pattern::Number(value)
             }
             
-            // String literal
             Some(TokenKind::String) => {
                 let s = cursor.consume_string().unwrap();
                 Pattern::String(s)
             }
             
-            // Boolean literals
             Some(TokenKind::BooleanTrue) => {
                 cursor.advance_kind();
                 Pattern::Boolean(true)
             }
+            
             Some(TokenKind::BooleanFalse) => {
                 cursor.advance_kind();
                 Pattern::Boolean(false)

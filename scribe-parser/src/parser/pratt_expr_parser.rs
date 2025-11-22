@@ -231,16 +231,28 @@ where
     fn parse_postfix(&self, cursor: &mut TokenCursor<'a>, expr: &'bump Expr<'a, 'bump>) -> &'bump Expr<'a, 'bump> {
         match cursor.peek_kind() {
             Some(TokenKind::LParen) => {
-                // Function call
-                let span = cursor.current_span();
-                cursor.advance_kind(); // consume '('
-                let args = self.parse_call_args(cursor);
-                let args_slice = self.bump.alloc_slice_copy(&args);
-                self.bump.alloc_value(Expr::Call {
-                    callee: expr,
-                    arguments: args_slice,
-                    span,
-                })
+                if let Expr::Ident { name, span } = expr {
+                    cursor.advance_kind(); // consume '('
+                    let args = self.parse_call_args(cursor);
+                    let args_slice = self.bump.alloc_slice_copy(&args);
+                    
+                    self.bump.alloc_value(Expr::ClassInit {
+                        callee: expr,
+                        arguments: args_slice,
+                        positional: true,
+                        span: *span,
+                    })
+                } else {
+                    let span = cursor.current_span();
+                    cursor.advance_kind();
+                    let args = self.parse_call_args(cursor);
+                    let args_slice = self.bump.alloc_slice_copy(&args);
+                    self.bump.alloc_value(Expr::Call {
+                        callee: expr,
+                        arguments: args_slice,
+                        span,
+                    })
+                }
             }
 
             Some(TokenKind::LBrace) => {

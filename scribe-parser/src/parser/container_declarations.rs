@@ -44,7 +44,6 @@ where
                 cursor.advance_kind(); // consume '('
 
                 while cursor.peek_kind() != Some(TokenKind::RParen) && !cursor.at_end() {
-                    // Parse the field type
                     let type_name = match cursor.consume_ident() {
                         Some(name) => name,
                         None => {
@@ -53,10 +52,10 @@ where
                             continue;
                         }
                     };
+
                     let type_str = self.context.resolve_string(&type_name);
                     let field_type = parse_to_type(type_str, cursor.peek_kind().unwrap_or(TokenKind::EOF), self.context.clone(), self.bump);
 
-                    // Check for generic parameters
                     let generics = if cursor.peek_kind() == Some(TokenKind::Lt) {
                         cursor.advance_kind(); // consume '<'
                         let mut generic_params = Vec::new();
@@ -70,6 +69,7 @@ where
                                     continue;
                                 }
                             };
+
                             let type_str = self.context.resolve_string(&type_name);
                             let ty = parse_to_type(type_str, cursor.peek_kind().unwrap_or(TokenKind::EOF), self.context.clone(), self.bump);
                             generic_params.push(ty);
@@ -148,11 +148,11 @@ where
             // Parse transition: state => state { block }
             let from_state: StateRef = self.parse_state_ref(cursor);
 
-            cursor.expect_kind(TokenKind::FatArrow); // =>
+            cursor.expect_kind(TokenKind::FatArrow);
 
             let to_state: StateRef = self.parse_state_ref(cursor);
 
-            let action = if cursor.peek_kind() == Some(TokenKind::LBrace) {
+            let action: Option<&Block> = if cursor.peek_kind() == Some(TokenKind::LBrace) {
                 self.parse_block(cursor)
             } else {
                 cursor.expect_kind(TokenKind::Semicolon);
@@ -194,7 +194,6 @@ where
         }
     }
 
-    /// Parse interface declaration
     pub fn parse_interface(&self, cursor: &mut TokenCursor<'a>) -> Stmt<'a, 'bump> {
         cursor.expect_kind(TokenKind::Interface);
 
@@ -274,7 +273,6 @@ where
         Stmt::InterfaceDecl(interface_decl)
     }
 
-    /// Parse impl block
     pub fn parse_impl_decl(&self, cursor: &mut TokenCursor<'a>) -> Stmt<'a, 'bump> {
         cursor.expect_kind(TokenKind::Impl);
 
@@ -317,7 +315,6 @@ where
         Stmt::ImplDecl(impl_decl)
     }
 
-    /// Parse class/struct declaration
     pub fn parse_struct_decl(&self, cursor: &mut TokenCursor<'a>) -> Stmt<'a, 'bump> {
         cursor.expect_kind(TokenKind::Struct);
 
@@ -354,7 +351,6 @@ where
         let mut destructor: Option<&'bump Block<'a, 'bump>> = None;
 
         while cursor.peek_kind() != Some(TokenKind::RBrace) && !cursor.at_end() {
-            // Check for destructor (~ClassName)
             if cursor.peek_kind() == Some(TokenKind::BitNot) {
                 cursor.advance_kind(); // consume '~'
                 let destructor_name = cursor.consume_ident()
@@ -363,7 +359,6 @@ where
                 let _ = cursor.expect_kind(TokenKind::LParen);
                 let _ = cursor.expect_kind(TokenKind::RParen);
 
-                // Verify destructor name matches class name
                 if destructor_name != name {
                     eprintln!("Warning: Destructor name doesn't match class name");
                 }
@@ -404,24 +399,8 @@ where
     pub fn parse_effect(&self, cursor: &mut TokenCursor<'a>) -> Stmt<'a, 'bump> {
         cursor.expect_kind(TokenKind::Effect);
 
-        // Parse visibility (default public)
-        let visibility = match cursor.peek_kind() {
-            Some(TokenKind::Private) => {
-                cursor.advance_kind();
-                Visibility::Private
-            }
-            Some(TokenKind::Module) => {
-                cursor.advance_kind();
-                Visibility::Module
-            }
-            Some(TokenKind::Package) => {
-                cursor.advance_kind();
-                Visibility::Package
-            }
-            _ => Visibility::Public,
-        };
+        let visibility = Self::fetch_visibility(cursor);
 
-        // Parse sealed keyword
         let sealed = if cursor.peek_kind() == Some(TokenKind::Sealed) {
             cursor.advance_kind();
             true
@@ -433,7 +412,6 @@ where
             .expect("Expected effect name");
 
         let mut current_kind = cursor.peek_kind();
-        // Parse permits expression
         let permits: Option<&[Type]> = if cursor.peek_kind() == Some(TokenKind::Permits) {
             cursor.advance_kind();
             current_kind = cursor.peek_kind();
@@ -459,7 +437,6 @@ where
             None
         };
 
-        // Parse parameters
         let params: Option<&[Param]> = if cursor.peek_kind() == Some(TokenKind::LParen) {
             cursor.advance_kind();
             self.parse_struct_params(cursor)
@@ -467,7 +444,6 @@ where
             None
         };
 
-        // Parse body
         let body = self.parse_block(cursor);
 
         let effect_decl = self.bump.alloc_value(EffectDecl {
@@ -494,7 +470,6 @@ where
                 }
                 Some(TokenKind::I32) | Some(TokenKind::I64) | Some(TokenKind::U32) | Some(TokenKind::U64) | 
                 Some(TokenKind::F32) | Some(TokenKind::F64) | Some(TokenKind::Boolean) | Some(TokenKind::Str) => {
-                    // Parse: type name (e.g., "i32 x")
                     let type_token = cursor.peek_kind().unwrap();
                     cursor.advance_kind(); // consume type token
                     
@@ -545,7 +520,6 @@ where
                         
                         fields.push(Param::Normal(normal_param));
                     } else {
-                        // This might be a type name followed by field name (e.g., "String y")
                         let type_str = self.context.resolve_string(&name);
                         let field_name = cursor.consume_ident().expect("Expected field name after type");
                         let param_type = parse_to_type(type_str, cursor.peek_kind().unwrap_or(TokenKind::EOF), self.context.clone(), self.bump);

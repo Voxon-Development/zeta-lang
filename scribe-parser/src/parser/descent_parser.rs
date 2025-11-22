@@ -88,12 +88,10 @@ where
             TokenKind::Statem => Some(self.declaration_parser.parse_state_machine(cursor)),
             TokenKind::Effect => Some(self.declaration_parser.parse_effect(cursor)),
             
-            // Function modifiers and function declarations
             TokenKind::Unsafe | TokenKind::Extern | TokenKind::Inline | TokenKind::Noinline | TokenKind::Func => {
                 Some(self.declaration_parser.parse_function(cursor))
             }
             
-            // Statements
             _ => Some(self.statement_parser.parse_stmt(cursor)),
         }
     }

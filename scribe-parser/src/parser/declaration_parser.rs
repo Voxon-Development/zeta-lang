@@ -112,47 +112,18 @@ where
             }
         }
         
-        let return_type: Option<Type> = match cursor.peek_kind() {
-            Some(TokenKind::Void) => {
-                // Explicit void return type
-                cursor.advance_kind(); // consume 'void'
-                Some(Type::Void)
-            },
-            Some(TokenKind::I32) => {
-                cursor.advance_kind(); // consume 'i32'
-                Some(Type::I32)
-            },
-            Some(TokenKind::I64) => {
-                cursor.advance_kind(); // consume 'i64'
-                Some(Type::I64)
-            },
-            Some(TokenKind::Str) => {
-                cursor.advance_kind(); // consume 'str'
-                Some(Type::String)
-            },
-            Some(TokenKind::Ident) => {
-                // Check if this looks like a return type by looking ahead
-                if cursor.peek_kind_n(1) == Some(TokenKind::Ident) {
-                    // We have two identifiers in a row: return_type function_name
-                    let type_name: StrId = cursor.consume_ident()
-                        .expect("Expected identifier for return type");
-                    let type_str: &str = self.context.resolve_string(&type_name);
-                    Some(parse_to_type(type_str, cursor.peek_kind().unwrap(), self.context.clone(), self.bump))
-                } else {
-                    // Only one identifier, assume no return type (void)
-                    None
-                }
-            },
-            _ => None,
-        };
-
+        // Require 'func' keyword for function declarations
+        cursor.expect_kind(TokenKind::Func);
+        
+        // Parse function name
         let name = match cursor.consume_ident() {
             Some(name) => name,
             None => {
-                panic!("Error: Expected function name at current position");
+                panic!("Expected function name after 'func' keyword");
             }
         };
-
+        
+        // Parse parameters
         let generics: Option<&[Generic]> = if cursor.peek_kind() == Some(TokenKind::Lt) {
             cursor.advance_kind(); // consume '<'
             self.parse_generics(cursor)
@@ -166,6 +137,40 @@ where
         } else {
             None
         };
+        
+        // Parse return type (after parameters)
+        let return_type: Option<Type> = if cursor.peek_kind() == Some(TokenKind::Colon) {
+            cursor.advance_kind(); // consume ':'
+            
+            match cursor.peek_kind() {
+                Some(TokenKind::Void) => {
+                    cursor.advance_kind();
+                    Some(Type::Void)
+                },
+                Some(TokenKind::I32) => {
+                    cursor.advance_kind();
+                    Some(Type::I32)
+                },
+                Some(TokenKind::I64) => {
+                    cursor.advance_kind();
+                    Some(Type::I64)
+                },
+                Some(TokenKind::Str) => {
+                    cursor.advance_kind();
+                    Some(Type::String)
+                },
+                Some(TokenKind::Ident) => {
+                    let type_name = cursor.consume_ident()
+                        .expect("Expected return type after colon");
+                    let type_str = self.context.resolve_string(&type_name);
+                    Some(parse_to_type(type_str, cursor.peek_kind().unwrap_or(TokenKind::EOF), self.context.clone(), self.bump))
+                },
+                _ => None,
+            }
+        } else {
+            None // No return type specified, defaults to void
+        };
+
 
         let body: Option<&Block> = if cursor.peek_kind() == Some(TokenKind::LBrace) {
             self.parse_block(cursor)
