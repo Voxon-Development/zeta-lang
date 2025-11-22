@@ -48,11 +48,13 @@ mod prettify_tests {
                     name: name_field,
                     field_type: HirType::String,
                     visibility: Visibility::Public,
+                    generics: None
                 },
                 HirField {
                     name: age_field,
                     field_type: HirType::U32,
                     visibility: Visibility::Private,
+                    generics: None
                 },
             ]),
             interfaces: None,
@@ -70,6 +72,7 @@ mod prettify_tests {
                     name: connection_field,
                     field_type: HirType::String,
                     visibility: Visibility::Private,
+                    generics: None
                 },
             ]),
             interfaces: None,
