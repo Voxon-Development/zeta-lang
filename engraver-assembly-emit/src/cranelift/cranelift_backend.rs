@@ -1,5 +1,8 @@
 //! SSA Backend switched to Cranelift code generation with full ADT and interpolation support
 
+use std::io::Write;
+use std::io::BufWriter;
+use std::fs::File;
 use smallvec::SmallVec;
 use crate::backend::Backend;
 use crate::cranelift::{clif_type, cranelift_intrinsics};
@@ -9,11 +12,13 @@ use cranelift_codegen::ir::{types, AbiParam, Block as ClifBlock, Block, BlockArg
 use cranelift_codegen::isa;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClifModule};
-use cranelift_object::{ObjectBuilder, ObjectModule};
+use cranelift_object::{object, ObjectBuilder, ObjectModule};
 use ir::hir::StrId;
 use ir::ssa_ir::{inst_is_terminator, BasicBlock, BinOp, BlockId, Function, Instruction, InterpolationOperand, Module, Operand, SsaType, Value};
 use leapfrog::LeapMap;
 use std::collections::HashMap;
+use std::error::Error;
+use std::{fmt, io};
 use std::sync::Arc;
 use cranelift_codegen::entity::ListPool;
 use ir::ir_hasher::FxHashBuilder;
@@ -651,11 +656,34 @@ impl Backend for CraneliftBackend {
         ).unwrap();
     }
 
-    fn finish(self) {
+    fn finish(self) -> Result<(), EmitError> {
         let obj = self.module.finish();
-        std::fs::write("out.o", obj.emit().unwrap()).unwrap();
+        let data = obj.emit().map_err(|e| EmitError::Emit(e))?;
+
+        let file = File::create("out.o").map_err(|e| EmitError::Io(e))?;
+        let mut writer = BufWriter::with_capacity(4 * 1024 * 1024, file); // 4 MB buffer
+        writer.write_all(&data).map_err(|e| EmitError::Io(e))?;
+        writer.flush().map_err(|e| EmitError::Io(e))?;
+        Ok(())
     }
 }
+
+#[derive(Debug)]
+pub enum EmitError {
+    Io(io::Error),
+    Emit(object::write::Error)
+}
+
+impl fmt::Display for EmitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EmitError::Io(e) => write!(f, "IO error: {}", e),
+            EmitError::Emit(e) => write!(f, "Emit error: {}", e),
+        }
+    }
+}
+
+impl Error for EmitError {}
 
 impl CraneliftBackend {
     fn lower_instructions(
