@@ -318,20 +318,20 @@ impl<'bump> GrowableAtomicBump<'bump> {
         }
     }
 
-    pub fn alloc_slice_immutable<T>(&self, data: &[T]) -> Option<&'bump [T]> {
+    pub fn alloc_slice_immutable<T>(&self, data: &[T]) -> &'bump [T] {
         if data.is_empty() {
-            return Some(&[]);
+            return &[];
         }
 
         let len = data.len();
-        let size = size_of::<T>().checked_mul(len)?;
+        let size = size_of::<T>().checked_mul(len).unwrap_or(usize::MAX);
         let align = align_of::<T>();
 
         let ptr: *mut T = self.alloc_aligned_bytes(size, align).as_mut_ptr() as *mut T;
 
         unsafe {
             ptr::copy_nonoverlapping(data.as_ptr(), ptr, len);
-            Some(std::slice::from_raw_parts(ptr, len))
+            std::slice::from_raw_parts(ptr, len)
         }
     }
 
