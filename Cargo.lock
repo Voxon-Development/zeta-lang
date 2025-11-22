@@ -1385,13 +1385,11 @@ dependencies = [
  "engraver-assembly-emit",
  "futures",
  "ir",
- "pest",
  "rayon",
  "scribe-parser",
  "smelter-optimizer",
  "snmalloc-rs",
  "thiserror",
- "tokio",
  "walkdir",
  "zetaruntime",
 ]
