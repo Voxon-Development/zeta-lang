@@ -5,7 +5,7 @@ use codex_dependency_graph::module_collection_builder::ModuleBuilder;
 use codex_dependency_graph::topo::topo_sort;
 use emberforge_compiler::midend::ir::module_lowerer::MirModuleLowerer;
 use engraver_assembly_emit::backend::Backend;
-use engraver_assembly_emit::cranelift::cranelift_backend::CraneliftBackend;
+use engraver_assembly_emit::cranelift::cranelift_backend::{CraneliftBackend, EmitError};
 use zetaruntime::arena::GrowableAtomicBump;
 use zetaruntime::bump::GrowableBump;
 use zetaruntime::string_pool::StringPool;
@@ -24,29 +24,28 @@ use std::sync::Arc;
 use std::time::Instant;
 use std::panic::AssertUnwindSafe;
 
-use futures::future::join_all;
 use thiserror::Error;
-use tokio::task::JoinHandle;
 use walkdir::{DirEntry, WalkDir};
 use snmalloc_rs::SnMalloc;
 use futures::FutureExt;
-use tokio::sync::Semaphore;
 use ctrc_graph::hir_integration::convenience::analyze_and_pretty_print;
 
 #[global_allocator]
 static ALLOCATOR: SnMalloc = SnMalloc;
 
-#[tokio::main]
-async fn main() -> Result<(), CompilerError> {
+use rayon::prelude::*;
+
+// entry point
+fn main() -> Result<(), CompilerError> {
     let start = Instant::now();
 
     for _ in 1..1000 {
-        let result = AssertUnwindSafe::catch_unwind(AssertUnwindSafe(run_compiler()))
-            .await;
+        let result = std::panic::catch_unwind(|| run_compiler());
 
         let duration = start.elapsed();
         let millis = duration.as_millis();
         let nanos = duration.as_nanos();
+
         match result {
             Ok(Ok(_)) => {
                 println!("Finished build in {}ms (or {}ns)", millis, nanos);
@@ -63,65 +62,150 @@ async fn main() -> Result<(), CompilerError> {
     Ok(())
 }
 
-async fn run_compiler() -> Result<(), CompilerError> {
-    let string_pool: StringPool = StringPool::new()
+fn run_compiler() -> Result<(), CompilerError> {
+    let string_pool = StringPool::new()
         .map_err(|_| CompilerError::FailedToAllocateStringPool)?;
 
     let files: Vec<PathBuf> = WalkDir::new("src")
         .into_iter()
         .filter_map(|entry| entry.ok())
         .filter(|entry| {
-            entry.file_type().is_file() && entry.path()
-                 .extension()
-                 .and_then(|ext| ext.to_str())
-                 .map(|ext| ext == "zeta")
-                 .unwrap_or(false)
+            entry.file_type().is_file()
+                && entry.path()
+                .extension()
+                .and_then(|ext| ext.to_str())
+                == Some("zeta")
         })
         .map(DirEntry::into_path)
         .collect();
 
     if files.is_empty() {
-        eprintln!("No .zeta files found in current directory");
+        eprintln!("No .zeta files found");
         return Ok(());
     }
 
-    println!("Processing {} .zeta files", files.len());
-    let arc: Arc<StringPool> = Arc::new(string_pool);
-    
-    let mut error_reporter = ErrorReporter::new();
-    
-    let modules_with_ctrc: Vec<ModuleWithArena> = process_frontend(arc.clone(), files, &mut error_reporter)
-        .await?
-        .into_iter()
-        .filter(|arena| arena.valid)
-        .collect::<Vec<_>>();
-    
+    let arc = Arc::new(string_pool);
+    let error_reporter = ErrorReporter::new();
+
+    // Rayon parallelism: simple, efficient, zero futex circus.
+    let modules_with_ctrc: Vec<ModuleWithArena> = files
+        .par_iter()
+        .map(|path| process_single_file(arc.clone(), path.clone()))
+        .filter_map(|result| match result {
+            Ok(v) if v.valid => Some(v),
+            Ok(_) => None,
+            Err(e) => {
+                eprintln!("Error: {:?}", e);
+                None
+            }
+        })
+        .collect();
+
     error_reporter.report_all();
-    
     if error_reporter.has_errors() {
         std::process::exit(1);
     }
-    
+
     println!("Processed {} modules", modules_with_ctrc.len());
 
-    // Extract HIR modules for dependency analysis
     let hir_modules: Vec<HirModule> = modules_with_ctrc.iter().map(|m| m.module).collect();
-    let builder: ModuleBuilder = ModuleBuilder::run(&hir_modules, arc.clone());
-    let indexes: Vec<usize> = topo_sort(&builder.modules);
+    let builder = ModuleBuilder::run(&hir_modules, arc.clone());
+    let indexes = topo_sort(&builder.modules);
 
-    let mut backend: CraneliftBackend = CraneliftBackend::new(arc.clone());
+    let mut backend = CraneliftBackend::new(arc.clone());
 
     for idx in indexes {
-        let hir_module: HirModule = hir_modules[idx];
-        let mir_module_lowerer: MirModuleLowerer = MirModuleLowerer::new(arc.clone());
-        let mir_module: Module = MirModuleLowerer::lower_module(mir_module_lowerer, hir_module);
-
-        let _ = hir_module;
+        let hir_module = hir_modules[idx];
+        let mir_module = MirModuleLowerer::new(arc.clone()).lower_module(hir_module);
         backend.emit_module(&mir_module);
     }
 
-    backend.finish();
-    Ok(())
+    backend.finish().map_err(|e| CompilerError::FinishError(e))
+}
+
+fn process_single_file<'a, 'bump>(
+    context: Arc<StringPool>,
+    path: PathBuf,
+) -> Result<ModuleWithArena<'a, 'bump>, CompilerError>
+where
+    'a: 'bump,
+    'bump: 'a,
+{
+    let contents = std::fs::read_to_string(&path)
+        .map_err(|e| CompilerError::FailedToReadFile(path.clone(), e))?;
+
+    if contents.is_empty() {
+        return Ok(ModuleWithArena {
+            parse_and_hir_bump: Arc::new(GrowableAtomicBump::new()),
+            module: HirModule::default(),
+            valid: false,
+        });
+    }
+
+    let contents_bytes = contents.as_bytes();
+
+    let initial_capacity = {
+        let base = 16 * 1024;
+        std::cmp::max(base, contents_bytes.len() * 2 + 4096)
+    };
+
+    let bump: Arc<GrowableAtomicBump<'bump>> =
+        Arc::new(GrowableAtomicBump::with_capacity_and_aligned(initial_capacity, 8)
+            .map_err(|_| CompilerError::FailedToAllocateBump)?);
+
+    let file_name_static = {
+        let file_name_string = path.file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| CompilerError::InvalidFileName(Vec::new()))?;
+
+        let bytes = file_name_string.as_bytes();
+        let stored = bump
+            .alloc_many(bytes)
+            .ok_or(CompilerError::FailedToAllocateBump)?;
+
+        std::str::from_utf8(unsafe {
+            std::slice::from_raw_parts(stored.as_ptr(), bytes.len())
+        })
+            .unwrap()
+    };
+
+    let contents_static = {
+        let stored = bump
+            .alloc_many(contents_bytes)
+            .ok_or(CompilerError::FailedToAllocateBump)?;
+        std::str::from_utf8(unsafe {
+            std::slice::from_raw_parts(stored.as_ptr(), contents_bytes.len())
+        })
+            .unwrap()
+    };
+
+    let stmts = scribe_parser::parser::parse_program(
+        contents_static,
+        file_name_static,
+        context.clone(),
+        bump.clone(),
+    )
+        .map_err(CompilerError::ParserError)?;
+
+    let lowerer = HirLowerer::new(context.clone(), bump.clone());
+    let module = lowerer.lower_module(stmts);
+
+    let temp_bump = GrowableBump::new(4096, 8);
+    let ctrc = ctrc_graph::analyze_hir_for_ctrc(&module, &temp_bump);
+
+    let mut temp_reporter = ErrorReporter::new();
+    temp_reporter.add_source_file(file_name_static.into(), contents_static.into());
+    analyze_ctrc_and_report(&ctrc, &*context, &mut temp_reporter, file_name_static);
+
+    if temp_reporter.has_errors() {
+        temp_reporter.report_all();
+    }
+
+    Ok(ModuleWithArena {
+        parse_and_hir_bump: bump,
+        module,
+        valid: true,
+    })
 }
 
 struct ModuleWithArena<'a, 'bump> {
@@ -131,134 +215,6 @@ struct ModuleWithArena<'a, 'bump> {
     module: HirModule<'a, 'bump>,
 
     valid: bool
-}
-
-async fn process_frontend<'a, 'bump>(
-    context: Arc<StringPool>,
-    files: Vec<PathBuf>,
-    _error_reporter: &mut ErrorReporter<'a, 'bump>,
-) -> Result<Vec<ModuleWithArena<'a, 'bump>>, CompilerError> {
-    // Bound concurrency to avoid blowing out memory
-    let parallelism = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4);
-
-    let max_concurrent = std::cmp::max(1, parallelism.saturating_mul(2));
-    let sem = Arc::new(Semaphore::new(max_concurrent));
-
-    let mut handles: Vec<JoinHandle<Result<ModuleWithArena, CompilerError>>> = Vec::new();
-
-    for path in files {
-        let context_clone = context.clone();
-        let sem_clone = sem.clone();
-
-        let permit = sem_clone.acquire_owned().await
-            .expect("Semaphore closed unexpectedly");
-
-        handles.push(tokio::spawn(async move {
-            let _permit = permit;
-            process_single_file(context_clone, path).await
-        }));
-    }
-
-    // Vec<tokio::runtime::task::Result<Result<ModuleWithArena, CompilerError>>>
-    let results = join_all(handles).await;
-    let mut modules: Vec<ModuleWithArena> = Vec::new();
-
-    for result in results {
-        let module_with_arena = result
-            .map_err(|e| CompilerError::TaskJoinError(e.to_string()))??;
-        modules.push(module_with_arena);
-    }
-
-    Ok(modules)
-}
-
-async fn process_single_file<'a, 'bump>(
-    context: Arc<StringPool>,
-    path: PathBuf,
-) -> Result<ModuleWithArena<'a, 'bump>, CompilerError>
-where 'a: 'bump, 'bump: 'a {
-    let contents = tokio::fs::read_to_string(&path)
-        .await
-        .map_err(|e| CompilerError::FailedToReadFile(path.clone(), e))?;
-
-    let contents_bytes = contents.as_bytes();
-    if contents_bytes.is_empty() {
-        return Ok(ModuleWithArena {
-            parse_and_hir_bump: Arc::new(GrowableAtomicBump::new()),
-            module: HirModule::default(),
-            valid: false
-        });
-    }
-
-    let initial_capacity = {
-        let file_len = contents_bytes.len();
-        let base = 16 * 1024;
-        // Give a modest headroom for parser allocations
-        std::cmp::max(base, file_len.saturating_mul(2) + 4096)
-    };
-
-    let bump: Arc<GrowableAtomicBump<'bump>> = Arc::new(
-        GrowableAtomicBump::with_capacity_and_aligned(initial_capacity, 8)
-            .map_err(|_| CompilerError::FailedToAllocateBump)?);
-
-    let path_file_name: &OsStr = path.file_name().unwrap();
-    let file_name_string = path_file_name
-        .to_str()
-        .ok_or_else(|| CompilerError::InvalidFileName(
-            path_file_name.to_string_lossy().as_bytes().to_vec(),
-        ))?;
-
-    let file_name_bytes = file_name_string.as_bytes();
-    let file_name_static = {
-        let bytes_static = bump.alloc_many(file_name_bytes)
-            .ok_or(CompilerError::FailedToAllocateBump)?;
-
-        // SAFETY: we know file_name_string is valid UTF-8
-        std::str::from_utf8(unsafe {
-                std::slice::from_raw_parts(bytes_static.as_ptr(), file_name_bytes.len())
-            })
-            .map_err(|_| CompilerError::InvalidFileName(file_name_bytes.to_vec()))?
-    };
-
-    // Allocate contents in the bump allocator to get 'static lifetime
-    let contents_static = {
-        let bytes_static = bump.alloc_many(contents_bytes)
-            .ok_or(CompilerError::FailedToAllocateBump)?;
-        // Safe: contents came from valid UTF-8 string
-        std::str::from_utf8(
-            unsafe { std::slice::from_raw_parts(bytes_static.as_ptr(), contents_bytes.len()) }
-        ).map_err(|_| CompilerError::InvalidFileName(contents_bytes.to_vec()))?
-    };
-
-    let stmts: Vec<Stmt, &'_ GrowableBump> = scribe_parser::parser::parse_program(
-        contents_static,
-        file_name_static,
-        context.clone(),
-        bump.clone(),
-    ).map_err(CompilerError::ParserError)?;
-
-    let lowerer = HirLowerer::new(context.clone(), bump.clone());
-    let module: HirModule = lowerer.lower_module(stmts);
-
-    let temp_bump = GrowableBump::new(4096, 8);
-    let ctrc_result = ctrc_graph::analyze_hir_for_ctrc(&module, &temp_bump);
-    
-    let mut temp_ctrc_reporter = ErrorReporter::new();
-    temp_ctrc_reporter.add_source_file(file_name_static.to_string(), contents_static.to_string());
-    
-    analyze_ctrc_and_report(&ctrc_result, &*context, &mut temp_ctrc_reporter, file_name_static);
-
-    if temp_ctrc_reporter.has_errors() {
-        temp_ctrc_reporter.report_all();
-    }
-
-    Ok(ModuleWithArena {
-        parse_and_hir_bump: bump,
-        module,
-        valid: true
-    })
 }
 
 #[derive(Error, Debug)]
@@ -283,4 +239,7 @@ pub enum CompilerError {
 
     #[error("Join error: {0}")]
     TaskJoinError(String),
+
+    #[error("Failed to emit module: {0}")]
+    FinishError(EmitError)
 }
