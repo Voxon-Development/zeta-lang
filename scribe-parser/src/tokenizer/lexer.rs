@@ -433,6 +433,7 @@ impl<'a, 'bump> Lexer<'a, 'bump> {
             "char" => self.push_token(TokenKind::Char),
             "str" => self.push_token(TokenKind::Str),
             "boolean" => self.push_token(TokenKind::Boolean),
+            "func" => self.push_token(TokenKind::Func),
 
             _ => self.push(TokenKind::Ident, StrId(string))
         }
