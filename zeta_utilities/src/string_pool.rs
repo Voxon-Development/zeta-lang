@@ -41,27 +41,11 @@ impl BuildHasher for IdentityBuild {
     fn build_hasher(&self) -> Self::Hasher { IdentityHasher::default() }
 }
 
-#[repr(C, align(32))]
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct VmString {
     pub offset: *const u8,
-    pub length: usize,
-    
-    // Optimization: use NonZeroU64 instead of u64 to allow for null pointer optimization;
-    // where Option<VmString> has the same alignment and size as VmString, whether it is Some or None.
-    // Using u64 by itself would not allow this optimization, hence worse memory efficiency when thousands to millions of VmString might exist and some of them being `Option<VmString>`
-    pub hash: NonZeroU64,
-}
-
-impl Default for VmString {
-    fn default() -> Self {
-        VmString {
-            hash: NonZeroU64::new(1).unwrap(),
-            //  the rest is default
-            length: 0,
-            offset: ptr::null()
-        }
-    }
+    pub length: usize
 }
 
 impl PartialEq for VmString {
@@ -69,26 +53,25 @@ impl PartialEq for VmString {
         &self,
         other: &Self
     ) -> bool {
-        if self.hash != other.hash || self.length != other.length {
+        if self.length != other.length {
             return false;
         }
 
-        let (a, b) = unsafe {
+        let (a, b): (&[u8], &[u8]) = unsafe {
             (std::slice::from_raw_parts(self.offset, self.length), std::slice::from_raw_parts(other.offset, other.length))
         };
 
-        let mut i = 0;
-        while i + LANES <= a.len() {
-            let va = Simd::<u8, LANES>::from_slice(&a[i..]);
-            let vb = Simd::<u8, LANES>::from_slice(&b[i..]);
-            if !va.simd_eq(vb).all() { return false; }
-            i += LANES;
+        a == b
+    }
+}
+
+impl Default for VmString {
+    fn default() -> Self {
+        VmString {
+            //  the rest is default
+            length: 0,
+            offset: ptr::null()
         }
-        while i < a.len() {
-            if a[i] != b[i] { return false; }
-            i += 1;
-        }
-        true
     }
 }
 
@@ -96,8 +79,11 @@ impl Eq for VmString {}
 
 impl Hash for VmString {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u64(self.hash.get());
-        state.write_usize(self.length);
+        let ptr_val = self.offset as usize;
+        let len_val = self.length;
+
+        let mixed = ptr_val.wrapping_mul(0x9e3779b97f4a7c15) ^ len_val;
+        mixed.hash(state);
     }
 }
 
@@ -153,7 +139,6 @@ impl StringPool {
         let new_vm_string = VmString {
             offset: slice.as_ptr(),
             length: bytes.len(),
-            hash: NonZeroU64::new(hash).unwrap(),
         };
 
         self.interned_strings.entry(hash).or_default().push(new_vm_string);
@@ -287,6 +272,11 @@ mod tests {
 
         assert!(StringPool::eq_simd(bytes, same_bytes));
         assert!(!StringPool::eq_simd(bytes, diff_bytes));
+    }
+
+    #[test]
+    fn test_string_pool_len() {
+        println!("{}", align_of::<VmString>());
     }
 
     #[test]
