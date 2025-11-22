@@ -7,9 +7,15 @@ use crate::span::SourceSpan;
 // =====================================
 
 /// A reference to an interned string in the global string pool
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(align(32))]
 pub struct StrId(pub VmString);
+
+impl Hash for StrId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_u64(self.0.hash.get());
+    }
+}
 
 impl Deref for StrId {
     type Target = VmString;
@@ -490,6 +496,7 @@ where
 }
 
 use std::cell::UnsafeCell;
+use std::hash::{Hash, Hasher};
 use crate::ir_hasher::FxHashBuilder;
 
 pub struct HirSlice<'bump, T> {
