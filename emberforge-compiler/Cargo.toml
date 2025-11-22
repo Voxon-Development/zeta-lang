@@ -8,11 +8,7 @@ edition = "2024"
 opt-level = 3
 
 [dependencies]
-lazy_static = "1.5.0"
 zetaruntime = { path = "../zeta_utilities" }
 ir = { path = "../ir" }
-tokio = { version = "1.36", features = ["full"] }
-rayon = "1.10.0"
 smallvec = "1.15.0"
 arrayvec = "0.7.6"
-dashmap = "7.0.0-rc2"
