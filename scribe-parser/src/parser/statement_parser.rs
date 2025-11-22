@@ -534,17 +534,17 @@ where
             Some(TokenKind::LParen) => {
                 cursor.advance_kind();
                 let mut patterns: Vec<Pattern> = Vec::new();
-                
+
                 while cursor.peek_kind() != Some(TokenKind::RParen) && !cursor.at_end() {
                     patterns.push(self.parse_or_pattern(cursor));
-                    
+
                     if cursor.peek_kind() == Some(TokenKind::Comma) {
                         cursor.advance_kind();
                     } else {
                         break;
                     }
                 }
-                
+
                 cursor.expect_kind(TokenKind::RParen);
                 Pattern::Tuple(self.bump.alloc_slice_copy(patterns.as_slice()))
             }
