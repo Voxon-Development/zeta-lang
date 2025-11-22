@@ -1,13 +1,12 @@
 use ir::hir::{HirType, StrId};
-use ir::ir_hasher::FxHashBuilder;
-use std::collections::HashMap;
 use std::sync::Arc;
+use ir::ir_hasher::HashMap;
 use zetaruntime::arena::GrowableAtomicBump;
 
 /// Substitute occurrences of Generic types with concrete ones
 pub fn substitute_type<'a, 'bump>(
     ty: &HirType<'a, 'bump>,
-    subs: &HashMap<StrId, HirType<'a, 'bump>, FxHashBuilder>,
+    subs: &HashMap<StrId, HirType<'a, 'bump>>,
     bump: Arc<GrowableAtomicBump<'bump>>,
 ) -> HirType<'a, 'bump> {
     match ty {

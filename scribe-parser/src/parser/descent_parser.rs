@@ -8,7 +8,6 @@ use zetaruntime::bump::GrowableBump;
 use zetaruntime::string_pool::StringPool;
 
 use crate::parser::declaration_parser::DeclarationParser;
-use crate::parser::pratt_expr_parser::PrattExprParser;
 use crate::parser::statement_parser::StatementParser;
 use crate::tokenizer::tokens::Tokens;
 use crate::tokenizer::cursor::TokenCursor;
@@ -19,9 +18,7 @@ pub struct DescentParser<'a, 'bump>
 where
     'bump: 'a,
 {
-    context: Arc<StringPool>,
     bump: &'bump GrowableBump<'bump>,
-    expression_parser: PrattExprParser<'a, 'bump>,
     statement_parser: StatementParser<'a, 'bump>,
     declaration_parser: DeclarationParser<'a, 'bump>,
 }
@@ -32,9 +29,7 @@ where
 {
     pub fn new(context: Arc<StringPool>, bump: &'bump GrowableBump<'bump>) -> Self {
         Self {
-            context: context.clone(),
             bump,
-            expression_parser: PrattExprParser::new(context.clone(), bump),
             statement_parser: StatementParser::new(context.clone(), bump),
             declaration_parser: DeclarationParser::new(context.clone(), bump),
         }

@@ -3,7 +3,7 @@ use super::monomorphization::{
     class_instantiation::{instantiate_class_for_types},
 };
 use ir::hir::{HirFunc, HirType, StrId};
-use ir::ir_hasher::FxHashBuilder;
+use ir::ir_hasher::{FxHashBuilder, FxHashMap};
 use std::collections::HashMap;
 
 impl<'a, 'bump> HirLowerer<'a, 'bump> {
@@ -13,15 +13,15 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     
     /// Monomorphize a function with substitutions mapping generic-name -> concrete HirType
     pub fn monomorphize_function(
-        &self,
+        &mut self,
         func: &HirFunc<'a, 'bump>,
-        substitutions: &HashMap<StrId, HirType<'a, 'bump>, FxHashBuilder>,
+        substitutions: &FxHashMap<StrId, HirType<'a, 'bump>>,
     ) -> HirFunc<'a, 'bump> {
-        self.mono.monomorphize_function(func, substitutions)
+        self.ctx.functions.borrow().get(&self.mono.monomorphize_function(func, substitutions).unwrap()).copied().unwrap()
     }
 
     /// Instantiate a generic class for concrete args
     pub fn instantiate_class_for_types(&self, base: StrId, concrete_args: &[HirType<'a, '_>]) -> StrId {
-        instantiate_class_for_types(&self.ctx, base, concrete_args, self.ctx.bump.clone())
+        instantiate_class_for_types(&self.ctx, &self.mono, base, concrete_args, self.ctx.bump.clone()).map(|c| c.name).unwrap()
     }
 }

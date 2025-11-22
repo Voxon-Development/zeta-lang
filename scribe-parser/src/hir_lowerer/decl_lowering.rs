@@ -53,7 +53,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         }
     }
 
-    pub(super) fn lower_struct_decl(&self, c: ClassDecl<'a, 'bump>) -> HirStruct<'a, 'bump> {
+    pub(super) fn lower_struct_decl(&mut self, c: ClassDecl<'a, 'bump>) -> HirStruct<'a, 'bump> {
         let generics_vec: Vec<HirGeneric> = c
             .generics
             .unwrap_or_default()
@@ -109,6 +109,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 name: p.name,
                 field_type: self.lower_type(&p.type_annotation),
                 visibility: lower_visibility(&p.visibility),
+                generics: None,
             },
             Param::This(_) => panic!("`this` parameter is not allowed in a class"),
         }
@@ -180,10 +181,21 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 let fields_vec: Vec<HirField<'a, 'bump>> = v
                     .fields
                     .into_iter()
-                    .map(|f| HirField {
-                        name: f.name,
-                        field_type: self.lower_type(&f.field_type),
-                        visibility: lower_visibility(&f.visibility),
+                    .map(|f| {
+                        let field_type = self.lower_type(&f.field_type);
+                        let generics = f.generics.map(|generics| {
+                            let lowered_generics: Vec<_> = generics.iter()
+                                .map(|ty| self.lower_type(ty))
+                                .collect();
+                            self.ctx.bump.alloc_slice_immutable(&lowered_generics)
+                        });
+                        
+                        HirField {
+                            name: f.name,
+                            field_type,
+                            visibility: lower_visibility(&f.visibility),
+                            generics,
+                        }
                     })
                     .collect();
                 let fields = self.ctx.bump.alloc_slice(&fields_vec);
@@ -215,12 +227,13 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         }
     }
 
-    pub(super) fn lower_const_stmt(&self, l: ir::ast::ConstStmt<'a, '_>) -> ConstStmt<'a, 'bump> {
+    pub(super) fn lower_const_stmt(&mut self, l: ir::ast::ConstStmt<'a, '_>) -> ConstStmt<'a, 'bump> {
         let value = self.lower_expr(&l.value);
         let final_type = self.lower_type(&l.type_annotation);
 
         self.ctx
             .variable_types
+            .borrow_mut()
             .insert(l.ident, final_type);
 
         ConstStmt {

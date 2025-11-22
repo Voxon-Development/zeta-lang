@@ -103,8 +103,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         }
 
         if let HirExpr::Ident(func_name) = &lowered_callee {
-            if let Some(func_entry) = self.ctx.functions.get(func_name) {
-                let func = func_entry.value();
+            if let Some(func) = self.ctx.functions.borrow().get(func_name) {
                 if func.inline {
                     if let Some(inlined) = self.try_inline_function(func, arguments) {
                         return inlined;
@@ -145,10 +144,10 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     pub(super) fn find_interface_method(&self, object: &HirExpr, method: StrId) -> Option<StrId> {
         let class_name: StrId = match object {
             HirExpr::Ident(var) => {
-                if let Some(entry) = self.ctx.variable_types.get(var) {
-                    Some(entry.key().clone())
+                if let Some(_) = self.ctx.variable_types.borrow().get(var) {
+                    Some(var.clone())
                 } else {
-                    if self.ctx.classes.contains_key(var) {
+                    if self.ctx.classes.borrow().contains_key(var) {
                         Some(var.clone())
                     } else {
                         None
@@ -158,12 +157,13 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             _ => None,
         }?;
 
-        let fetched_class = self.ctx.classes.get(&class_name)?;
-        let class = fetched_class.value();
+        let binding = self.ctx.classes.borrow();
+        let class = binding.get(&class_name)?;
         let Some(interfaces) = class.interfaces else { return None; };
+
         for iface_name in interfaces {
-            let interface = self.ctx.interfaces.get(iface_name)?;
-            let iface = interface.value();
+            let if_binding = self.ctx.interfaces.borrow();
+            let iface = if_binding.get(iface_name)?;
             let Some(methods) = iface.methods else { return None; };
             if methods.iter().any(|m| m.name == method) {
                 return Some(iface_name.clone());
@@ -250,7 +250,8 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         let obj_ty = self.infer_type(object);
         match obj_ty {
             HirType::Class(name, _) => {
-                let class = self.ctx.classes.get(&name).unwrap();
+                let borrow = self.ctx.classes.borrow();
+                let class = borrow.get(&name).unwrap();
                 class
                     .fields
                     .iter()

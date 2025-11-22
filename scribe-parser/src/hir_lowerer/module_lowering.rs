@@ -7,20 +7,20 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     // ===============================
     // Module Lowering
     // ===============================
-    pub fn lower_module(&self, stmts: Vec<Stmt<'a, '_>, &'_ GrowableBump>) -> HirModule<'a, 'bump> {
+    pub fn lower_module(&mut self, stmts: Vec<Stmt<'a, '_>, &'_ GrowableBump>) -> HirModule<'a, 'bump> {
         let mut items: Vec<Hir<'a, 'bump>> = Vec::new();
         for stmt in stmts {
             let item = self.lower_toplevel(stmt);
             // If we lowered a function/class/interface, register it for later resolution
             match &item {
                 Hir::Func(f) => {
-                    self.ctx.functions.insert(f.name, **f);
+                    self.ctx.functions.borrow_mut().insert(f.name, **f);
                 }
                 Hir::Struct(c) => {
-                    self.ctx.classes.insert(c.name, **c);
+                    self.ctx.classes.borrow_mut().insert(c.name, **c);
                 }
                 Hir::Interface(i) => {
-                    self.ctx.interfaces.insert(i.name, **i);
+                    self.ctx.interfaces.borrow_mut().insert(i.name, **i);
                 }
                 _ => {}
             }
@@ -36,7 +36,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         }
     }
 
-    pub(super) fn lower_toplevel(&self, stmt: Stmt<'_, 'a>) -> Hir<'a, 'bump> {
+    pub(super) fn lower_toplevel(&mut self, stmt: Stmt<'_, 'a>) -> Hir<'a, 'bump> {
         match stmt {
             Stmt::FuncDecl(f) => {
                 let func = self.lower_func_decl(*f);

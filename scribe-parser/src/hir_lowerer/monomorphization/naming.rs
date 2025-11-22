@@ -1,15 +1,14 @@
 use crate::hir_lowerer::utils::type_suffix_with_pool;
 use ir::hir::{HirStruct, HirType, StrId};
-use ir::ir_hasher::FxHashBuilder;
 use smallvec::SmallVec;
-use std::collections::HashMap;
 use std::sync::Arc;
+use ir::ir_hasher::HashMap;
 use zetaruntime::string_pool::StringPool;
 
 /// Create a StrId suffix for a set of substitutions, e.g. {"T": i32} -> "T_i32"
 pub fn suffix_for_subs(
     pool: Arc<StringPool>,
-    subs: &HashMap<StrId, HirType, FxHashBuilder>,
+    subs: &HashMap<StrId, HirType>,
 ) -> StrId {
     // Collect into Vec<(StrId, StrId)> so we can sort deterministically.
     let mut pieces: Vec<(StrId, StrId)> = subs

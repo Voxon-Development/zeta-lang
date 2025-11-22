@@ -124,6 +124,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
 
         self.ctx
             .variable_types
+            .borrow_mut()
             .insert(l.ident, final_type);
         
         HirStmt::Let {

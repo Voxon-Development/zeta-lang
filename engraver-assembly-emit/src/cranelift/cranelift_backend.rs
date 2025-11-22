@@ -15,7 +15,6 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClifM
 use cranelift_object::{object, ObjectBuilder, ObjectModule};
 use ir::hir::StrId;
 use ir::ssa_ir::{inst_is_terminator, BasicBlock, BinOp, BlockId, Function, Instruction, InterpolationOperand, Module, Operand, SsaType, Value};
-use leapfrog::LeapMap;
 use std::collections::HashMap;
 use std::error::Error;
 use std::{fmt, io};
@@ -27,7 +26,7 @@ use crate::cranelift::cranelift_intrinsics::{TargetInfo};
 
 pub struct CraneliftBackend {
     module: ObjectModule,
-    string_data: LeapMap<VmString, ZetaDataId>,
+    string_data: HashMap<VmString, ZetaDataId>,
     interp_func: FuncId,
     enum_new: FuncId,
     enum_tag: FuncId,
@@ -85,7 +84,7 @@ impl CraneliftBackend {
 
         CraneliftBackend {
             module,
-            string_data: LeapMap::new(),
+            string_data: HashMap::new(),
             interp_func,
             enum_new,
             enum_tag,
@@ -432,10 +431,8 @@ impl CraneliftBackend {
     fn get_or_create_string(&mut self, s: &StrId) -> DataId {
         let vm_str = **s;
         // Check if the string already exists in the LeapMap
-        if let Some(mut id) = self.string_data.get(&vm_str) {
-            if let Some(value) = id.value() {
-                return value.0;   
-            }
+        if let Some(id) = self.string_data.get(&vm_str) {
+            return id.0;
         }
 
         // Otherwise, declare new data
