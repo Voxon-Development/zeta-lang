@@ -7,15 +7,8 @@ use crate::span::SourceSpan;
 // =====================================
 
 /// A reference to an interned string in the global string pool
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[repr(align(32))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct StrId(pub VmString);
-
-impl Hash for StrId {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u64(self.0.hash.get());
-    }
-}
 
 impl Deref for StrId {
     type Target = VmString;
@@ -180,6 +173,8 @@ where
     pub name: StrId,
     pub field_type: HirType<'a, 'bump>,
     pub visibility: Visibility,
+    /// Generic type parameters for this field
+    pub generics: Option<&'bump [HirType<'a, 'bump>]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
