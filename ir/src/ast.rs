@@ -98,10 +98,15 @@ pub struct EnumVariant<'a, 'bump> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Field<'a, 'bump> {
+pub struct Field<'a, 'bump> 
+where
+    'bump: 'a,
+{
     pub name: StrId,
     pub field_type: Type<'a, 'bump>,
     pub visibility: Visibility,
+    /// Generic type parameters for this field
+    pub generics: Option<&'bump [Type<'a, 'bump>]>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
