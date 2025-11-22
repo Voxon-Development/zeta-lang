@@ -44,23 +44,61 @@ where
                 cursor.advance_kind(); // consume '('
 
                 while cursor.peek_kind() != Some(TokenKind::RParen) && !cursor.at_end() {
-                    let type_name: StrId = match cursor.consume_ident() {
+                    // Parse the field type
+                    let type_name = match cursor.consume_ident() {
                         Some(name) => name,
                         None => {
-                            eprintln!("Error: Expected field type in enum variant");
+                            eprintln!("Error: Expected field type");
                             cursor.advance_kind(); // Skip invalid token
                             continue;
                         }
                     };
+                    let type_str = self.context.resolve_string(&type_name);
+                    let field_type = parse_to_type(type_str, cursor.peek_kind().unwrap_or(TokenKind::EOF), self.context.clone(), self.bump);
 
-                    let type_str: &str = self.context.resolve_string(&type_name);
-                    let field_type: Type = parse_to_type(type_str, cursor.peek_kind().unwrap_or(TokenKind::Unknown), self.context.clone(), self.bump);
+                    // Check for generic parameters
+                    let generics = if cursor.peek_kind() == Some(TokenKind::Lt) {
+                        cursor.advance_kind(); // consume '<'
+                        let mut generic_params = Vec::new();
+                        
+                        while cursor.peek_kind() != Some(TokenKind::Gt) && !cursor.at_end() {
+                            let type_name = match cursor.consume_ident() {
+                                Some(name) => name,
+                                None => {
+                                    eprintln!("Error: Expected type in generic parameters");
+                                    cursor.advance_kind();
+                                    continue;
+                                }
+                            };
+                            let type_str = self.context.resolve_string(&type_name);
+                            let ty = parse_to_type(type_str, cursor.peek_kind().unwrap_or(TokenKind::EOF), self.context.clone(), self.bump);
+                            generic_params.push(ty);
+                            
+                            if cursor.peek_kind() == Some(TokenKind::Comma) {
+                                cursor.advance_kind();
+                            } else if cursor.peek_kind() != Some(TokenKind::Gt) {
+                                eprintln!("Expected ',' or '>' in generic parameters");
+                                break;
+                            }
+                        }
+                        
+                        if cursor.peek_kind() == Some(TokenKind::Gt) {
+                            cursor.advance_kind(); // consume '>'
+                            Some(self.bump.alloc_slice(&generic_params))
+                        } else {
+                            eprintln!("Expected '>' after generic parameters");
+                            None
+                        }
+                    } else {
+                        None
+                    };
 
                     let dummy_name = self.context.intern("_");
                     fields_vec.push(Field {
                         name: StrId(dummy_name),
                         field_type,
                         visibility: Visibility::Public,
+                        generics,
                     });
 
                     if cursor.peek_kind() == Some(TokenKind::Comma) {
