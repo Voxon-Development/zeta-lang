@@ -91,7 +91,7 @@ impl CraneliftBackend {
             func_ids: HashMap::with_hasher(FxHashBuilder),
             context,
             target: TargetInfo { ptr_bytes: 8 },
-            emit_asm: true
+            emit_asm: false
         }
     }
 
