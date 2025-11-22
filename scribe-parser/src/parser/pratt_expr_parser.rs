@@ -231,7 +231,7 @@ where
     fn parse_postfix(&self, cursor: &mut TokenCursor<'a>, expr: &'bump Expr<'a, 'bump>) -> &'bump Expr<'a, 'bump> {
         match cursor.peek_kind() {
             Some(TokenKind::LParen) => {
-                if let Expr::Ident { name, span } = expr {
+                if let Expr::Ident { name: _, span } = expr {
                     cursor.advance_kind(); // consume '('
                     let args = self.parse_call_args(cursor);
                     let args_slice = self.bump.alloc_slice_copy(&args);

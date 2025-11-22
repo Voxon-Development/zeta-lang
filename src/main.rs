@@ -29,9 +29,7 @@ use walkdir::{DirEntry, WalkDir};
 #[global_allocator]
 static ALLOCATOR: SnMalloc = SnMalloc;
 
-use rayon::prelude::*;
 use ctrc_graph::CTRCAnalysisResult;
-use ctrc_graph::hir_integration::convenience::analyze_and_pretty_print;
 
 // entry point
 fn main() -> Result<(), CompilerError> {
@@ -51,7 +49,7 @@ fn main() -> Result<(), CompilerError> {
             eprintln!("Compilation failed after {}ms (or {}ns) \nError: {:?}", millis, nanos, e);
             Err(e)
         }
-        Err(e) => {
+        Err(_) => {
             eprintln!("Panic occurred after {}ms (or {}ns)", millis, nanos);
             exit(1);
         }
