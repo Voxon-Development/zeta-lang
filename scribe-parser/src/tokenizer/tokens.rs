@@ -2,6 +2,7 @@ use smallvec::SmallVec;
 use ir::hir::StrId;
 use ir::span::SourceSpan;
 
+#[derive(Debug, Clone)]
 pub struct Tokens<'a> {
     pub kinds: SmallVec<[TokenKind; 2048]>,
     pub texts: SmallVec<[StrId; 1024]>,
@@ -71,6 +72,9 @@ pub enum TokenKind {
     Statem,
     Trait,
     Where,
+    Uses,
+    Requires,
+    Ensures,
     
     // ======== Types ========
     U8,
@@ -90,7 +94,7 @@ pub enum TokenKind {
     Boolean,
     Let,
     Void,
-    Func,
+    Fn,
 
 
     // ===== Punctuation =====
