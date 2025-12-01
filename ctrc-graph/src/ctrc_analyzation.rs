@@ -148,7 +148,7 @@ impl CTRCGraph {
 
         while let Some(current_expr) = work_queue.pop_front() {
             match current_expr {
-                HirExpr::ClassInit { name, args, .. } => {
+                HirExpr::StructInit { name, args, .. } => {
                     if let HirExpr::Ident(class_name) = name {
                         let alias_id = self.create_alias_for_allocation(*class_name);
                         self.add_constraint(alias_id, self.next_program_point, 1, ConstraintReason::Copy);
