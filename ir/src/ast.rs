@@ -16,7 +16,7 @@ pub enum Stmt<'a, 'bump> where 'bump: 'a {
     UnsafeBlock(&'bump UnsafeBlock<'a, 'bump>),
     Block(&'bump Block<'a, 'bump>),
     FuncDecl(&'bump FuncDecl<'a, 'bump>),
-    ClassDecl(&'bump ClassDecl<'a, 'bump>),
+    StructDecl(&'bump StructDecl<'a, 'bump>),
     InterfaceDecl(&'bump InterfaceDecl<'a, 'bump>),
     ImplDecl(&'bump ImplDecl<'a, 'bump>),
     EnumDecl(&'bump EnumDecl<'a, 'bump>),
@@ -43,7 +43,6 @@ pub struct LetStmt<'a, 'bump>
 where
     'bump: 'a,
 {
-    pub mutability: bool,
     pub ident: StrId,
     pub type_annotation: Type<'a, 'bump>,
     pub value: &'bump Expr<'a, 'bump>,
@@ -304,7 +303,7 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ClassDecl<'a, 'bump> 
+pub struct StructDecl<'a, 'bump>
 where
     'bump: 'a,
 {
@@ -405,7 +404,7 @@ where
         rhs: &'bump Expr<'a, 'bump>,
         span: SourceSpan<'a>,
     },
-    ClassInit {
+    StructDecl {
         callee: &'bump Expr<'a, 'bump>,
         arguments: &'bump [Expr<'a, 'bump>],
         positional: bool,
@@ -449,10 +448,47 @@ where
     FieldInit { ident: StrId, expr: &'bump Expr<'a, 'bump>, span: SourceSpan<'a> },
     Unary { op: Op, operand: &'bump Expr<'a, 'bump>, span: SourceSpan<'a> },
     ArrayIndex { expr: &'bump Expr<'a, 'bump>, index: &'bump Expr<'a, 'bump>, span: SourceSpan<'a> },
+    ElseExpr {
+        expr: &'bump Expr<'a, 'bump>,
+        pattern: ErrorHandlerPattern<'a, 'bump>,
+        span: SourceSpan<'a>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Type<'a, 'bump> where 'bump: 'a {
+pub enum ErrorHandlerPattern<'a, 'bump> where 'bump: 'a {
+    /// Single branch for nullable or error: `else () => { ... }` or `else (err) => { ... }`
+    Single {
+        binding: Option<StrId>,
+        body: &'bump Block<'a, 'bump>,
+    },
+    /// Multiple branches for combined error+nullable: `else { error => ..., null => ... }`
+    Multiple {
+        branches: &'bump [ErrorHandlerBranch<'a, 'bump>],
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ErrorHandlerBranch<'a, 'bump> where 'bump: 'a {
+    pub kind: ErrorHandlerKind,
+    pub body: &'bump Block<'a, 'bump>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ErrorHandlerKind {
+    Error,
+    Null,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Type<'a, 'bump> where 'bump: 'a {
+    pub kind: TypeKind<'a, 'bump>,
+    pub nullable: bool,
+    pub error: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TypeKind<'a, 'bump> where 'bump: 'a {
     U8,
     I8,
     U16,
@@ -471,61 +507,144 @@ pub enum Type<'a, 'bump> where 'bump: 'a {
     UF64,
     Void,
     Infer,
+    Pointer {
+        inner: &'a Type<'a, 'bump>,
+        mutable: bool,
+    },
     Lambda {
         params: &'bump [Type<'a, 'bump>],
         return_type: &'a Type<'a, 'bump>,
     },
-    Class {
+    Struct {
         name: StrId,
         generics: &'bump [Type<'a, 'bump>],
     },
-    Nullable(Option<&'a Type<'a, 'bump>>),
-    PossibleError(PossibleErrorType<'a, 'bump>),
     This,
     Char,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PossibleErrorType<'a, 'bump> {
-    Ok(&'a Type<'a, 'bump>),
-    Err(&'a Type<'a, 'bump>),
-}
-
 impl<'a, 'bump> Type<'a, 'bump> {
     pub fn is_numeric(&self) -> bool {
-        matches!(self,
-            Type::U8 | Type::I8 | Type::U16 | Type::I16 | Type::I32 |
-            Type::I64 | Type::I128 | Type::U32 | Type::U64 | Type::U128 |
-            Type::F32 | Type::F64 | Type::UF32 | Type::UF64
+        matches!(self.kind,
+            TypeKind::U8 | TypeKind::I8 | TypeKind::U16 | TypeKind::I16 | TypeKind::I32 |
+            TypeKind::I64 | TypeKind::I128 | TypeKind::U32 | TypeKind::U64 | TypeKind::U128 |
+            TypeKind::F32 | TypeKind::F64 | TypeKind::UF32 | TypeKind::UF64
         )
+    }
+    
+    // Helper constructors for common types
+    pub fn i8() -> Self {
+        Type { kind: TypeKind::I8, nullable: false, error: false }
+    }
+
+    pub fn i16() -> Self {
+        Type { kind: TypeKind::I16, nullable: false, error: false }
+    }
+
+    pub fn i32() -> Self {
+        Type { kind: TypeKind::I32, nullable: false, error: false }
+    }
+    
+    pub fn i64() -> Self {
+        Type { kind: TypeKind::I64, nullable: false, error: false }
+    }
+
+    pub fn i128() -> Self {
+        Type { kind: TypeKind::I128, nullable: false, error: false }
+    }
+
+    pub fn u8() -> Self {
+        Type { kind: TypeKind::U8, nullable: false, error: false }
+    }
+
+    pub fn u16() -> Self {
+        Type { kind: TypeKind::U16, nullable: false, error: false }
+    }
+
+    pub fn u32() -> Self {
+        Type { kind: TypeKind::U32, nullable: false, error: false }
+    }
+
+    pub fn u64() -> Self {
+        Type { kind: TypeKind::U64, nullable: false, error: false }
+    }
+
+    pub fn u128() -> Self {
+        Type { kind: TypeKind::U128, nullable: false, error: false }
+    }
+    
+    pub fn f32() -> Self {
+        Type { kind: TypeKind::F32, nullable: false, error: false }
+    }
+    
+    pub fn f64() -> Self {
+        Type { kind: TypeKind::F64, nullable: false, error: false }
+    }
+    
+    pub fn boolean() -> Self {
+        Type { kind: TypeKind::Boolean, nullable: false, error: false }
+    }
+    
+    pub fn string() -> Self {
+        Type { kind: TypeKind::String, nullable: false, error: false }
+    }
+    
+    pub fn void() -> Self {
+        Type { kind: TypeKind::Void, nullable: false, error: false }
+    }
+
+    pub fn this() -> Self {
+        Type { kind: TypeKind::This, nullable: false, error: false }
+    }
+    
+    pub fn char() -> Self {
+        Type { kind: TypeKind::Char, nullable: false, error: false }
+    }
+    
+    pub fn infer() -> Self {
+        Type { kind: TypeKind::Infer, nullable: false, error: false }
+    }
+    
+    pub fn with_nullable(mut self, nullable: bool) -> Self {
+        self.nullable = nullable;
+        self
+    }
+    
+    pub fn with_error(mut self, error: bool) -> Self {
+        self.error = error;
+        self
     }
 }
 
 impl<'a, 'bump> Display for Type<'a, 'bump> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Type::U8 => f.write_str("u8"),
-            Type::I8 => f.write_str("i8"),
-            Type::U16 => f.write_str("u16"),
-            Type::I16 => f.write_str("i16"),
-            Type::I32 => f.write_str("i32"),
-            Type::F32 => f.write_str("f32"),
-            Type::F64 => f.write_str("f64"),
-            Type::I64 => f.write_str("i64"),
-            Type::String => f.write_str("StrId"),
-            Type::Boolean => f.write_str("bool"),
-            Type::UF32 => f.write_str("uf32"),
-            Type::U32 => f.write_str("u32"),
-            Type::U64 => f.write_str("u64"),
-            Type::I128 => f.write_str("i128"),
-            Type::U128 => f.write_str("u128"),
-            Type::UF64 => f.write_str("uf64"),
-            Type::Void => f.write_str("void"),
-            Type::Lambda {
+        if self.error {
+            f.write_str("!")?;
+        }
+        
+        match &self.kind {
+            TypeKind::U8 => f.write_str("u8"),
+            TypeKind::I8 => f.write_str("i8"),
+            TypeKind::U16 => f.write_str("u16"),
+            TypeKind::I16 => f.write_str("i16"),
+            TypeKind::I32 => f.write_str("i32"),
+            TypeKind::F32 => f.write_str("f32"),
+            TypeKind::F64 => f.write_str("f64"),
+            TypeKind::I64 => f.write_str("i64"),
+            TypeKind::String => f.write_str("StrId"),
+            TypeKind::Boolean => f.write_str("bool"),
+            TypeKind::UF32 => f.write_str("uf32"),
+            TypeKind::U32 => f.write_str("u32"),
+            TypeKind::U64 => f.write_str("u64"),
+            TypeKind::I128 => f.write_str("i128"),
+            TypeKind::U128 => f.write_str("u128"),
+            TypeKind::UF64 => f.write_str("uf64"),
+            TypeKind::Void => f.write_str("void"),
+            TypeKind::Lambda {
                 params,
                 return_type,
             } => write!(f, "({:?}) -> {}", params, return_type),
-            Type::Class { name, generics } => {
+            TypeKind::Struct { name, generics } => {
                 write!(f, "{}", name)?;
                 if !generics.is_empty() {
                     write!(f, "<")?;
@@ -539,22 +658,19 @@ impl<'a, 'bump> Display for Type<'a, 'bump> {
                 }
                 Ok(())
             }
-            Type::Char => f.write_str("char"),
-            Type::Nullable(opt) => {
-                if let Some(ty) = opt {
-                    write!(f, "{}?", ty)
-                } else {
-                    f.write_str("null")
-                }
-            }
-
-            Type::PossibleError(err_type) => match err_type {
-                PossibleErrorType::Ok(ty) => std::fmt::Display::fmt(&ty, f),
-                PossibleErrorType::Err(err) => std::fmt::Display::fmt(&err, f),
+            TypeKind::Char => f.write_str("char"),
+            TypeKind::This => f.write_str("this"),
+            TypeKind::Infer => f.write_str("_"),
+            TypeKind::Pointer { mutable, inner} => {
+                write!(f, "*{}{}", if *mutable { "mut " } else { "" }, inner)
             },
-            Type::This => f.write_str("this"),
-            Type::Infer => todo!(),
+        }?;
+        
+        if self.nullable {
+            f.write_str("?")?;
         }
+        
+        Ok(())
     }
 }
 
