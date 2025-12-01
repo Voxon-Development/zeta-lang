@@ -1,4 +1,4 @@
-use ir::ast::{Block, ClassDecl, ConstStmt, EffectDecl, EnumDecl, EnumVariant, Field, FuncDecl, Generic, ImplDecl, InterfaceDecl, NormalParam, Param, PermitsExpr, StateMachineDecl, StateRef, Stmt, Transition, Type, Visibility};
+use ir::ast::{Block, StructDecl, ConstStmt, EffectDecl, EnumDecl, EnumVariant, Field, FuncDecl, Generic, ImplDecl, InterfaceDecl, NormalParam, Param, PermitsExpr, StateMachineDecl, StateRef, Stmt, Transition, Type, Visibility};
 use ir::hir::StrId;
 use crate::parser::declaration_parser::DeclarationParser;
 use crate::parser::parser_types::parse_to_type;
@@ -383,7 +383,7 @@ where
         let constants_slice = self.bump.alloc_slice_copy(&constants_vec);
 
 
-        let class_decl = self.bump.alloc_value(ClassDecl {
+        let class_decl = self.bump.alloc_value(StructDecl {
             visibility,
             name,
             generics,
@@ -393,7 +393,7 @@ where
             destructor,
         });
 
-        Stmt::ClassDecl(class_decl)
+        Stmt::StructDecl(class_decl)
     }
 
     pub fn parse_effect(&self, cursor: &mut TokenCursor<'a>) -> Stmt<'a, 'bump> {
@@ -475,15 +475,15 @@ where
                     
                     let name = cursor.consume_ident().expect("Expected field name after type");
                     let param_type = match type_token {
-                        TokenKind::I32 => Type::I32,
-                        TokenKind::I64 => Type::I64,
-                        TokenKind::U32 => Type::U32,
-                        TokenKind::U64 => Type::U64,
-                        TokenKind::F32 => Type::F32,
-                        TokenKind::F64 => Type::F64,
-                        TokenKind::Boolean => Type::Boolean,
-                        TokenKind::Str => Type::String,
-                        _ => Type::Void,
+                        TokenKind::I32 => Type::i32(),
+                        TokenKind::I64 => Type::i64(),
+                        TokenKind::U32 => Type::i32(),
+                        TokenKind::U64 => Type::i64(),
+                        TokenKind::F32 => Type::f32(),
+                        TokenKind::F64 => Type::f64(),
+                        TokenKind::Boolean => Type::boolean(),
+                        TokenKind::Str => Type::string(),
+                        _ => Type::void(),
                     };
                     
                     let normal_param = self.bump.alloc_value(NormalParam {
@@ -502,12 +502,44 @@ where
                     let name = cursor.consume_ident().expect("Expected field name");
                     
                     if cursor.peek_kind() == Some(TokenKind::Colon) {
-                        // Parse: name: type (e.g., "y: String")
+                        // Parse: name: type (e.g., "y: String" or "y: i32")
                         cursor.advance_kind(); // consume ':'
                         
-                        let type_name = cursor.consume_ident().expect("Expected type after colon");
-                        let type_str = self.context.resolve_string(&type_name);
-                        let param_type = parse_to_type(type_str, cursor.peek_kind().unwrap_or(TokenKind::EOF), self.context.clone(), self.bump);
+                        // Get the next token kind to determine if it's a primitive type
+                        let type_kind = cursor.peek_kind().expect("Expected type after colon");
+                        let param_type = match type_kind {
+                            TokenKind::I8 | TokenKind::I16 | TokenKind::I32 | TokenKind::I64 | TokenKind::I128 |
+                            TokenKind::U8 | TokenKind::U16 | TokenKind::U32 | TokenKind::U64 | TokenKind::U128 |
+                            TokenKind::F32 | TokenKind::F64 | TokenKind::Boolean | TokenKind::String | TokenKind::Void => {
+                                cursor.advance_kind(); // consume the primitive type token
+                                match type_kind {
+                                    TokenKind::I8 => Type::i8(),
+                                    TokenKind::I16 => Type::i16(),
+                                    TokenKind::I32 => Type::i32(),
+                                    TokenKind::I64 => Type::i64(),
+                                    TokenKind::I128 => Type::i128(),
+                                    TokenKind::U8 => Type::u8(),
+                                    TokenKind::U16 => Type::u16(),
+                                    TokenKind::U32 => Type::u32(),
+                                    TokenKind::U64 => Type::u64(),
+                                    TokenKind::U128 => Type::u128(),
+                                    TokenKind::F32 => Type::f32(),
+                                    TokenKind::F64 => Type::f64(),
+                                    TokenKind::Boolean => Type::boolean(),
+                                    TokenKind::String => Type::string(),
+                                    TokenKind::Void => Type::void(),
+                                    _ => unreachable!(),
+                                }
+                            },
+                            TokenKind::Ident => {
+                                let type_name = cursor.consume_ident().expect("Expected type after colon");
+                                let type_str = self.context.resolve_string(&type_name);
+                                parse_to_type(type_str, type_kind, self.context.clone(), self.bump)
+                            },
+                            _ => {
+                                panic!("Expected type after colon, found: {:?}", type_kind);
+                            }
+                        };
                         
                         let normal_param = self.bump.alloc_value(NormalParam {
                             is_mut: false,
