@@ -4,40 +4,38 @@ enum ArrayError {
     IndexOutOfBounds
 }
 
-struct Array<T, const N: usize>(Ptr<T> ptr) {
-    inline Array<T, N> new() {
+struct Array<T, const N: usize> { ptr: *mut T } {
+    inline fn new(): Array<T, N> {
         p := intrinsics::stack_alloc<T, N>()
-        Array(p)
+        Array { ptr: p }
     }
     
-    inline Array<T, N> zeroed() {
+    inline fn zeroed(): Array<T, N> {
         p := intrinsics::stack_alloc_zeroed<T, N>()
-        Array(p)
+        Array { ptr: p }
     }
     
-    inline Result<T, ArrayError> get(this, usize index) {
+    inline fn get(*this, usize index): !T {
         if (index >= length) {
-            return Err(ArrayError.IndexOutOfBounds)
+            return ArrayError.IndexOutOfBounds;
         }
-        Ok(uncheckedGet(index))
+        get_unchecked(index)
     }
     
-    inline Result<void, ArrayError> set(mut this, usize index, T value) {
+    inline fn set(*mut this, usize index, T value) {
         if (index >= this.length) {
-            return Err(ArrayError.IndexOutOfBounds)
+            return ArrayError.IndexOutOfBound;
         }
-        Ok(uncheckedSet(index, value))
+        set_unchecked(index, value);
     }
     
-    unsafe inline T uncheckedGet(this, usize index) {
-        offset := index * sizeOf<T>()
-        p := unsafe { this.ptr.add(offset) }
-        p.deref()
+    inline fn get_unchecked(*this, usize index): T {
+        p := this.ptr + offset;
+        *p
     }
     
-    unsafe inline void uncheckedSet(mut this, usize index, T value) {
-        offset := index * sizeOf<T>()
-        p := unsafe { this.ptr.add(offset) }
-        p.store(value)
+    inline fn set_unchecked(*mut this, usize index, T value) {
+        p := this.ptr + offset;
+        *p = value;
     }
 }
