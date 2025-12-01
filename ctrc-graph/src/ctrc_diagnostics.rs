@@ -24,9 +24,6 @@ impl<'a> CTRCDiagnostics<'a> {
         }
         
         self.detect_and_report_cycles(result, reporter, file_name);
-        
-        self.report_unused_allocations(result, reporter, file_name);
-        
         self.report_potential_double_free(result, reporter, file_name);
     }
     
@@ -112,39 +109,6 @@ impl<'a> CTRCDiagnostics<'a> {
                 Some(span),
                 Some(leak_info),
             );
-        }
-    }
-    
-    fn report_unused_allocations<'bump>(
-        &self,
-        result: &CTRCAnalysisResult,
-        reporter: &mut ErrorReporter<'a, 'bump>,
-        file_name: &'a str,
-    ) {
-        for (allocation_point, alias_id) in &result.allocation_sites {
-            let has_drop = result.drop_insertions
-                .iter()
-                .any(|drop| drop.alias_id == *alias_id);
-            
-            let has_destructor = result.destructor_calls
-                .iter()
-                .any(|call| call.alias_id == *alias_id);
-            
-            if !has_drop && !has_destructor {
-                let variable_name = result.variable_aliases
-                    .iter()
-                    .find(|(_, var_alias)| *var_alias == alias_id)
-                    .map(|(var_name, _)| self.string_pool.resolve_string(&*var_name))
-                    .unwrap_or("<unknown>");
-                
-                let span = SourceSpan::new(file_name, *allocation_point, 1);
-                
-                reporter.add_ctrc_error(
-                    format!("Unused allocation for variable '{}' - consider removing or using the value", variable_name),
-                    Some(span),
-                    None,
-                );
-            }
         }
     }
     
