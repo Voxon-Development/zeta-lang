@@ -4,9 +4,9 @@ use ir::span::SourceSpan;
 
 #[derive(Debug, Clone)]
 pub struct Tokens<'a> {
-    pub kinds: SmallVec<[TokenKind; 2048]>,
-    pub texts: SmallVec<[StrId; 1024]>,
-    pub spans: SmallVec<[SourceSpan<'a>; 2048]>,
+    pub kinds: SmallVec<TokenKind, 2048>,
+    pub texts: SmallVec<StrId, 1024>,
+    pub spans: SmallVec<SourceSpan<'a>, 2048>,
 }
 
 impl<'a> Tokens<'a> {
@@ -44,6 +44,7 @@ pub enum TokenKind {
     Else,
     While,
     For,
+    In,
     Return,
     Break,
     Continue,
@@ -112,6 +113,8 @@ pub enum TokenKind {
     Arrow,    // ->
     FatArrow, // =>
     Ellipsis, // ...
+    DotDot,   // ..
+    DotDotLt, // ..<
 
     // ===== Operators =====
     InferAssign,       // :=

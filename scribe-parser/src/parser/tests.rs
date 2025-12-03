@@ -4,6 +4,7 @@ mod parser_tests {
     use crate::parser::descent_parser::DescentParser;
     use std::sync::Arc;
     use ctrc_graph::hir_integration::convenience::analyze_and_pretty_print;
+    use ir::pretty::IrPrettyPrinter;
     use zetaruntime::arena::GrowableAtomicBump;
     use zetaruntime::bump::GrowableBump;
     use zetaruntime::string_pool::StringPool;
@@ -77,6 +78,32 @@ mod parser_tests {
     }
 
     #[test]
+    fn test_ast_pretty_output_for_simple_let() {
+        let source = r#"
+            fn main() {
+                let x: i32 = 42;
+            }
+        "#;
+
+        let (context, _bump) = create_test_context();
+        let lexer = Lexer::from_str(source, "test.zeta", context.clone());
+        let tokens = Box::leak(Box::new(lexer.tokenize()));
+
+        // Parser bump
+        let parser_bump = Box::new(GrowableBump::new(4096, 8));
+        let bump_ref = Box::leak(parser_bump);
+        let parser = DescentParser::new(context.clone(), bump_ref);
+
+        let stmts = parser.parse(tokens);
+        let ast_string = IrPrettyPrinter::ast_to_string(context.clone(), &stmts).unwrap();
+
+        // The AST pretty-printer is simplified; assert key structure markers
+        assert!(ast_string.contains("// AST Statements"));
+        assert!(ast_string.contains("let x:"), "Expected a let statement for x in AST output");
+        assert!(ast_string.contains("/* ast expr */"), "Placeholder AST expr formatting should be present");
+    }
+
+    #[test]
     fn test_enum_declaration() {
         let source = r#"
             enum Color {
@@ -106,6 +133,8 @@ mod parser_tests {
 
     #[test]
     fn test_let_statement() {
+        use ir::hir::{Hir, HirStmt, HirExpr, HirType};
+        
         let source = r#"
             void main() {
                 let x: i32 = 42;
@@ -123,19 +152,65 @@ mod parser_tests {
         let parser = DescentParser::new(context.clone(), bump_ref);
 
         let stmts = parser.parse(tokens);
-        println!("{:?}", stmts);
         let atomic_bump = Arc::new(GrowableAtomicBump::new());
         let mut lowerer = HirLowerer::new(context.clone(), atomic_bump);
         let module = lowerer.lower_module(stmts);
 
-
-        let string = analyze_and_pretty_print(module, bump_ref, context.clone()).unwrap();
-        println!("{}", string);
-        //assert!(result.is_ok(), "Failed to parse let statements: {:?}", result.err());
+        // Verify we have exactly one function (main)
+        let functions: Vec<_> = module.items.iter().filter_map(|item| {
+            if let Hir::Func(func) = item {
+                Some(*func)
+            } else {
+                None
+            }
+        }).collect();
+        
+        assert_eq!(functions.len(), 1, "Expected exactly one function (main)");
+        let main_func = functions[0];
+        
+        // Verify function name is "main"
+        assert_eq!(context.resolve_string(&main_func.name), "main");
+        
+        // Verify function body contains two let statements
+        if let Some(HirStmt::Block { body }) = &main_func.body {
+            assert_eq!(body.len(), 2, "Expected two let statements in main body");
+            
+            // Check first let statement: let x: i32 = 42;
+            if let HirStmt::Let { name, ty, value } = &body[0] {
+                assert_eq!(context.resolve_string(name), "x");
+                assert_eq!(*ty, HirType::I32);
+                if let HirExpr::Number(n) = value {
+                    assert_eq!(*n, 42);
+                } else {
+                    panic!("Expected numeric literal for x");
+                }
+            } else {
+                panic!("Expected first statement to be let");
+            }
+            
+            // Check second let statement: let y = "hello";
+            if let HirStmt::Let { name, ty, value } = &body[1] {
+                assert_eq!(context.resolve_string(name), "y");
+                // Type should be inferred as String
+                assert!(matches!(ty, HirType::String | HirType::Struct(_, _)), 
+                    "Expected String or Struct type for y, got {:?}", ty);
+                if let HirExpr::String(s) = value {
+                    assert_eq!(context.resolve_string(s), "hello");
+                } else {
+                    panic!("Expected string literal for y");
+                }
+            } else {
+                panic!("Expected second statement to be let");
+            }
+        } else {
+            panic!("Expected function body to be a block");
+        }
     }
 
     #[test]
     fn test_struct_let_statement() {
+        use ir::hir::{Hir, HirStmt, HirExpr, HirType};
+        
         let source = r#"
             struct HelloWorld { i32 x, String y } {
                 void printY() {
@@ -159,15 +234,69 @@ mod parser_tests {
         let parser = DescentParser::new(context.clone(), bump_ref);
 
         let stmts = parser.parse(tokens);
-        println!("{:#?}", stmts);
         let atomic_bump = Arc::new(GrowableAtomicBump::new());
         let mut lowerer = HirLowerer::new(context.clone(), atomic_bump);
         let module = lowerer.lower_module(stmts);
 
-
-        let string = analyze_and_pretty_print(module, bump_ref, context.clone()).unwrap();
-        println!("{}", string);
-        //assert!(result.is_ok(), "Failed to parse let statements: {:?}", result.err());
+        // Verify we have one struct and one function
+        let structs: Vec<_> = module.items.iter().filter_map(|item| {
+            if let Hir::Struct(s) = item {
+                Some(*s)
+            } else {
+                None
+            }
+        }).collect();
+        
+        let functions: Vec<_> = module.items.iter().filter_map(|item| {
+            if let Hir::Func(func) = item {
+                Some(*func)
+            } else {
+                None
+            }
+        }).collect();
+        
+        assert!(structs.len() >= 1, "Expected at least one struct");
+        assert!(functions.len() >= 1, "Expected at least one function");
+        
+        // Find HelloWorld struct
+        let hello_world = structs.iter().find(|s| {
+            context.resolve_string(&s.name) == "HelloWorld"
+        }).expect("Expected HelloWorld struct");
+        
+        // Verify struct has two fields
+        assert_eq!(hello_world.fields.len(), 2, "Expected two fields in HelloWorld");
+        
+        // Find main function
+        let main_func = functions.iter().find(|f| {
+            context.resolve_string(&f.name) == "main"
+        }).expect("Expected main function");
+        
+        // Verify main body has at least one statement
+        if let Some(HirStmt::Block { body }) = &main_func.body {
+            assert!(body.len() >= 1, "Expected at least one statement in main");
+            
+            // Check first statement is a let with HelloWorld initialization
+            if let HirStmt::Let { name, ty, value } = &body[0] {
+                assert_eq!(context.resolve_string(name), "x");
+                // Type should be HelloWorld struct
+                match ty {
+                    HirType::Struct(struct_name, _) => {
+                        assert_eq!(context.resolve_string(struct_name), "HelloWorld");
+                    }
+                    _ => panic!("Expected Struct type for x, got {:?}", ty),
+                }
+                // Value should be a struct initialization
+                if let HirExpr::StructInit { .. } = value {
+                    // Expected
+                } else {
+                    panic!("Expected struct initialization expression");
+                }
+            } else {
+                panic!("Expected first statement to be let");
+            }
+        } else {
+            panic!("Expected function body to be a block");
+        }
     }
 
     #[test]

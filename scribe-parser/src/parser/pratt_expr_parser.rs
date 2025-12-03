@@ -3,6 +3,7 @@ use crate::tokenizer::tokens::TokenKind;
 use ir::ast::*;
 use ir::hir::StrId;
 use std::sync::Arc;
+use ir::span::SourceSpan;
 use zetaruntime::bump::GrowableBump;
 use zetaruntime::string_pool::StringPool;
 
@@ -207,7 +208,45 @@ where
             Some(TokenKind::Ident) => {
                 let span = cursor.current_span();
                 let name = cursor.consume_ident().unwrap();
-                self.bump.alloc_value(Expr::Ident { name, span })
+
+                // Check for struct initialization: Type { field: value, ... }
+                // Only treat as struct init if we see named fields (ident: pattern)
+                if cursor.peek_kind() == Some(TokenKind::LBrace) {
+                    // Look ahead to check if this is a named field pattern
+                    let checkpoint = cursor.checkpoint();
+                    cursor.advance_kind(); // consume '{'
+                    
+                    let is_named_fields = if cursor.peek_kind() == Some(TokenKind::RBrace) {
+                        // Empty struct init is valid
+                        true
+                    } else if cursor.peek_kind() == Some(TokenKind::Ident) {
+                        cursor.advance_kind(); // skip ident
+                        cursor.peek_kind() == Some(TokenKind::Colon)
+                    } else {
+                        false
+                    };
+                    cursor.restore(checkpoint);
+                    
+                    if is_named_fields {
+                        cursor.advance_kind(); // consume '{'
+                        let args = self.parse_class_init_args(cursor);
+                        self.bump.alloc_value(Expr::StructDecl {
+                            callee: self.bump.alloc_value_immutable(Expr::Ident { name, span }),
+                            arguments: self.bump.alloc_slice_copy(&args),
+                            positional: true,
+                            span,
+                        })
+                    } else {
+                        self.bump.alloc_value(Expr::Ident { name, span })
+                    }
+                } else {
+                    self.bump.alloc_value(Expr::Ident { name, span })
+                }
+            }
+
+            // If expression
+            Some(TokenKind::If) => {
+                self.parse_if_expr(cursor)
             }
 
             // Parenthesized expression
@@ -231,42 +270,50 @@ where
     fn parse_postfix(&self, cursor: &mut TokenCursor<'a>, expr: &'bump Expr<'a, 'bump>) -> &'bump Expr<'a, 'bump> {
         match cursor.peek_kind() {
             Some(TokenKind::LParen) => {
-                if let Expr::Ident { name: _, span } = expr {
-                    cursor.advance_kind(); // consume '('
-                    let args = self.parse_call_args(cursor);
-                    let args_slice = self.bump.alloc_slice_copy(&args);
-                    
-                    self.bump.alloc_value(Expr::ClassInit {
-                        callee: expr,
-                        arguments: args_slice,
-                        positional: true,
-                        span: *span,
-                    })
-                } else {
-                    let span = cursor.current_span();
-                    cursor.advance_kind();
-                    let args = self.parse_call_args(cursor);
-                    let args_slice = self.bump.alloc_slice_copy(&args);
-                    self.bump.alloc_value(Expr::Call {
-                        callee: expr,
-                        arguments: args_slice,
-                        span,
-                    })
-                }
+                // Function call - always use Call, not RecordInit
+                let span = cursor.current_span();
+                cursor.advance_kind(); // consume '('
+                let args = self.parse_call_args(cursor);
+                let args_slice = self.bump.alloc_slice_copy(&args);
+                self.bump.alloc_value(Expr::Call {
+                    callee: expr,
+                    arguments: args_slice,
+                    span,
+                })
             }
 
             Some(TokenKind::LBrace) => {
-                // Class initialization: MyStruct { field: value, ... } or MyStruct { value1, value2 }
-                let span = cursor.current_span();
+                // Check if this is a struct initialization with named fields
+                let checkpoint = cursor.checkpoint();
                 cursor.advance_kind(); // consume '{'
-                let (args, positional) = self.parse_class_init_args(cursor);
-                let args_slice = self.bump.alloc_slice_copy(&args);
-                self.bump.alloc_value(Expr::ClassInit {
-                    callee: expr,
-                    arguments: args_slice,
-                    positional,
-                    span,
-                })
+                
+                let is_named_fields = if cursor.peek_kind() == Some(TokenKind::RBrace) {
+                    // Empty struct init is valid
+                    true
+                } else if cursor.peek_kind() == Some(TokenKind::Ident) {
+                    cursor.advance_kind(); // skip ident
+                    cursor.peek_kind() == Some(TokenKind::Colon)
+                } else {
+                    false
+                };
+                cursor.restore(checkpoint);
+                
+                if is_named_fields {
+                    // Class initialization: MyStruct { field: value, ... }
+                    let span = cursor.current_span();
+                    cursor.advance_kind(); // consume '{'
+                    let args = self.parse_class_init_args(cursor);
+                    let args_slice = self.bump.alloc_slice_copy(&args);
+                    self.bump.alloc_value(Expr::StructDecl {
+                        callee: expr,
+                        arguments: args_slice,
+                        positional: false,
+                        span,
+                    })
+                } else {
+                    // Not a struct init, just return the expression as-is
+                    expr
+                }
             }
 
             Some(TokenKind::Dot) => {
@@ -312,52 +359,79 @@ where
         args
     }
 
-    fn parse_class_init_args(&self, cursor: &mut TokenCursor<'a>) -> (Vec<Expr<'a, 'bump>>, bool) {
+    fn parse_class_init_args(&self, cursor: &mut TokenCursor<'a>) -> Vec<Expr<'a, 'bump>> {
         let mut args = Vec::new();
-        let mut positional = true;
 
         // Check if empty
         if cursor.peek_kind() == Some(TokenKind::RBrace) {
             cursor.advance_kind();
-            return (args, true);
+            return args;
         }
 
-        // Look ahead to determine if this is named or positional
-        // If we see `ident :`, it's named
-        if cursor.peek_kind() == Some(TokenKind::Ident) {
-            let checkpoint = cursor.checkpoint();
-            cursor.advance_kind(); // skip ident
-            if cursor.peek_kind() == Some(TokenKind::Colon) {
-                positional = false;
-            }
-            cursor.restore(checkpoint);
-        }
-
-        // Parse arguments based on format
+        // Parse named fields
         while cursor.peek_kind() != Some(TokenKind::RBrace) && !cursor.at_end() {
-            if positional {
-                // Positional: just parse expression
-                let arg = self.parse_expr(cursor, BindingPower::None);
-                args.push(*arg);
-            } else {
-                // Named: parse `ident : expr`
-                let _field_name = cursor.consume_ident().unwrap();
-                cursor.expect_kind(TokenKind::Colon);
-                let arg = self.parse_expr(cursor, BindingPower::None);
-                args.push(*arg);
-            }
+            // Parse field name
+            let field_name = match cursor.consume_ident() {
+                Some(name) => name,
+                None => {
+                    eprintln!("Warning: Expected field name in struct initialization");
+                    cursor.advance_kind();
+                    continue;
+                }
+            };
+            cursor.expect_kind(TokenKind::Colon);
 
-            if cursor.peek_kind() == Some(TokenKind::Comma) {
-                cursor.advance_kind();
+            // Parse field value
+            let arg = self.parse_expr(cursor, BindingPower::None);
+
+            // Store the field initialization
+            let span: SourceSpan = cursor.current_span();
+            let field_init = Expr::FieldInit {
+                ident: field_name,
+                expr: self.bump.alloc_value(*arg),
+                span,
+            };
+            args.push(field_init);
+
+            let next_token: Option<TokenKind> = cursor.peek_kind();
+            let next_text = if let Some(TokenKind::Ident) = next_token {
+                match cursor.peek_text() {
+                    Some(id) => self.context.resolve_string(&id).to_string(),
+                    None => "?".to_string(),
+                }
             } else {
-                break;
+                "".to_string()
+            };
+
+            // Check for comma or closing brace
+            match cursor.peek_kind() {
+                Some(TokenKind::Comma) => {
+                    cursor.advance_kind();
+                    // Allow trailing comma
+                    if cursor.peek_kind() == Some(TokenKind::RBrace) {
+                        break;
+                    }
+                }
+                Some(TokenKind::RBrace) => {
+                    break;
+                }
+                _ => {
+                    // Skip unexpected token and try to recover
+                    let token = cursor.peek_kind();
+                    eprintln!("Warning: Expected ',' or '}}' after struct field, but got: {:?}", token);
+                    cursor.advance_kind(); // Skip the problematic token
+                    // Try to continue parsing
+                    continue;
+                }
             }
         }
 
-        cursor.expect_kind(TokenKind::RBrace);
-        (args, positional)
+        // Gracefully handle missing closing brace
+        if cursor.peek_kind() == Some(TokenKind::RBrace) {
+            cursor.expect_kind(TokenKind::RBrace);
+        }
+        args
     }
-
 
     /// Get binding power for postfix operators
     fn postfix_binding_power(token: TokenKind) -> Option<BindingPower> {
@@ -441,6 +515,12 @@ where
                 (bp, bp.left_associative())
             }
 
+            // Range operators
+            TokenKind::DotDot | TokenKind::DotDotLt => {
+                let bp = BindingPower::Comparison;
+                (bp, bp.left_associative())
+            }
+
             _ => return None,
         };
 
@@ -482,6 +562,9 @@ where
             TokenKind::Shl => Some(Op::Shl),
             TokenKind::Shr => Some(Op::Shr),
             
+            TokenKind::DotDot => Some(Op::Range),
+            TokenKind::DotDotLt => Some(Op::RangeExcl),
+            
             _ => None,
         }
     }
@@ -496,5 +579,145 @@ where
 
     fn is_comparison_op(op: Op) -> bool {
         matches!(op, Op::Eq | Op::Neq | Op::Lt | Op::Gt | Op::Lte | Op::Gte)
+    }
+
+    /// Parse if expression: if (condition) { then_block } else { else_block }
+    fn parse_if_expr(&self, cursor: &mut TokenCursor<'a>) -> &'bump Expr<'a, 'bump> {
+        let span = cursor.current_span();
+        cursor.expect_kind(TokenKind::If);
+        cursor.expect_kind(TokenKind::LParen);
+        
+        let condition = self.parse_expr(cursor, BindingPower::None);
+        
+        cursor.expect_kind(TokenKind::RParen);
+        
+        // Parse then block
+        let then_block = if cursor.peek_kind() == Some(TokenKind::LBrace) {
+            cursor.advance_kind(); // consume '{'
+            let mut stmts: Vec<Stmt> = Vec::new();
+            
+            while cursor.peek_kind() != Some(TokenKind::RBrace) && !cursor.at_end() {
+                // Try to parse as statement or expression
+                if let Some(stmt) = self.try_parse_stmt_or_expr(cursor) {
+                    stmts.push(stmt);
+                } else {
+                    cursor.advance_kind();
+                }
+            }
+            
+            cursor.expect_kind(TokenKind::RBrace);
+            
+            let stmts_slice = if stmts.is_empty() {
+                &[]
+            } else {
+                self.bump.alloc_slice_copy(stmts.as_slice())
+            };
+            
+            self.bump.alloc_value(Block { block: stmts_slice })
+        } else {
+            // Single expression as then block
+            let expr = self.parse_expr(cursor, BindingPower::None);
+            let expr_stmt = Stmt::ExprStmt(self.bump.alloc_value(InternalExprStmt {
+                expr,
+            }));
+            let stmts_slice = self.bump.alloc_slice_copy(&[expr_stmt]);
+            self.bump.alloc_value(Block { block: stmts_slice })
+        };
+        
+        // Parse else block (optional)
+        let else_branch = if cursor.peek_kind() == Some(TokenKind::Else) {
+            cursor.advance_kind();
+            
+            let else_block = if cursor.peek_kind() == Some(TokenKind::LBrace) {
+                cursor.advance_kind(); // consume '{'
+                let mut stmts: Vec<Stmt> = Vec::new();
+                
+                while cursor.peek_kind() != Some(TokenKind::RBrace) && !cursor.at_end() {
+                    if let Some(stmt) = self.try_parse_stmt_or_expr(cursor) {
+                        stmts.push(stmt);
+                    } else {
+                        cursor.advance_kind();
+                    }
+                }
+                
+                cursor.expect_kind(TokenKind::RBrace);
+                
+                let stmts_slice = if stmts.is_empty() {
+                    &[]
+                } else {
+                    self.bump.alloc_slice_copy(stmts.as_slice())
+                };
+                
+                self.bump.alloc_value(Block { block: stmts_slice })
+            } else {
+                // Single expression as else block
+                let expr = self.parse_expr(cursor, BindingPower::None);
+                let expr_stmt = Stmt::ExprStmt(self.bump.alloc_value(InternalExprStmt {
+                    expr,
+                }));
+                let stmts_slice = self.bump.alloc_slice_copy(&[expr_stmt]);
+                self.bump.alloc_value(Block { block: stmts_slice })
+            };
+            
+            Some(self.bump.alloc_value_immutable(ElseBranch::Else(else_block)))
+        } else {
+            None
+        };
+        
+        let if_stmt = self.bump.alloc_value(IfStmt {
+            condition,
+            then_branch: then_block,
+            else_branch,
+        });
+        
+        self.bump.alloc_value(Expr::If {
+            if_stmt,
+            span,
+        })
+    }
+
+    /// Try to parse a statement or expression from the cursor
+    fn try_parse_stmt_or_expr(&self, cursor: &mut TokenCursor<'a>) -> Option<Stmt<'a, 'bump>> {
+        match cursor.peek_kind() {
+            Some(TokenKind::Return) => {
+                cursor.advance_kind();
+                let value = if cursor.peek_kind() == Some(TokenKind::Semicolon) {
+                    None
+                } else {
+                    Some(self.parse_expr(cursor, BindingPower::None))
+                };
+                cursor.expect_kind(TokenKind::Semicolon);
+                Some(Stmt::Return(self.bump.alloc_value(ReturnStmt { value })))
+            }
+            Some(TokenKind::Let) => {
+                cursor.advance_kind();
+                let ident = cursor.consume_ident()?;
+                cursor.expect_kind(TokenKind::Colon);
+                
+                // Parse type (simplified)
+                let _ty = cursor.consume_ident()?;
+                cursor.expect_kind(TokenKind::Assign);
+                
+                let value = self.parse_expr(cursor, BindingPower::None);
+                cursor.expect_kind(TokenKind::Semicolon);
+                
+                Some(Stmt::Let(self.bump.alloc_value(LetStmt {
+                    ident,
+                    type_annotation: Type::void(),
+                    value,
+                    mutable: false,
+                })))
+            }
+            _ => {
+                // Try to parse as expression statement
+                let expr = self.parse_expr(cursor, BindingPower::None);
+                if cursor.peek_kind() == Some(TokenKind::Semicolon) {
+                    cursor.advance_kind();
+                    Some(Stmt::ExprStmt(self.bump.alloc_value(InternalExprStmt { expr })))
+                } else {
+                    Some(Stmt::ExprStmt(self.bump.alloc_value(InternalExprStmt { expr })))
+                }
+            }
+        }
     }
 }

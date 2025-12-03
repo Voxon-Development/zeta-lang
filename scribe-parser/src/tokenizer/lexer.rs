@@ -15,7 +15,10 @@ pub struct Lexer<'a, 'bump> {
     context: Arc<StringPool>,
     file_name: &'a str,
     characters: &'bump str,
+
+    #[allow(dead_code)] // If we don't move bump in Lexer, it will UB (lifetime hacks make life easier but the compiler trusts it too much).
     bump: GrowableBump<'bump>,
+
     pos: usize,
     line: usize,
     column: usize,
@@ -188,7 +191,29 @@ impl<'a, 'bump> Lexer<'a, 'bump> {
                     self.push_token(TokenKind::Comma);
                 }
                 '.' => {
-                    self.push_token(TokenKind::Dot);
+                    // Check for .. or ..<
+                    if let Some(&next_ch) = chars.peek() {
+                        if next_ch == '.' {
+                            chars.next(); // consume second dot
+                            if let Some(&third_ch) = chars.peek() {
+                                if third_ch == '<' {
+                                    chars.next(); // consume '<'
+                                    self.push_token(TokenKind::DotDotLt);
+                                } else if third_ch == '.' {
+                                    chars.next(); // consume third dot
+                                    self.push_token(TokenKind::Ellipsis);
+                                } else {
+                                    self.push_token(TokenKind::DotDot);
+                                }
+                            } else {
+                                self.push_token(TokenKind::DotDot);
+                            }
+                        } else {
+                            self.push_token(TokenKind::Dot);
+                        }
+                    } else {
+                        self.push_token(TokenKind::Dot);
+                    }
                 }
                 '_' => {
                     // Check if it's a standalone underscore or part of identifier
@@ -366,7 +391,7 @@ impl<'a, 'bump> Lexer<'a, 'bump> {
     }
 
     fn tokenize_alphabetic(&mut self, ch: char, chars: &mut Peekable<Chars>) {
-        let mut text: SmallVec<[u8; 16]> = SmallVec::from_slice(&[ch as u8]);
+        let mut text: SmallVec<u8, 16> = SmallVec::from_buf([ch as u8]);
         while let Some(&next_ch) = chars.peek() {
             if next_ch.is_alphanumeric() || next_ch == '_' {
                 let ch = chars.next().unwrap(); // Only consume if it's part of the identifier
@@ -388,11 +413,13 @@ impl<'a, 'bump> Lexer<'a, 'bump> {
             "else" => self.push_token(TokenKind::Else),
             "while" => self.push_token(TokenKind::While),
             "for" => self.push_token(TokenKind::For),
+            "in" => self.push_token(TokenKind::In),
             "return" => self.push_token(TokenKind::Return),
             "break" => self.push_token(TokenKind::Break),
             "continue" => self.push_token(TokenKind::Continue),
             "enum" => self.push_token(TokenKind::Enum),
             "struct" => self.push_token(TokenKind::Struct),
+            "record" => self.push_token(TokenKind::Struct), // 'record' is an alias for 'struct'
             "interface" => self.push_token(TokenKind::Interface),
             "impl" => self.push_token(TokenKind::Impl),
             "import" => self.push_token(TokenKind::Import),
@@ -402,6 +429,9 @@ impl<'a, 'bump> Lexer<'a, 'bump> {
             "let" => self.push_token(TokenKind::Let),
             "mut" => self.push_token(TokenKind::Mut),
             "own" => self.push_token(TokenKind::Own),
+            "match" => self.push_token(TokenKind::Match),
+            "defer" => self.push_token(TokenKind::Defer),
+
             "unsafe" => self.push_token(TokenKind::Unsafe),
             "inline" => self.push_token(TokenKind::Inline),
             "noinline" => self.push_token(TokenKind::Noinline),
@@ -410,13 +440,15 @@ impl<'a, 'bump> Lexer<'a, 'bump> {
             "module" => self.push_token(TokenKind::Module),
             "extern" => self.push_token(TokenKind::Extern),
             "static" => self.push_token(TokenKind::Static),
-            "match" => self.push_token(TokenKind::Match),
-            "defer" => self.push_token(TokenKind::Defer),
             "effect" => self.push_token(TokenKind::Effect),
             "permits" => self.push_token(TokenKind::Permits),
             "statem" => self.push_token(TokenKind::Statem),
             "trait" => self.push_token(TokenKind::Trait),
             "where" => self.push_token(TokenKind::Where),
+            "fn" => self.push_token(TokenKind::Fn),
+            "requires" => self.push_token(TokenKind::Requires),
+            "ensures" => self.push_token(TokenKind::Ensures),
+            "uses" => self.push_token(TokenKind::Uses),
 
             "u8" => self.push_token(TokenKind::U8),
             "u16" => self.push_token(TokenKind::U16),
@@ -433,7 +465,6 @@ impl<'a, 'bump> Lexer<'a, 'bump> {
             "char" => self.push_token(TokenKind::Char),
             "str" => self.push_token(TokenKind::Str),
             "boolean" => self.push_token(TokenKind::Boolean),
-            "func" => self.push_token(TokenKind::Func),
 
             _ => self.push(TokenKind::Ident, StrId(string))
         }
@@ -441,22 +472,25 @@ impl<'a, 'bump> Lexer<'a, 'bump> {
 
     fn tokenize_number(&mut self, ch: char, chars: &mut Peekable<Chars>) {
         let mut kind = TokenKind::Number;
-        let mut text: SmallVec<[u8; 16]> = SmallVec::from_slice(&[ch as u8]);
+        let mut text: SmallVec<u8, 16> = SmallVec::from_buf([ch as u8]);
 
-        while chars.peek().is_some() {
-            let ch = chars.next().unwrap();
-            if ch.is_numeric() {
+        while let Some(&next_ch) = chars.peek() {
+            if next_ch.is_numeric() {
+                let ch = chars.next().unwrap();
                 self.pos += ch.len_utf8();
                 text.push(ch as u8);
-            } else if ch == '.' {
+            } else if next_ch == '.' {
+                let ch = chars.next().unwrap();
                 kind = TokenKind::Decimal;
                 self.pos += ch.len_utf8();
                 text.push(ch as u8);
-            } else if ch == 'x' || ch == 'X' {
+            } else if next_ch == 'x' || next_ch == 'X' {
+                let ch = chars.next().unwrap();
                 kind = TokenKind::Hexadecimal;
                 self.pos += ch.len_utf8();
                 text.push(ch as u8);
-            } else if ch == 'b' || ch == 'B' {
+            } else if next_ch == 'b' || next_ch == 'B' {
+                let ch = chars.next().unwrap();
                 kind = TokenKind::Binary;
                 self.pos += ch.len_utf8();
                 text.push(ch as u8);
@@ -472,7 +506,7 @@ impl<'a, 'bump> Lexer<'a, 'bump> {
     }
 
     fn tokenize_string(&mut self, chars: &mut Peekable<Chars>) {
-        let mut text: SmallVec<[u8; 16]> = SmallVec::new(); // Don't include the opening quote
+        let mut text: SmallVec<u8, 16> = SmallVec::new(); // Don't include the opening quote
         while chars.peek().is_some() {
             let ch = chars.next().unwrap();
             if ch == '\\' {
@@ -504,7 +538,7 @@ impl<'a, 'bump> Lexer<'a, 'bump> {
     }
 
     fn tokenize_line_comment(&mut self, chars: &mut Peekable<Chars>, is_doc: bool) {
-        let mut text: SmallVec<[u8; 128]> = SmallVec::new();
+        let mut text: SmallVec<u8, 128> = SmallVec::new();
         
         while let Some(&ch) = chars.peek() {
             if ch == '\n' {
@@ -529,7 +563,7 @@ impl<'a, 'bump> Lexer<'a, 'bump> {
     }
     
     fn tokenize_block_comment(&mut self, chars: &mut Peekable<Chars>) {
-        let mut text: SmallVec<[u8; 256]> = SmallVec::new();
+        let mut text: SmallVec<u8, 256> = SmallVec::new();
         let mut depth = 1; // Track nesting depth for /* /* */ */
         
         while let Some(ch) = chars.next() {

@@ -371,9 +371,12 @@ where
                     cursor.advance_kind();
                 }
                 cursor.expect_kind(TokenKind::Semicolon);
-            } else {
+            } else if cursor.peek_kind() == Some(TokenKind::Fn) {
                 let func_decl = self.parse_function_decl(cursor);
                 methods_vec.push(func_decl);
+            } else {
+                // Skip unknown tokens in struct body
+                cursor.advance_kind();
             }
         }
 
@@ -460,7 +463,7 @@ where
 
     /// Parse struct field declarations: { i32 x, y: String }
     fn parse_struct_fields(&self, cursor: &mut TokenCursor<'a>) -> Option<&'bump [Param<'a, 'bump>]> {
-        let mut fields: SmallVec<[Param; 8]> = SmallVec::new();
+        let mut fields: SmallVec<Param, 8> = SmallVec::new();
         
         loop {
             match cursor.peek_kind() {
