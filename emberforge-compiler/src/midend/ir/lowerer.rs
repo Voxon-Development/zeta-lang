@@ -47,8 +47,66 @@ impl<'a> FunctionLowerer<'a> {
         classes: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
         context: Arc<StringPool>,
     ) -> Result<Self, std::alloc::AllocError> {
+        Self::new_internal(hir_fn, None, funcs, class_field_offsets, class_method_slots, class_mangled_map, class_vtable_slots, interface_id_map, interface_method_slots, classes, context)
+    }
+
+    pub fn new_with_class(
+        hir_fn: &HirFunc,
+        class_name: StrId,
+        funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
+        class_field_offsets: &'a HashMap<
+            StrId,
+            HashMap<StrId, usize, FxHashBuilder>,
+            FxHashBuilder,
+        >,
+        class_method_slots: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
+        class_mangled_map: &'a HashMap<StrId, HashMap<StrId, StrId, FxHashBuilder>, FxHashBuilder>,
+        class_vtable_slots: &'a HashMap<StrId, Vec<StrId>, FxHashBuilder>,
+        interface_id_map: &'a HashMap<StrId, usize, FxHashBuilder>,
+        interface_method_slots: &'a HashMap<
+            StrId,
+            HashMap<StrId, usize, FxHashBuilder>,
+            FxHashBuilder,
+        >,
+        classes: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
+        context: Arc<StringPool>,
+    ) -> Result<Self, std::alloc::AllocError> {
+        Self::new_internal(hir_fn, Some(class_name), funcs, class_field_offsets, class_method_slots, class_mangled_map, class_vtable_slots, interface_id_map, interface_method_slots, classes, context)
+    }
+
+    fn new_internal(
+        hir_fn: &HirFunc,
+        class_context: Option<StrId>,
+        funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
+        class_field_offsets: &'a HashMap<
+            StrId,
+            HashMap<StrId, usize, FxHashBuilder>,
+            FxHashBuilder,
+        >,
+        class_method_slots: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
+        class_mangled_map: &'a HashMap<StrId, HashMap<StrId, StrId, FxHashBuilder>, FxHashBuilder>,
+        class_vtable_slots: &'a HashMap<StrId, Vec<StrId>, FxHashBuilder>,
+        interface_id_map: &'a HashMap<StrId, usize, FxHashBuilder>,
+        interface_method_slots: &'a HashMap<
+            StrId,
+            HashMap<StrId, usize, FxHashBuilder>,
+            FxHashBuilder,
+        >,
+        classes: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
+        context: Arc<StringPool>,
+    ) -> Result<Self, std::alloc::AllocError> {
+        // If this is a method (has class context), mangle the name with the class name
+        let func_name = if let Some(class_name) = class_context {
+            let class_str = context.resolve_string(&class_name);
+            let method_str = context.resolve_string(&hir_fn.name);
+            let mangled = format!("{}::{}", class_str, method_str);
+            StrId(context.intern(&mangled))
+        } else {
+            hir_fn.name.clone()
+        };
+
         let mut func = Function {
-            name: hir_fn.name.clone(),
+            name: func_name,
             params: SmallVec::new(),
             ret_type: lower_type_hir(hir_fn.return_type.as_ref().unwrap_or(&HirType::Void)),
             blocks: SmallVec::new(),
@@ -63,7 +121,7 @@ impl<'a> FunctionLowerer<'a> {
         let mut value_types = HashMap::with_hasher(FxHashBuilder);
         if let Some(params) = hir_fn.params {
             // allocate params
-            Self::insert_existing_params(context.clone(), &mut func, &mut next_value, &mut var_map, &mut value_types, params);
+            Self::insert_existing_params_with_class(context.clone(), &mut func, &mut next_value, &mut var_map, &mut value_types, params, class_context);
         }
 
         // create entry block
@@ -96,13 +154,14 @@ impl<'a> FunctionLowerer<'a> {
         })
     }
 
-    fn insert_existing_params(
+    fn insert_existing_params_with_class(
         context: Arc<StringPool>,
         func: &mut Function,
         next_value: &mut usize,
         var_map: &mut HashMap<StrId, Value, FxHashBuilder>,
         value_types: &mut HashMap<Value, SsaType, FxHashBuilder>,
-        params: &[HirParam])
+        params: &[HirParam],
+        class_context: Option<StrId>)
     {
         for p in params {
             let v = Value(*next_value);
@@ -112,7 +171,13 @@ impl<'a> FunctionLowerer<'a> {
                 HirParam::Normal { name, param_type } => (name, param_type),
                 HirParam::This { param_type } => {
                     let this_str_id = StrId(context.intern("this"));
-                    (this_str_id, param_type.unwrap_or(HirType::This))
+                    // If we have a class context, use it for the `this` type
+                    let ty = if let Some(class_name) = class_context {
+                        HirType::Struct(class_name, &[])
+                    } else {
+                        param_type.unwrap_or(HirType::This)
+                    };
+                    (this_str_id, ty)
                 }
             };
             let ty: SsaType = lower_type_hir(&param_type);
@@ -126,9 +191,7 @@ impl<'a> FunctionLowerer<'a> {
         if let Some(b) = body {
             match b {
                 HirStmt::Block { body } => {
-                    println!("{:?}", body.len());
                     for stmt in body {
-                        println!("{:?}", stmt);
                         self.lower_stmt(stmt);
                     }
                 }
