@@ -419,7 +419,6 @@ impl<'a, 'bump> Lexer<'a, 'bump> {
             "continue" => self.push_token(TokenKind::Continue),
             "enum" => self.push_token(TokenKind::Enum),
             "struct" => self.push_token(TokenKind::Struct),
-            "record" => self.push_token(TokenKind::Struct), // 'record' is an alias for 'struct'
             "interface" => self.push_token(TokenKind::Interface),
             "impl" => self.push_token(TokenKind::Impl),
             "import" => self.push_token(TokenKind::Import),

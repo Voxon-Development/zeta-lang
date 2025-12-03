@@ -34,12 +34,32 @@ pub fn lower_type_hir(ty: &HirType) -> SsaType {
         HirType::F64 => SsaType::F64,
         HirType::Boolean => SsaType::Bool,
         HirType::String => SsaType::String,
-        HirType::Class(name, args)
+        HirType::Struct(name, args)
         | HirType::Interface(name, args)
         | HirType::Enum(name, args) =>
             SsaType::User(*name, args.iter().map(lower_type_hir).collect()),
         HirType::Void => SsaType::Void,
-        _ => unimplemented!("Unsupported type {:?}", ty),
+        HirType::Pointer(inner) => SsaType::Pointer(Box::new(lower_type_hir(inner))),
+        HirType::Lambda { params, return_type, .. } => {
+            let param_types: Vec<SsaType> = params.iter().map(lower_type_hir).collect();
+            let ret_type = lower_type_hir(return_type);
+            // Represent lambda as a function pointer type (Dyn for now, could be improved)
+            SsaType::Dyn
+        }
+        HirType::Generic(name) => {
+            // Generics are typically resolved at monomorphization time
+            // For now, represent as a user type with the generic name
+            SsaType::User(*name, vec![])
+        }
+        HirType::This => {
+            // This should have been replaced with the actual class type before lowering
+            // If we get here, treat it as a generic user type
+            SsaType::Dyn
+        }
+        HirType::Null => {
+            // Null type - represent as void for now (could be a special pointer type)
+            SsaType::Void
+        }
     }
 }
 

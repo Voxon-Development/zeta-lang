@@ -5,6 +5,7 @@ pub use fxhash::FxHashMap;
 pub struct FxHashBuilder;
 
 pub type HashMap<K, V> = FxHashMap<K, V>;
+pub type HashSet<T> = std::collections::HashSet<T, FxHashBuilder>;
 
 impl BuildHasher for FxHashBuilder {
     type Hasher = fxhash::FxHasher;
