@@ -3,7 +3,6 @@ use smallvec::SmallVec;
 use std::alloc::AllocError;
 
 use std::hash::{BuildHasher, Hash, Hasher};
-use std::num::NonZeroU64;
 use std::ptr;
 use std::simd::cmp::SimdPartialEq;
 use std::simd::num::SimdUint;
@@ -46,6 +45,12 @@ impl BuildHasher for IdentityBuild {
 pub struct VmString {
     pub offset: *const u8,
     pub length: usize
+}
+
+impl VmString {
+    pub fn as_str(&self) -> &str {
+        unsafe { from_utf8_unchecked(std::slice::from_raw_parts(self.offset, self.length)) }
+    }
 }
 
 impl PartialEq for VmString {
@@ -92,7 +97,7 @@ unsafe impl Sync for VmString {}
 
 pub struct StringPool {
     data_buffer: GrowableAtomicBump<'static>,
-    interned_strings: DashMap<u64, SmallVec<[VmString; 2]>, IdentityBuild>,
+    interned_strings: DashMap<u64, SmallVec<VmString, 2>, IdentityBuild>,
 }
 
 const MEGABYTE: usize = 1024 * 1024;
@@ -113,7 +118,8 @@ impl StringPool {
     
     #[inline(always)]
     pub fn intern(&self, s: &str) -> VmString {
-        self.intern_bytes(s.as_bytes())
+        let bytes = s.as_bytes();
+        self.intern_bytes(bytes)
     }
 
     #[inline(always)]
@@ -178,7 +184,7 @@ impl StringPool {
     }
 
     #[inline(always)]
-    fn find_simd<'a>(&self, collision_list: &'a SmallVec<[VmString; 2]>, bytes: &[u8]) -> Option<VmString> {
+    fn find_simd<'a>(&self, collision_list: &'a SmallVec<VmString, 2>, bytes: &[u8]) -> Option<VmString> {
         for &vm_string in collision_list.iter() {
             if vm_string.length != bytes.len() { continue; }
             let stored = self.resolve_bytes(&vm_string);
