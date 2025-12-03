@@ -1,4 +1,5 @@
 use ir::ast::Stmt;
+use ir::span::SourceSpan;
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
@@ -88,7 +89,7 @@ where
             TokenKind::Statem => Some(self.declaration_parser.parse_state_machine(cursor)),
             TokenKind::Effect => Some(self.declaration_parser.parse_effect(cursor)),
             
-            TokenKind::Unsafe | TokenKind::Extern | TokenKind::Inline | TokenKind::Noinline | TokenKind::Func => {
+            TokenKind::Unsafe | TokenKind::Extern | TokenKind::Inline | TokenKind::Noinline | TokenKind::Fn => {
                 Some(self.declaration_parser.parse_function(cursor))
             }
             
@@ -123,7 +124,7 @@ where
             
             // Function-related tokens (including modifiers and function declarations)
             Some(TokenKind::Unsafe) | Some(TokenKind::Extern) | Some(TokenKind::Inline) | 
-            Some(TokenKind::Noinline) | Some(TokenKind::Func) | Some(TokenKind::Ident) => {
+            Some(TokenKind::Noinline) | Some(TokenKind::Fn) | Some(TokenKind::Ident) => {
                 Some(self.declaration_parser.parse_function(cursor))
             }
             
@@ -133,14 +134,23 @@ where
     }
 }
 
+pub struct ParseResult<'a, 'bump> {
+    pub statements: Vec<Stmt<'a, 'bump>, &'bump GrowableBump<'bump>>,
+    pub diagnostics: ParserDiagnostics,
+}
+
 pub fn parse_program<'a, 'bump>(
     src: &'bump str,
     file_name: &'bump str,
     context: Arc<StringPool>,
     bump: Arc<GrowableAtomicBump<'bump>>
-) -> Result<Vec<Stmt<'a, 'bump>, &'bump GrowableBump<'bump>>, Vec<ParserError>> {
+) -> ParseResult<'a, 'bump> {
+    let mut diagnostics = ParserDiagnostics::new();
+    
     let lexer: Lexer<'a, 'bump> = Lexer::from_str(src, file_name, context.clone());
     let tokens: Tokens<'a> = lexer.tokenize();
+
+    //println!("{:?}", tokens);
     
     let tokenized_source = bump.alloc_value(tokens);
     
@@ -152,10 +162,13 @@ pub fn parse_program<'a, 'bump>(
     let parser: DescentParser<'a, 'bump> = DescentParser::new(context, parser_bump_ref);
     let stmts: Vec<Stmt, &'bump GrowableBump<'bump>> = parser.parse(tokenized_source);
     
-    Ok(stmts)
+    ParseResult {
+        statements: stmts,
+        diagnostics,
+    }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ParserError {
     LexerError(String),
     UnexpectedToken { expected: String, found: String },
@@ -173,5 +186,41 @@ impl fmt::Display for ParserError {
             }
             ParserError::UnexpectedEof => write!(f, "Unexpected end of file"),
         }
+    }
+}
+
+/// Collects parser diagnostics (errors, warnings, notes) instead of panicking
+#[derive(Debug, Clone)]
+pub struct ParserDiagnostics {
+    pub errors: Vec<ParserError>,
+    pub warnings: Vec<String>,
+}
+
+impl ParserDiagnostics {
+    pub fn new() -> Self {
+        ParserDiagnostics {
+            errors: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    pub fn add_error(&mut self, error: ParserError) {
+        self.errors.push(error);
+    }
+
+    pub fn add_warning(&mut self, warning: String) {
+        self.warnings.push(warning);
+    }
+
+    pub fn has_errors(&self) -> bool {
+        !self.errors.is_empty()
+    }
+
+    pub fn error_count(&self) -> usize {
+        self.errors.len()
+    }
+
+    pub fn warning_count(&self) -> usize {
+        self.warnings.len()
     }
 }
