@@ -1,51 +1,92 @@
-use cranelift_codegen::ir::condcodes::IntCC;
+use ir::layout::{layout_of_ssa, sizeof_ssa};
+use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{types, InstBuilder, MemFlags, Signature, StackSlotData, StackSlotKind, Type, Value, Function as ClFunction};
 use cranelift_codegen::isa::TargetIsa;
-use cranelift_frontend::FunctionBuilder;
+use cranelift_frontend::{FuncInstBuilder, FunctionBuilder};
 use ir::hir::HirType;
+use ir::ssa_ir::SsaType;
+use ir::layout::TargetInfo;
 
-#[derive(Debug, Clone, Copy)]
+/// Represents an intrinsic operation that can be lowered to Cranelift IR
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Intrinsic {
-    PtrAdd,
-    PtrDeref,
-    PtrStore,
-    PtrFromAddr,
-    PtrAddr,
-    PtrCastToRaw,
-    StackAlloc,
-    StackAllocZeroed,
-    SizeOf,
-    AlignOf,
+    // Pointer operations
+    PtrAdd,          // ptr + offset -> ptr
+    PtrDeref,        // *ptr -> T
+    PtrStore,        // *ptr = value
+    PtrFromAddr,     // addr as *const T
+    PtrAddr,         // ptr as usize
+    PtrCastToRaw,    // &T as *const T
+    PtrEq,           // ptr1 == ptr2 -> bool
+    PtrNe,           // ptr1 != ptr2 -> bool
+    PtrLt,           // ptr1 < ptr2 -> bool
+    PtrLe,           // ptr1 <= ptr2 -> bool
+    PtrGt,           // ptr1 > ptr2 -> bool
+    PtrGe,           // ptr1 >= ptr2 -> bool
+    
+    // Memory operations
+    StackAlloc,      // Allocate stack memory
+    StackAllocZeroed,// Allocate and zero-initialize stack memory
+    MemCopy,         // Copy memory regions
+    MemSet,          // Set memory to a value
+    
+    // Type information
+    SizeOf,          // size_of::<T>()
+    AlignOf,         // align_of::<T>()
+    TypeId,          // Get type ID at runtime
+    
+    // Atomic operations
+    AtomicLoad,      // Atomic load
+    AtomicStore,     // Atomic store
+    AtomicRmw,       // Atomic read-modify-write
+    AtomicCmpXchg,   // Atomic compare-and-swap
 }
 
-/// Resolve by symbol name to intrinsic enum
+/// Resolves a function name to its corresponding intrinsic operation
+/// 
+/// # Arguments
+/// * `name` - The name of the intrinsic to resolve
+/// 
+/// # Returns
+/// `Some(Intrinsic)` if the name matches a known intrinsic, `None` otherwise
 pub fn resolve_intrinsic(name: &str) -> Option<Intrinsic> {
     use Intrinsic::*;
+    
     match name {
-        "ptr_add" => Some(PtrAdd),
-        "ptr_deref" => Some(PtrDeref),
-        "ptr_store" => Some(PtrStore),
-        "ptr_from_addr" => Some(PtrFromAddr),
-        "ptr_addr" => Some(PtrAddr),
-        "ptr_cast_to_raw" => Some(PtrCastToRaw),
-        "stack_alloc" => Some(StackAlloc),
-        "stack_alloc_zeroed" => Some(StackAllocZeroed),
-        "sizeof" => Some(SizeOf),
-        "alignof" => Some(AlignOf),
+        // Pointer operations
+        "ptr_add" | "__ptr_add" => Some(PtrAdd),
+        "ptr_deref" | "__ptr_deref" => Some(PtrDeref),
+        "ptr_store" | "__ptr_store" => Some(PtrStore),
+        "ptr_from_addr" | "__ptr_from_addr" => Some(PtrFromAddr),
+        "ptr_addr" | "__ptr_addr" => Some(PtrAddr),
+        "ptr_cast_to_raw" | "__ptr_cast_to_raw" => Some(PtrCastToRaw),
+        "ptr_eq" | "__ptr_eq" => Some(PtrEq),
+        "ptr_ne" | "__ptr_ne" => Some(PtrNe),
+        "ptr_lt" | "__ptr_lt" => Some(PtrLt),
+        "ptr_le" | "__ptr_le" => Some(PtrLe),
+        "ptr_gt" | "__ptr_gt" => Some(PtrGt),
+        "ptr_ge" | "__ptr_ge" => Some(PtrGe),
+        
+        // Memory operations
+        "stack_alloc" | "__stack_alloc" => Some(StackAlloc),
+        "stack_alloc_zeroed" | "__stack_alloc_zeroed" => Some(StackAllocZeroed),
+        "mem_copy" | "__mem_copy" => Some(MemCopy),
+        "mem_set" | "__mem_set" => Some(MemSet),
+        
+        // Type information
+        "size_of" | "__size_of" | "core::mem::size_of" => Some(SizeOf),
+        "align_of" | "__align_of" | "core::mem::align_of" => Some(AlignOf),
+        "type_id" | "__type_id" => Some(TypeId),
+        
+        // Atomic operations
+        "atomic_load" | "__atomic_load" => Some(AtomicLoad),
+        "atomic_store" | "__atomic_store" => Some(AtomicStore),
+        "atomic_rmw" | "__atomic_rmw" => Some(AtomicRmw),
+        "atomic_cmpxchg" | "__atomic_cmpxchg" => Some(AtomicCmpXchg),
+        
         _ => None,
     }
-}/*
-
-/// Helper: try to extract the inner T from `Ptr<T>` HirType.
-/// Adjust to match how your HirType encodes generics.
-pub fn as_ptr_inner(hir_ty: &HirType) -> Option<&HirType> {
-    if let HirType::Class(name, args) = hir_ty {
-        if name == "Ptr" {
-            return args.get(0);
-        }
-    }
-    None
-}*/
+}
 
 /// Ensure `val` has `ptr_ty` as its CLIF type, extending/truncating as necessary.
 /// Returns a Value guaranteed to be `ptr_ty`.
@@ -58,56 +99,19 @@ fn ensure_value_is_ptr_width(
     if val_ty == ptr_ty {
         val
     } else if builder.func.dfg.value_type(val).bits() < ptr_ty.bits() {
-        // Zero-extend smaller ints to pointer width
         builder.ins().uextend(ptr_ty, val)
     } else if builder.func.dfg.value_type(val).bits() > ptr_ty.bits() {
-        // Truncate larger integer to pointer width
         builder.ins().ireduce(ptr_ty, val)
     } else {
-        // same size but different type - just return
         val
     }
 }
 use cranelift_module::{Linkage, Module};
-use ir::ssa_ir::{Function, SsaType};
-
-/*fn push_param_for_hir_type(sig: &mut Signature, hir_ty: &HirType, isa: &dyn TargetIsa, string_pool: &StringPool) {
-    match hir_ty {
-        HirType::Class(name, args) if string_pool.resolve_string(name) == "Array" && args.len() == 1 => {
-            let pt = AbiParam::new(ptr_clif_ty(isa));
-            let len = AbiParam::new(usize_clif_ty(isa));
-            sig.params.push(pt);
-            sig.params.push(len);
-        }
-        HirType::Class(name, _args) if string_pool.resolve_string(name) == "Ptr" => {
-            sig.params.push(AbiParam::new(ptr_clif_ty(isa)));
-        }
-        _ => {
-            let clif_t = clif_type_of(hir_ty);
-            sig.params.push(AbiParam::new(super::clif_type(&clif_t)));
-        }
-    }
-}*/
-
-// For returns, same idea: push one or two return types depending on Array<T>.
-/*fn push_return_for_hir_type(sig: &mut Signature, hir_ty: &HirType, isa: &dyn TargetIsa, string_pool: &StringPool) {
-    match hir_ty {
-        HirType::Class(name, args) if string_pool.resolve_string(name) == "Array" && args.len() == 1 => {
-            sig.returns.push(AbiParam::new(ptr_clif_ty(isa)));
-            sig.returns.push(AbiParam::new(usize_clif_ty(isa)));
-        }
-        HirType::Class(name, _) if string_pool.resolve_string(name) == "Ptr" => {
-            sig.returns.push(AbiParam::new(ptr_clif_ty(isa)));
-        }
-        _ => {
-            sig.returns.push(AbiParam::new(super::clif_type(&clif_type_of(hir_ty))));
-        }
-    }
-}*/
+use ir::ssa_ir::{Function};
 
 pub fn stack_alloc(
     builder: &mut FunctionBuilder,
-    module: &impl Module,
+    module: &dyn Module,
     size_bytes: usize,
 ) -> Value {
     assert!(size_bytes > 0, "stack_alloc: size must be > 0");
@@ -121,7 +125,7 @@ pub fn stack_alloc(
         0
     ));
 
-    builder.ins().stack_addr(ptr_ty, slot, 0)
+    FuncInstBuilder::stack_addr(builder.ins(), ptr_ty, slot, 0)
 }
 
 #[inline(always)]
@@ -129,13 +133,13 @@ const fn round_to_eight_align(size_bytes: usize) -> usize {
     ((size_bytes + 7) / 8) * 8
 }
 
-/*fn ptr_clif_ty(isa: &dyn TargetIsa) -> Type {
+fn ptr_clif_ty(isa: &dyn TargetIsa) -> Type {
     isa.pointer_type()
 }
 
 fn usize_clif_ty(isa: &dyn TargetIsa) -> Type {
     ptr_clif_ty(isa)
-}*/
+}
 
 /*
 fn ensure_val_ty(builder: &mut FunctionBuilder, val: Value, target_ty: Type) -> Value {
@@ -166,7 +170,7 @@ pub(super) fn clif_type_of(ty: &HirType) -> SsaType {
         HirType::F64 => SsaType::F64,
         HirType::Boolean => SsaType::Bool,
         HirType::String => SsaType::String,
-        HirType::Class(name, args) | HirType::Interface(name, args) | HirType::Enum(name, args) 
+        HirType::Struct(name, args) | HirType::Interface(name, args) | HirType::Enum(name, args)
             => SsaType::User(name.clone(), args.iter().map(clif_type_of).collect()),
         HirType::Void => SsaType::Void,
         _ => unimplemented!("Unsupported type {:?}", ty),
@@ -205,261 +209,199 @@ fn extract_args(_function: &Function) -> (Value, Vec<Value>) {
     todo!()
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct Layout { pub size: usize, pub align: usize }
-
-#[derive(Debug)]
-pub enum LayoutError {
-    Unsized(&'static str),
-    Recursive,
-    Unknown,
-}
-
-#[derive(Clone, Copy)]
-pub struct TargetInfo { pub ptr_bytes: u64 }
-
-pub fn sizeof(ty: &SsaType, target: &TargetInfo) -> Result<usize, LayoutError> {
-    Ok(layout_of(ty, target)?.size)
-}
-
-pub fn layout_of(ty: &SsaType, target: &TargetInfo) -> Result<Layout, LayoutError> {
-    match ty {
-        SsaType::Void            => Ok(Layout { size: 0, align: 1 }),
-        SsaType::Bool | SsaType::I8 | SsaType::U8  => Ok(Layout { size: 1, align: 1 }),
-        SsaType::I16 | SsaType::U16                => Ok(Layout { size: 2, align: 2 }),
-        SsaType::I32 | SsaType::U32 | SsaType::F32 => Ok(Layout { size: 4, align: 4 }),
-        SsaType::I64 | SsaType::U64 | SsaType::F64 => Ok(Layout { size: 8, align: 8 }),
-
-        SsaType::Slice | SsaType::Dyn => Err(LayoutError::Unsized("unsized type")),
-
-        // Tuples/structs: sequential fields with padding between and at end to struct align.
-        SsaType::Tuple(fields) | SsaType::User(_, fields) => {
-            let mut off = 0usize;
-            let mut max_align = 1usize;
-            for fty in fields {
-                let f = layout_of(fty, target)?;
-                max_align = max_align.max(f.align);
-                off = round_up(off, f.align);
-                off = off.checked_add(f.size).ok_or(LayoutError::Unknown)?;
-            }
-            let size = round_up(off, max_align);
-            Ok(Layout { size, align: max_align })
-        }
-
-        // Enums/sum types: Simple tagged union:
-        SsaType::Enum(variants) => {
-            if variants.is_empty() { return Ok(Layout { size: 0, align: 1 }); }
-            let mut max_variant = Layout { size: 0, align: 1 };
-            for v in variants {
-                let l = layout_of(v, target)?;
-                max_variant.size  = max_variant.size.max(l.size);
-                max_variant.align = max_variant.align.max(l.align);
-            }
-            let tag = Layout { size: tag_bytes(variants.len()), align: 1 }; // define tag width
-            let union_size = round_up(max_variant.size, max_variant.align);
-            let total = round_up(union_size, tag.align).checked_add(tag.size).ok_or(LayoutError::Unknown)?;
-            Ok(Layout { size: total, align: max_variant.align.max(tag.align) })
-        }
-        SsaType::I128 => Ok(Layout { size: 16, align: 16 }),
-        SsaType::ISize => Ok(Layout { size: 8, align: 8 }),
-        SsaType::USize => Ok(Layout { size: 8, align: 8 }),
-        SsaType::String => Ok(Layout { size: 16, align: 16 }),
-    }
-}
-
-#[inline(always)]
-const fn round_up(x: usize, align: usize) -> usize {
-    if align <= 1 { return x; }
-    let m = align - 1;
-    (x + m) & !m
-}
-
-fn tag_bytes(variants: usize) -> usize {
-    match variants {
-        0..=0x100      => 1,
-        0x101..=0x1_0000 => 2,
-        0x1_0001..=0x1_0000_0000 => 4,
-        _ => 8,
-    }
-}
-
-/// Codegen an intrinsic. Returns `Some(Value)` if the intrinsic produced a value,
-/// or `None` if it produced no value (like store).
-///
-/// * `name`: intrinsic symbol like "__ptr_null"
-/// * `args`: evaluated argument Values (in the CLIF function)
-/// * `ret_hir_types`: expected return HirType(s). For single-return intrinsics you can index [0].
-/// * `builder`: FunctionBuilder for the current function
-/// * `isa`: target ISA to get pointer width
 pub fn codegen_intrinsic(
     intr: Intrinsic,
     args: &[Value],
     ret_hir_types: &[HirType],
     builder: &mut FunctionBuilder,
-    isa: &dyn TargetIsa,
+    module: &dyn Module,
     func_name: Option<&str>,
+    target_info: TargetInfo
 ) -> Option<Value> {
+    let isa = module.isa();
     let ptr_ty = isa.pointer_type();
+    
+    let arg_ty = args.first().map(|&val| {
+        let ty = builder.func.dfg.value_type(val);
+        match ty {
+            types::I8 => SsaType::I8,
+            types::I16 => SsaType::I16,
+            types::I32 => SsaType::I32,
+            types::I64 => SsaType::I64,
+            types::I128 => SsaType::I128,
+            _ => SsaType::Void, // Default to void if type is not recognized
+        }
+    }).unwrap_or(SsaType::Void);
+    
     match intr {
+        Intrinsic::StackAlloc => {
+            let elem_size = sizeof_ssa(&arg_ty, target_info).ok()?;
+            Some(stack_alloc(builder, module, elem_size as usize))
+        }
 
-        Intrinsic::StackAlloc | Intrinsic::StackAllocZeroed => {
-            // Parse const generic N from monomorphized function name suffix, e.g., "..._N10_..."
-            let mut n: i64 = 1;
-            if let Some(fname) = func_name {
-                if let Some(pos) = fname.rfind("_N") {
-                    let digits = &fname[pos + 2..];
-                    let mut end = digits.len();
-                    for (i, ch) in digits.char_indices() {
-                        if !ch.is_ascii_digit() { end = i; break; }
-                    }
-                    if end > 0 {
-                        if let Ok(parsed) = digits[..end].parse::<i64>() {
-                            n = parsed.max(1);
-                        }
-                    }
-                }
-            }
-            let elem_size: i64 = 8; // TODO: compute sizeof(T) precisely once type info is threaded through
-            let total_size = n.saturating_mul(elem_size);
-
-            use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
-            let slot = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, total_size as u32, 3));
-            let ptr_ty = isa.pointer_type();
-            let addr = builder.ins().stack_addr(ptr_ty, slot, 0);
-
-            if let Intrinsic::StackAllocZeroed = intr {
-                // best-effort: zero first word
-                let zero = builder.ins().iconst(types::I64, 0);
-                let flags = MemFlags::new();
-                builder.ins().store(flags, zero, addr, 0);
-            }
-
-            Some(addr)
+        Intrinsic::StackAllocZeroed => {
+            stack_alloc_zeroed_intr(&arg_ty, builder, module, target_info)
         }
 
         Intrinsic::SizeOf => {
-            // Fallback: return pointer width in bytes (until full type layout is wired here)
-            let bytes = (ptr_ty.bits() / 8) as i64;
-            let c = builder.ins().iconst(ptr_ty, bytes as i64);
-            Some(c)
+            layout_of_ssa(&arg_ty, target_info).ok().map(|l| builder.ins().iconst(ptr_ty, l.size as i64))
         }
 
         Intrinsic::AlignOf => {
-            // Fallback: return pointer alignment in bytes (same as width on most targets)
-            let bytes = (ptr_ty.bits() / 8) as i64;
-            let c = builder.ins().iconst(ptr_ty, bytes as i64);
-            Some(c)
+            layout_of_ssa(&arg_ty, target_info).ok().map(|l| builder.ins().iconst(ptr_ty, l.align as i64))
         }
 
         Intrinsic::PtrCastToRaw => {
-            // args: [value]
-            // If value is a Ptr<T> at the HIR level, or an Array<T> lowered as (ptr,len),
-            // then test ptr != 0 and return boolean. If it's an integer, test != 0.
-            //
-            // Caller must pass the `ret_hir_types` so we could assert it's boolean, but
-            // we'll just produce the Value here.
-
-            let val = args[0];
-            let val_ty = builder.func.dfg.value_type(val);
-            let ptr_ty = isa.pointer_type();
-
-            // Strategy:
-            // 1) if incoming SSA value is pointer-sized already, compare against zero
-            // 2) else if it's integer, up/down-cast to ptr width then compare
-            // 3) else (non-pointer) return constant false
-
-            let nonzero_test = if val_ty == ptr_ty {
-                let zero = builder.ins().iconst(ptr_ty, 0);
-                builder.ins().icmp(IntCC::NotEqual, val, zero)
-            } else if val_ty.is_int() {
-                // widen/truncate to pointer width then compare
-                let normalized = ensure_value_is_ptr_width(builder, val, ptr_ty, val_ty);
-                let zero = builder.ins().iconst(ptr_ty, 0);
-                builder.ins().icmp(IntCC::NotEqual, normalized, zero)
-            } else {
-                // Not a pointer-ish or integer-ish typed SSA value: produce constant false.
-                // Make sure to return a boolean-typed value consistent with your convention.
-                let zero_bool = builder.ins().iconst(types::I8, 0); // boolean false
-                return Some(zero_bool);
-            };
-
-            // `nonzero_test` is an i1/icmp predicate represented as an int by CLIF.
-            // Return it directly (we used I8 earlier as our boolean conv).
-            Some(nonzero_test)
+            match ptr_cast_to_raw(args, builder, module) {
+                Ok(value) => value,
+                Err(value) => return value,
+            }
         }
 
         Intrinsic::PtrAdd => {
-            // args: [ptr, bytes:u64]
-            // We add bytes (an integer) to the pointer.
-            let p = args[0];
-            let bytes = args[1];
-
-            // Normalize arg types to pointer width
-            let p_ty = builder.func.dfg.value_type(p);
-            let b_ty = builder.func.dfg.value_type(bytes);
-
-            let p = ensure_value_is_ptr_width(builder, p, ptr_ty, p_ty);
-            let bytes = ensure_value_is_ptr_width(builder, bytes, ptr_ty, b_ty);
-
-            let res = builder.ins().iadd(p, bytes);
-            Some(res)
+            ptr_add(args, builder, ptr_ty)
         }
 
         Intrinsic::PtrDeref => {
-            // args: [ptr]
-            // ret_hir_types[0] tells what to load
-            let p = args[0];
-            let p_ty = builder.func.dfg.value_type(p);
-            let p = ensure_value_is_ptr_width(builder, p, ptr_ty, p_ty);
-
-            let ret_hir = &ret_hir_types[0];
-            let clif_ret = clif_type_of(&ret_hir);
-
-            // Use default MemFlags. Tune if you need volatile/readonly.
-            let mem_flags = MemFlags::new();
-
-            Some(builder.ins().load(super::clif_type(&clif_ret), mem_flags, p, 0))
+            ptr_deref(args, &ret_hir_types, builder, ptr_ty)
         }
 
         Intrinsic::PtrStore => {
-            // args: [ptr, value]
-            let p = args[0];
-            let val = args[1];
-
-            let p_ty = builder.func.dfg.value_type(p);
-            let p = ensure_value_is_ptr_width(builder, p, ptr_ty, p_ty);
-
-            let mem_flags = MemFlags::new();
-            builder.ins().store(mem_flags, val, p, 0);
+            ptr_store(args, &ret_hir_types, builder, ptr_ty);
             None
         }
 
         Intrinsic::PtrFromAddr => {
-            // args: [addr: u64]
-            // Cast integer address to pointer type.
-            let addr = args[0];
-            let addr_ty = builder.func.dfg.value_type(addr);
-            let ptr = ensure_value_is_ptr_width(builder, addr, ptr_ty, addr_ty);
-            Some(ptr)
+            get_ptr_from_addr(args, builder, ptr_ty)
         }
-
+        
         Intrinsic::PtrAddr => {
-            // args: [ptr] -> return u64 (or your 'usize' representation)
-            let p = args[0];
-            let p_ty = builder.func.dfg.value_type(p);
-            let p = ensure_value_is_ptr_width(builder, p, ptr_ty, p_ty);
+            get_ptr_addr(args, builder, module)
+        },
+        _ => todo!()
+    }
+}
 
-            // Cast pointer to a target-sized integer. We'll use I64 here for u64.
-            // If you want `usize` semantics, map to pointer width integer (ptr_ty bits).
-            let target_int_ty = if ptr_ty == types::I64 { types::I64 } else { ptr_ty };
-            let casted = if builder.func.dfg.value_type(p) == target_int_ty {
-                p
-            } else if builder.func.dfg.value_type(p).bits() < target_int_ty.bits() {
-                builder.ins().uextend(target_int_ty, p)
-            } else {
-                builder.ins().ireduce(target_int_ty, p)
-            };
-            Some(casted)
+fn stack_alloc_zeroed_intr(ty: &SsaType, builder: &mut FunctionBuilder, isa: &dyn Module, target_info: TargetInfo) -> Option<Value> {
+    let elem_size: usize = sizeof_ssa(ty, target_info).ok()?;
+    let addr: Value = stack_alloc(builder, isa, elem_size);
+
+    let zero = builder.ins().iconst(types::I64, 0);
+    let flags = MemFlags::new();
+    builder.ins().store(flags, zero, addr, 0);
+
+    Some(addr)
+}
+
+fn ptr_cast_to_raw(args: &[Value], builder: &mut FunctionBuilder, module: &dyn Module) -> Result<Option<Value>, Option<Value>> {
+    let val = args[0];
+    let val_ty = builder.func.dfg.value_type(val);
+    let ptr_ty = module.isa().pointer_type();
+
+    let nonzero_test = if val_ty == ptr_ty {
+        let zero = builder.ins().iconst(ptr_ty, 0);
+        builder.ins().icmp(IntCC::NotEqual, val, zero)
+    } else if val_ty.is_int() {
+        let normalized = ensure_value_is_ptr_width(builder, val, ptr_ty, val_ty);
+        let zero = builder.ins().iconst(ptr_ty, 0);
+        builder.ins().icmp(IntCC::NotEqual, normalized, zero)
+    } else {
+        let zero_bool = builder.ins().iconst(types::I8, 0); // boolean false
+        return Err(Some(zero_bool));
+    };
+
+    Ok(Some(nonzero_test))
+}
+
+fn ptr_add(args: &[Value], builder: &mut FunctionBuilder, ptr_ty: Type) -> Option<Value> {
+    let base_ptr = args[0];
+    let offset = args[1];
+
+    let base_ty = builder.func.dfg.value_type(base_ptr);
+    let offset_ty = builder.func.dfg.value_type(offset);
+
+    let base_ptr = ensure_value_is_ptr_width(builder, base_ptr, ptr_ty, base_ty);
+    let offset = ensure_value_is_ptr_width(builder, offset, ptr_ty, offset_ty);
+
+    let result = builder.ins().iadd(base_ptr, offset);
+    
+    #[cfg(debug_assertions)]
+    {
+        // TODO: Add bounds checking in debug mode
+    }
+    
+    Some(result)
+}
+
+fn ptr_deref(args: &[Value], ret_hir_types: &&[HirType], builder: &mut FunctionBuilder, ptr_ty: Type) -> Option<Value> {
+    let ptr = args[0];
+    let ptr_val_ty = builder.func.dfg.value_type(ptr);
+    
+    let ptr_val = ensure_value_is_ptr_width(builder, ptr, ptr_ty, ptr_val_ty);
+    
+    let ret_hir = &ret_hir_types[0];
+    let clif_ret = clif_type_of(&ret_hir);
+    let load_ty = super::clif_type(&clif_ret);
+    
+    let load_ty = match clif_ret {
+        SsaType::Pointer(_) => ptr_ty,
+        _ => load_ty,
+    };
+
+    // Use default memory flags (non-volatile, not atomic)
+    // TODO: Add support for volatile/atomic operations
+    let mem_flags = MemFlags::new();
+    
+    let loaded = builder.ins().load(load_ty, mem_flags, ptr_val, 0);
+    
+    #[cfg(debug_assertions)]
+    {
+        // TODO: Add null pointer checking in debug mode
+    }
+    
+    if let SsaType::Pointer(inner) = clif_ret {
+        Some(loaded)
+    } else {
+        Some(loaded)
+    }
+}
+
+fn ptr_store(args: &[Value], ret_hir_types: &&[HirType], builder: &mut FunctionBuilder, ptr_ty: Type) {
+    let p = args[0];
+    let mut val = args[1];
+
+    let p_ty = builder.func.dfg.value_type(p);
+    let p = ensure_value_is_ptr_width(builder, p, ptr_ty, p_ty);
+
+    if !ret_hir_types.is_empty() {
+        let val_ty = builder.func.dfg.value_type(val);
+        let expected_ty = match ret_hir_types[0] {
+            HirType::Pointer(_) => ptr_ty,
+            _ => super::clif_type(&clif_type_of(&ret_hir_types[0])),
+        };
+
+        if val_ty != expected_ty {
+            val = ensure_value_is_ptr_width(builder, val, expected_ty, val_ty);
         }
     }
+
+    let mem_flags = MemFlags::new();
+    builder.ins().store(mem_flags, val, p, 0);
+}
+
+fn get_ptr_addr(args: &[Value], builder: &mut FunctionBuilder, module: &dyn Module) -> Option<Value> {
+    let ptr = args[0];
+    let ptr_ty = builder.func.dfg.value_type(ptr);
+
+    let ptr_val = ensure_value_is_ptr_width(builder, ptr, module.isa().pointer_type(), ptr_ty);
+
+    Some(ptr_val)
+}
+
+fn get_ptr_from_addr(args: &[Value], builder: &mut FunctionBuilder, ptr_ty: Type) -> Option<Value> {
+    let addr = args[0];
+    let addr_ty = builder.func.dfg.value_type(addr);
+
+    let ptr_val = ensure_value_is_ptr_width(builder, addr, ptr_ty, addr_ty);
+    Some(ptr_val)
 }
