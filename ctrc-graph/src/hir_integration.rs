@@ -1,7 +1,10 @@
+use crate::DestructorCallType;
+use crate::hir_integration::hir::HirModuleWithCTRC;
 use std::sync::Arc;
 use zetaruntime::string_pool::StringPool;
 use zetaruntime::bump::GrowableBump;
-use ir::hir::*;
+use ir::hir;
+use ir::hir::{HirModule, DropInsertion, DestructorCall, DropLocation, CTRCAnalysisResult};
 use crate::ctrc_pvg_graph::{CTRCAnalysisResult as CTRCGraphResult, analyze_hir_for_ctrc};
 
 /// Integration API for CTRC analysis with HIR pretty printing
@@ -16,11 +19,8 @@ impl CTRCHirIntegration {
     where
         'bump: 'a,
     {
-        // Run CTRC analysis on the module
-        let ctrc_result = analyze_hir_for_ctrc(&module, bump);
-        
-        // Convert CTRC graph result to HIR-integrated result
-        let hir_ctrc_result = Self::convert_ctrc_result(ctrc_result);
+        let ctrc_result: crate::CTRCAnalysisResult = analyze_hir_for_ctrc(&module, bump);
+        let hir_ctrc_result: CTRCAnalysisResult = Self::convert_ctrc_result(ctrc_result);
         
         HirModuleWithCTRC {
             module,
@@ -35,8 +35,7 @@ impl CTRCHirIntegration {
             droppable_fields: ctrc_result.droppable_fields,
             variable_aliases: ctrc_result.variable_aliases.into_iter().collect(),
             allocation_sites: ctrc_result.allocation_sites.into_iter().collect(),
-            drop_insertions: ctrc_result.drop_insertions
-                .into_iter()
+            drop_insertions: Vec::into_iter(ctrc_result.drop_insertions)
                 .map(|drop| DropInsertion {
                     program_point: drop.program_point,
                     variable_name: drop.variable_name,
@@ -44,15 +43,14 @@ impl CTRCHirIntegration {
                     location_hint: Some(DropLocation::EndOfBlock), // Default hint
                 })
                 .collect(),
-            destructor_calls: ctrc_result.destructor_calls
-                .into_iter()
+            destructor_calls: Vec::into_iter(ctrc_result.destructor_calls)
                 .map(|call| DestructorCall {
                     program_point: call.program_point,
                     alias_id: call.alias_id,
                     call_type: match call.call_type {
-                        crate::ctrc_pvg_graph::DestructorCallType::AutoDrop => DestructorCallType::AutoDrop,
-                        crate::ctrc_pvg_graph::DestructorCallType::ExplicitDrop => DestructorCallType::ExplicitDrop,
-                        crate::ctrc_pvg_graph::DestructorCallType::ScopeDrop => DestructorCallType::ScopeDrop,
+                        DestructorCallType::AutoDrop => hir::DestructorCallType::AutoDrop,
+                        DestructorCallType::ExplicitDrop => hir::DestructorCallType::ExplicitDrop,
+                        DestructorCallType::ScopeDrop => hir::DestructorCallType::ScopeDrop,
                     },
                     location_hint: Some(DropLocation::EndOfBlock), // Default hint
                 })
