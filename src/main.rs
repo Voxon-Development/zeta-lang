@@ -1,236 +1,219 @@
 #![feature(str_as_str)]
 #![feature(allocator_api)]
 
-use codex_dependency_graph::module_collection_builder::ModuleBuilder;
-use codex_dependency_graph::topo::topo_sort;
-use ctrc_graph::ctrc_diagnostics::analyze_ctrc_and_report;
-use emberforge_compiler::midend::ir::module_lowerer::MirModuleLowerer;
+mod link;
+mod main_structs;
+mod file_handling;
+
 use engraver_assembly_emit::backend::Backend;
-use engraver_assembly_emit::cranelift::cranelift_backend::{CraneliftBackend, EmitError};
-use ir::errors::reporter::ErrorReporter;
+use engraver_assembly_emit::cranelift::cranelift_backend::CraneliftBackend;
 use ir::hir::HirModule;
-use scribe_parser::hir_lowerer::HirLowerer;
-use scribe_parser::parser::descent_parser::ParserError;
-use zetaruntime::arena::GrowableAtomicBump;
-use zetaruntime::bump::GrowableBump;
 use zetaruntime::string_pool::StringPool;
 
-use std::io;
 use std::path::PathBuf;
-use std::process::exit;
 use std::sync::Arc;
 use std::time::Instant;
 
-use futures::FutureExt;
+use clap::{ArgMatches, CommandFactory, Error, FromArgMatches, Parser, Subcommand};
 use snmalloc_rs::SnMalloc;
-use thiserror::Error;
-use walkdir::{DirEntry, WalkDir};
 
 #[global_allocator]
 static ALLOCATOR: SnMalloc = SnMalloc;
 
-use ctrc_graph::CTRCAnalysisResult;
+use crate::file_handling::{collect_zeta_files, compile_files, compiler_lib_path, emit_all};
+use crate::link::link;
+use crate::main_structs::CompilerError;
+use ir::errors::reporter::ErrorReporter;
+
+/// Main CLI application
+#[derive(Parser)]
+#[command(version, about, long_about = None)]
+struct Cli {
+    /// Enable verbose output
+    #[arg(short, long, global = true)]
+    verbose: bool,
+
+    #[arg(long, global = true, default_value = "true")]
+    link_libc: bool,
+
+    #[arg(long, global = true)]
+    lib: Option<PathBuf>,
+
+    #[command(subcommand)]
+    command: Commands,
+}
+
+/// Available subcommands
+#[derive(Subcommand)]
+enum Commands {
+    /// Build Zeta source files
+    Build {
+        /// Path to the source file or directory (use -- for default ./src)
+        path: Option<PathBuf>,
+        
+        /// Output directory for compiled artifacts
+        #[arg(long, default_value_os = "./build")]
+        out_dir: PathBuf,
+        
+        /// Optimize the generated code
+        #[arg(short, long)]
+        optimize: bool,
+
+        /// Optimize the generated code
+        #[arg(long)]
+        emit_obj: bool,
+    },
+    
+    /// Run Zeta source files directly
+    Run {
+        /// Path to the source file or directory (use -- for default ./src)
+        path: Option<PathBuf>,
+        
+        /// Arguments to pass to the program
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
+}
 
 // entry point
 fn main() -> Result<(), CompilerError> {
     let start = Instant::now();
-    let result = std::panic::catch_unwind(|| run_compiler());
+    let mut matches: ArgMatches = Cli::command().get_matches();
+    let cli_result: Result<Cli, Error> = Cli::from_arg_matches_mut(&mut matches)
+        .map_err(|err| {
+            let mut cmd = Cli::command();
+            err.format(&mut cmd)
+        });
 
-    let duration = start.elapsed();
-    let millis = duration.as_millis();
-    let nanos = duration.as_nanos();
-
-    match result {
-        Ok(Ok(_)) => {
-            println!("Finished build in {}ms (or {}ns)", millis, nanos);
+    let cli: Cli = match cli_result {
+        Ok(cli) => cli,
+        Err(error) => {
+            error.print().expect("failed to print error message");
+            let duration = start.elapsed();
+            println!("Operation completed in {:.2?}", duration);
+            std::process::exit(error.exit_code());
+        }
+    };
+    
+    let result = match &cli.command {
+        Commands::Build { path, out_dir, optimize, emit_obj } => {
+            let source_path = path.clone().unwrap_or_else(|| PathBuf::from("./src"));
+            if cli.verbose {
+                println!("Building from: {}", source_path.display());
+                println!("Output directory: {}", out_dir.display());
+                println!("Optimization: {}", optimize);
+            }
+            run_compiler(path.clone(), &out_dir, *optimize, cli.verbose, *emit_obj, cli.lib)
+        }
+        Commands::Run { path, args } => {
+            let source_path = path.clone().unwrap_or_else(|| PathBuf::from("./src"));
+            if cli.verbose {
+                println!("Running from: {}", source_path.display());
+                if !args.is_empty() {
+                    println!("Arguments: {:?}", args);
+                }
+            }
+            // TODO: Implement actual run logic
             Ok(())
         }
-        Ok(Err(e)) => {
-            eprintln!("Compilation failed after {}ms (or {}ns) \nError: {:?}", millis, nanos, e);
+    };
+
+    let duration = start.elapsed();
+    println!("Operation completed in {:.2?}", duration);
+    
+    match result {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            eprintln!("Error: {}", e);
             Err(e)
         }
-        Err(_) => {
-            eprintln!("Panic occurred after {}ms (or {}ns)", millis, nanos);
-            exit(1);
+    }
+}
+
+fn run_compiler(
+    path: Option<PathBuf>,
+    out_dir: &PathBuf,
+    optimize: bool,
+    verbose: bool,
+    emit_obj: bool,
+    lib_override: Option<PathBuf>,
+) -> Result<(), CompilerError> {
+    let stdlib_path: PathBuf = if let Some(custom) = lib_override {
+        custom
+    } else {
+        compiler_lib_path()?
+    };
+
+    let stdlib_files: Vec<PathBuf> = collect_zeta_files(&stdlib_path)?;
+
+    if verbose {
+        println!("Compiling standard library ({}) modules:", stdlib_files.len());
+        for f in &stdlib_files {
+            println!("  [STD] {}", f.display());
         }
     }
-}
 
-fn run_compiler() -> Result<(), CompilerError> {
     let string_pool = StringPool::new()
         .map_err(|_| CompilerError::FailedToAllocateStringPool)?;
+    let arc: Arc<StringPool> = Arc::new(string_pool);
 
-    let files: Vec<PathBuf> = WalkDir::new("src")
-        .into_iter()
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry.file_type().is_file() && entry.path()
-                .extension()
-                .and_then(|ext| ext.to_str()) == Some("zeta")
-        })
-        .map(DirEntry::into_path)
-        .collect();
-
-    if files.is_empty() {
-        eprintln!("No .zeta files found");
-        return Ok(());
-    }
-
-    let arc = Arc::new(string_pool);
-    let error_reporter = ErrorReporter::new();
-
-    let modules_with_ctrc: Vec<ModuleWithArena> = files
-        .iter()
-        .map(|path| process_single_file(arc.clone(), path.clone()))
-        .filter_map(|result| match result {
-            Ok(v) if v.valid => Some(v),
-            Err(e) => {
-                eprintln!("Error: {:?}", e);
-                None
+    let stdlib_modules_result: Vec<_> = compile_files(&stdlib_files, arc.clone())?;
+    
+    // Collect parser diagnostics from stdlib
+    let mut error_reporter = ErrorReporter::new();
+    let mut stdlib_modules = Vec::new();
+    for module_with_arena in stdlib_modules_result {
+        if module_with_arena.parser_diagnostics.has_errors() {
+            for error in &module_with_arena.parser_diagnostics.errors {
+                error_reporter.add_parser_error(error.to_string(), None);
             }
-            _ => None
-        })
-        .collect();
+        }
+        if module_with_arena.valid {
+            stdlib_modules.push(module_with_arena.module);
+        }
+    }
 
-    error_reporter.report_all();
+    let source_path: PathBuf = path.unwrap_or_else(|| PathBuf::from("./src"));
+    let user_files: Vec<PathBuf> = collect_zeta_files(&source_path)?;
+
+    if verbose {
+        println!("Compiling project ({} modules):", user_files.len());
+        for f in &user_files {
+            println!("  [SRC] {}", f.display());
+        }
+    }
+
+    let user_modules_result: Vec<_> = compile_files(&user_files, arc.clone())?;
+    
+    // Collect parser diagnostics from user code
+    let mut user_modules = Vec::new();
+    for module_with_arena in user_modules_result {
+        if module_with_arena.parser_diagnostics.has_errors() {
+            for error in &module_with_arena.parser_diagnostics.errors {
+                error_reporter.add_parser_error(error.to_string(), None);
+            }
+        }
+        if module_with_arena.valid {
+            user_modules.push(module_with_arena.module);
+        }
+    }
+    
+    // Report all parser errors after HIR lowering
     if error_reporter.has_errors() {
-        exit(1);
+        error_reporter.report_all();
+        return Err(CompilerError::ParserError(vec![])); // Empty vec since errors already reported
     }
 
-    println!("Processed {} modules", modules_with_ctrc.len());
+    let mut backend = CraneliftBackend::new(arc.clone(), optimize, verbose);
 
-    let hir_modules: Vec<HirModule> = modules_with_ctrc.iter().map(|m| m.module).collect();
-    let builder = ModuleBuilder::run(&hir_modules, arc.clone());
-    let indexes: Vec<usize> = topo_sort(&builder.modules);
+    emit_all(stdlib_modules, &mut backend, arc.clone());
+    emit_all(user_modules, &mut backend, arc.clone());
 
-    let mut backend = CraneliftBackend::new(arc.clone());
-
-    for idx in indexes {
-        let hir_module = hir_modules[idx];
-        let mir_module = MirModuleLowerer::new(arc.clone()).lower_module(hir_module);
-        backend.emit_module(&mir_module);
+    let out_obj = backend.finish(out_dir).map_err(CompilerError::FinishError)?;
+    if !emit_obj {
+        let program_path = out_dir.join("program");
+        link(&[out_obj.to_str().unwrap()], program_path.to_str().unwrap(), true)?;
     }
 
-    backend.finish().map_err(|e| CompilerError::FinishError(e))
-}
-
-fn process_single_file<'a, 'bump>(
-    context: Arc<StringPool>,
-    path: PathBuf,
-) -> Result<ModuleWithArena<'a, 'bump>, CompilerError>
-where
-    'a: 'bump,
-    'bump: 'a,
-{
-    let contents = std::fs::read_to_string(&path)
-        .map_err(|e| CompilerError::FailedToReadFile(path.clone(), e))?;
-
-    if contents.is_empty() {
-        return Ok(ModuleWithArena {
-            parse_and_hir_bump: Arc::new(GrowableAtomicBump::new()),
-            module: HirModule::default(),
-            valid: false,
-        });
-    }
-
-    let contents_bytes = contents.as_bytes();
-
-    let initial_capacity = {
-        let base = 16 * 1024;
-        std::cmp::max(base, contents_bytes.len() * 2 + 4096)
-    };
-
-    let bump: Arc<GrowableAtomicBump<'bump>> =
-        Arc::new(GrowableAtomicBump::with_capacity_and_aligned(initial_capacity, 8)
-            .map_err(|_| CompilerError::FailedToAllocateBump)?);
-
-    let file_name_static = {
-        let file_name_string = path.file_name()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| CompilerError::InvalidFileName(Vec::new()))?;
-
-        let bytes = file_name_string.as_bytes();
-        let stored = bump
-            .alloc_many(bytes)
-            .ok_or(CompilerError::FailedToAllocateBump)?;
-
-        std::str::from_utf8(unsafe {
-            std::slice::from_raw_parts(stored.as_ptr(), bytes.len())
-        }).unwrap()
-    };
-
-    let contents_static = {
-        let stored = bump
-            .alloc_many(contents_bytes)
-            .ok_or(CompilerError::FailedToAllocateBump)?;
-        std::str::from_utf8(unsafe {
-            std::slice::from_raw_parts(stored.as_ptr(), contents_bytes.len())
-        }).unwrap()
-    };
-
-    let stmts = scribe_parser::parser::parse_program(
-        contents_static,
-        file_name_static,
-        context.clone(),
-        bump.clone(),
-    ).map_err(CompilerError::ParserError)?;
-
-    let mut lowerer = HirLowerer::new(context.clone(), bump.clone());
-    let module = lowerer.lower_module(stmts);
-
-    let temp_bump = GrowableBump::new(4096, 8);
-    let ctrc: CTRCAnalysisResult = ctrc_graph::analyze_hir_for_ctrc(&module, &temp_bump);
-
-    let mut temp_reporter = ErrorReporter::new();
-    temp_reporter.add_source_file(file_name_static.into(), contents_static.into());
-    analyze_ctrc_and_report(&ctrc, &*context, &mut temp_reporter, file_name_static);
-
-    /*let string = analyze_and_pretty_print(module, &temp_bump, context.clone()).unwrap();
-    println!("{}", string);*/
-
-    if temp_reporter.has_errors() {
-        temp_reporter.report_all();
-    }
-
-    Ok(ModuleWithArena {
-        parse_and_hir_bump: bump,
-        module,
-        valid: true,
-    })
-}
-
-struct ModuleWithArena<'a, 'bump> {
-    #[allow(dead_code)] // This simply prevents parser and HIR bump from UB, doesn't need to be used
-    parse_and_hir_bump: Arc<GrowableAtomicBump<'bump>>,
-
-    module: HirModule<'a, 'bump>,
-
-    valid: bool
-}
-
-#[derive(Error, Debug)]
-pub enum CompilerError {
-    #[error("Failed to read file {0}: {1}")]
-    FailedToReadFile(PathBuf, io::Error),
-
-    #[error("Failed to allocate string pool.")]
-    FailedToAllocateStringPool,
-
-    #[error("Failed to allocate bump allocator")]
-    FailedToAllocateBump,
-
-    #[error("Failed to compile module due to type errors: {0:?}")]
-    TypeCheckerErrors(Vec<String>),
-
-    #[error("Invalid UTF-8 filename: {0:?}")]
-    InvalidFileName(Vec<u8>),
-
-    #[error("Parser error: {0:#?}")]
-    ParserError(Vec<ParserError>),
-
-    #[error("Join error: {0}")]
-    TaskJoinError(String),
-
-    #[error("Failed to emit module: {0}")]
-    FinishError(EmitError)
+    Ok(())
 }
