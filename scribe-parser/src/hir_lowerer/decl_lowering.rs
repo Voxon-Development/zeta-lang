@@ -1,6 +1,6 @@
 use super::context::HirLowerer;
 use super::utils::lower_visibility;
-use ir::ast::{ClassDecl, FuncDecl, Param};
+use ir::ast::{StructDecl, FuncDecl, Param};
 use ir::hir::{self, ConstStmt, HirEnum, HirEnumVariant, HirField, HirFunc, HirGeneric, HirImpl, HirInterface, HirStmt, HirStruct};
 
 impl<'a, 'bump> HirLowerer<'a, 'bump> {
@@ -23,11 +23,23 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             .params
             .unwrap_or_default()
             .into_iter()
-            .map(|p| match p {
-                Param::Normal(p) => hir::HirParam::Normal {
-                    name: p.name,
-                    param_type: self.lower_type(&p.type_annotation),
-                },
+            .enumerate()
+            .map(|(idx, p)| match p {
+                Param::Normal(p) => {
+                    // Check if this is the first parameter and it's named "this"
+                    let param_name = self.ctx.context.resolve_string(&p.name);
+                    if idx == 0 && param_name == "this" {
+                        // Convert to This parameter
+                        hir::HirParam::This {
+                            param_type: Some(self.lower_type(&p.type_annotation)),
+                        }
+                    } else {
+                        hir::HirParam::Normal {
+                            name: p.name,
+                            param_type: self.lower_type(&p.type_annotation),
+                        }
+                    }
+                }
                 Param::This(p) => hir::HirParam::This {
                     param_type: p.type_annotation.map(|t| self.lower_type(&t)),
                 },
@@ -53,7 +65,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         }
     }
 
-    pub(super) fn lower_struct_decl(&mut self, c: ClassDecl<'a, 'bump>) -> HirStruct<'a, 'bump> {
+    pub(super) fn lower_struct_decl(&mut self, c: StructDecl<'a, 'bump>) -> HirStruct<'a, 'bump> {
         let generics_vec: Vec<HirGeneric> = c
             .generics
             .unwrap_or_default()
@@ -227,7 +239,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         }
     }
 
-    pub(super) fn lower_const_stmt(&mut self, l: ir::ast::ConstStmt<'a, '_>) -> ConstStmt<'a, 'bump> {
+    pub(super) fn lower_const_stmt(&self, l: ir::ast::ConstStmt<'a, '_>) -> ConstStmt<'a, 'bump> {
         let value = self.lower_expr(&l.value);
         let final_type = self.lower_type(&l.type_annotation);
 

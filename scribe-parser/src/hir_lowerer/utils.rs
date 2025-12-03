@@ -36,11 +36,11 @@ pub fn type_suffix_with_pool(pool: Arc<StringPool>, ty: &HirType) -> StrId {
         HirType::String => pool.intern("String"),
         HirType::Boolean => pool.intern("boolean"),
 
-        HirType::Class(name, args) => {
+        HirType::Struct(name, args) => {
             if args.is_empty() {
                 **name
             } else {
-                let mut buf: SmallVec<[u8; 128]> = SmallVec::new();
+                let mut buf: SmallVec<u8, 128> = SmallVec::new();
                 buf.extend_from_slice(pool.resolve_bytes(&*name));
                 for arg in *args {
                     buf.push(b'_');

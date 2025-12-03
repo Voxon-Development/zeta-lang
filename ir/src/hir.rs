@@ -6,6 +6,8 @@ use crate::span::SourceSpan;
 // HIR (High-Level IR)
 // =====================================
 
+type AliasID = usize;
+
 /// A reference to an interned string in the global string pool
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct StrId(pub VmString);
@@ -37,6 +39,10 @@ impl StrId {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         std::hash::Hash::hash(&self.0, &mut hasher);
         std::hash::Hasher::finish(&hasher)
+    }
+
+    pub fn as_str(&self) -> &str {
+        unsafe { from_utf8_unchecked(std::slice::from_raw_parts(self.offset, self.length)) }
     }
 
     /// Get the length of the string in bytes
@@ -186,6 +192,16 @@ where
     This { param_type: Option<HirType<'a, 'bump>> },
 }
 
+impl<'a, 'bump> HirParam<'a, 'bump> {
+    /// Get the type of this parameter
+    pub fn get_type(&self) -> Option<&HirType<'a, 'bump>> {
+        match self {
+            HirParam::Normal { param_type, .. } => Some(param_type),
+            HirParam::This { param_type } => param_type.as_ref(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HirGeneric<'bump> {
     pub name: StrId,
@@ -211,9 +227,10 @@ where
     U128,
     Boolean,
     String,
-    Class(StrId, &'bump [HirType<'a, 'bump>]),
+    Struct(StrId, &'bump [HirType<'a, 'bump>]),
     Interface(StrId, &'bump [HirType<'a, 'bump>]),
     Enum(StrId, &'bump [HirType<'a, 'bump>]),
+    Pointer(&'a HirType<'a, 'bump>),
     Lambda {
         params: &'bump [HirType<'a, 'bump>],
         return_type: &'a HirType<'a, 'bump>,
@@ -244,8 +261,8 @@ where
         name: StrId,
         ty: HirType<'a, 'bump>,
         value: HirExpr<'a, 'bump>,
-        mutable: bool,
     },
+    Const(&'bump ConstStmt<'a, 'bump>),
     Return(Option<&'bump HirExpr<'a, 'bump>>),
     Expr(&'bump HirExpr<'a, 'bump>),
     If {
@@ -350,7 +367,7 @@ where
         field: StrId,
         span: SourceSpan<'a>
     },
-    ClassInit {
+    StructInit {
         name: &'bump HirExpr<'a, 'bump>,
         args: &'bump [HirExpr<'a, 'bump>],
         span: SourceSpan<'a>
@@ -448,7 +465,7 @@ where
             HirType::F64 => write!(f, "f64"),
             HirType::Boolean => write!(f, "bool"),
             HirType::String => write!(f, "string"),
-            HirType::Class(name, args) => Self::write_args(f, name, args),
+            HirType::Struct(name, args) => Self::write_args(f, name, args),
             HirType::Interface(name, args) => Self::write_args(f, name, args),
             HirType::Enum(name, args) => Self::write_args(f, name, args),
             HirType::Lambda {
@@ -472,6 +489,7 @@ where
             HirType::Void => write!(f, "void"),
             HirType::This => write!(f, "this"),
             HirType::Null => write!(f, "null"),
+            HirType::Pointer(inner) => write!(f, "*{}", inner),
         }
     }
 }
@@ -480,6 +498,25 @@ impl<'a, 'bump> HirType<'a, 'bump>
 where
     'bump: 'a,
 {
+    /// Creates a new pointer type that points to the given type
+    pub fn ptr_to(inner: &'a HirType<'a, 'bump>) -> Self {
+        HirType::Pointer(inner)
+    }
+
+    /// Returns true if this is a pointer type
+    pub fn is_pointer(&self) -> bool {
+        matches!(self, HirType::Pointer(_))
+    }
+
+    /// If this is a pointer type, returns the inner type. Otherwise returns None.
+    pub fn as_pointer(&self) -> Option<&'a HirType<'a, 'bump>> {
+        if let HirType::Pointer(inner) = self {
+            Some(inner)
+        } else {
+            None
+        }
+    }
+
     fn write_args(f: &mut Formatter, name: &StrId, args: &[HirType<'a, 'bump>]) -> std::fmt::Result {
         if args.is_empty() {
             write!(f, "{}", name)
@@ -492,6 +529,7 @@ where
 
 use std::cell::UnsafeCell;
 use std::hash::{Hash, Hasher};
+use std::str::from_utf8_unchecked;
 use crate::ir_hasher::FxHashBuilder;
 
 pub struct HirSlice<'bump, T> {
@@ -543,7 +581,7 @@ pub struct CTRCAnalysisResult {
     pub allocation_sites: std::collections::HashMap<usize, usize>, // ProgramPoint -> AliasID
     pub drop_insertions: Vec<DropInsertion>,
     pub destructor_calls: Vec<DestructorCall>,
-    pub potential_leaks: Vec<usize>, // AliasID
+    pub potential_leaks: Vec<AliasID>, // AliasID
 }
 
 /// Drop insertion point in HIR

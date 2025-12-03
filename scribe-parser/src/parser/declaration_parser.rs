@@ -88,6 +88,9 @@ where
         let mut extern_string = None;
         let mut inline = false;
         let mut noinline = false;
+        
+        // Skip any whitespace or comments before function declaration
+        cursor.skip_comments();
 
         loop {
             match cursor.peek_kind() {
@@ -113,17 +116,30 @@ where
         }
         
         // Require 'func' keyword for function declarations
-        cursor.expect_kind(TokenKind::Func);
+        cursor.expect_kind(TokenKind::Fn);
         
         // Parse function name
         let name = match cursor.consume_ident() {
             Some(name) => name,
             None => {
-                panic!("Expected function name after 'func' keyword");
+                eprintln!("Warning: Expected function name after 'fn', got: {:?}", cursor.peek_kind());
+                // Return a minimal function with a placeholder name
+                return FuncDecl {
+                    name: StrId(self.context.intern("_error_function")),
+                    generics: None,
+                    params: None,
+                    return_type: None,
+                    body: None,
+                    extern_string: None,
+                    visibility,
+                    is_unsafe,
+                    is_extern,
+                    inline,
+                    noinline,
+                };
             }
         };
-        
-        // Parse parameters
+
         let generics: Option<&[Generic]> = if cursor.peek_kind() == Some(TokenKind::Lt) {
             cursor.advance_kind(); // consume '<'
             self.parse_generics(cursor)
@@ -145,19 +161,51 @@ where
             match cursor.peek_kind() {
                 Some(TokenKind::Void) => {
                     cursor.advance_kind();
-                    Some(Type::Void)
+                    Some(Type::void())
+                },
+                Some(TokenKind::I8) => {
+                    cursor.advance_kind();
+                    Some(Type::i8())
+                },
+                Some(TokenKind::I16) => {
+                    cursor.advance_kind();
+                    Some(Type::i16())
                 },
                 Some(TokenKind::I32) => {
                     cursor.advance_kind();
-                    Some(Type::I32)
+                    Some(Type::i32())
                 },
                 Some(TokenKind::I64) => {
                     cursor.advance_kind();
-                    Some(Type::I64)
+                    Some(Type::i64())
+                },
+                Some(TokenKind::I128) => {
+                    cursor.advance_kind();
+                    Some(Type::i128())
+                },
+                Some(TokenKind::U8) => {
+                    cursor.advance_kind();
+                    Some(Type::u8())
+                },
+                Some(TokenKind::U16) => {
+                    cursor.advance_kind();
+                    Some(Type::u16())
+                },
+                Some(TokenKind::U32) => {
+                    cursor.advance_kind();
+                    Some(Type::u32())
+                },
+                Some(TokenKind::U64) => {
+                    cursor.advance_kind();
+                    Some(Type::u64())
+                },
+                Some(TokenKind::U128) => {
+                    cursor.advance_kind();
+                    Some(Type::u128())
                 },
                 Some(TokenKind::Str) => {
                     cursor.advance_kind();
-                    Some(Type::String)
+                    Some(Type::string())
                 },
                 Some(TokenKind::Ident) => {
                     let type_name = cursor.consume_ident()
@@ -172,25 +220,34 @@ where
         };
 
 
-        let body: Option<&Block> = if cursor.peek_kind() == Some(TokenKind::LBrace) {
-            self.parse_block(cursor)
-        } else if cursor.peek_kind() == Some(TokenKind::Assign) {
-            cursor.advance_kind(); // consume '='
-            let expr = self.statement_parser.parse_expr_stmt(cursor);
-            let return_stmt = match expr {
-                Stmt::ExprStmt(expr_stmt) => {
-                    let return_stmt = self.bump.alloc_value(ReturnStmt {
-                        value: Some(expr_stmt.expr),
-                    });
-                    Stmt::Return(return_stmt)
-                }
-                other => other,
-            };
-            let stmts_slice: &[Stmt] = self.bump.alloc_slice_copy(&[return_stmt]);
-            Some(self.bump.alloc_value(Block { block: stmts_slice }))
-        } else {
-            None
+        // Parse function body
+        let body: Option<&Block> = match cursor.peek_kind() {
+            // Block body: { ... }
+            Some(TokenKind::LBrace) => {
+                self.parse_block(cursor)
+            }
+            // Expression body: = expr;
+            Some(TokenKind::Assign) => {
+                cursor.advance_kind(); // consume '='
+                let expr = self.statement_parser.parse_expr_placeholder(cursor);
+                
+                // Create a return statement with the expression
+                let return_stmt = self.bump.alloc_value(ReturnStmt {
+                    value: Some(expr),
+                });
+                
+                // Create a block with the single return statement
+                let stmts = self.bump.alloc_slice_copy(&[Stmt::Return(return_stmt)]);
+                Some(self.bump.alloc_value(Block { block: stmts }))
+            }
+            // No body (e.g., extern functions)
+            _ => None,
         };
+        
+        // Ensure we consume the semicolon for expression-bodied functions
+        if body.is_some() && cursor.peek_kind() == Some(TokenKind::Semicolon) {
+            cursor.advance_kind();
+        }
 
         FuncDecl {
             visibility,
@@ -208,18 +265,48 @@ where
     }
 
     pub(crate) fn parse_block(&self, cursor: &mut TokenCursor<'a>) -> Option<&'bump Block<'a, 'bump>> {
+        // Skip any whitespace before the opening brace
+        cursor.skip_comments();
+        
+        // Expect opening brace
         if !cursor.expect_kind(TokenKind::LBrace) {
             return None;
         }
         
+        // Skip any whitespace after opening brace
+        cursor.skip_comments();
+        
         let mut stmts = Vec::new();
         
+        // Parse until we hit the closing brace or end of input
         while cursor.peek_kind() != Some(TokenKind::RBrace) && !cursor.at_end() {
+            // Skip any whitespace before the statement
+            cursor.skip_comments();
+            
+            // Check for empty block or extra semicolons
+            if cursor.peek_kind() == Some(TokenKind::Semicolon) {
+                cursor.advance_kind(); // skip empty statement
+                continue;
+            }
+            
+            // Parse the actual statement
             let stmt = self.statement_parser.parse_stmt(cursor);
             stmts.push(stmt);
+            
+            // Skip any whitespace after the statement
+            cursor.skip_comments();
+            
+            // Check for semicolon after statement (except for block statements)
+            if matches!(cursor.peek_kind(), Some(TokenKind::Semicolon)) {
+                cursor.advance_kind();
+            }
         }
         
-        cursor.expect_kind(TokenKind::RBrace);
+        // Expect and consume the closing brace
+        if !cursor.expect_kind(TokenKind::RBrace) {
+            // TODO: Add proper error handling for missing closing brace
+            return None;
+        }
         
         // Allocate block in bump allocator
         let stmts_slice = if stmts.is_empty() {
@@ -232,7 +319,7 @@ where
     }
 
     pub(crate) fn parse_generics(&self, cursor: &mut TokenCursor<'a>) -> Option<&'bump [Generic<'bump>]> {
-        let mut generics: SmallVec<[Generic; 3]> = SmallVec::new();
+        let mut generics: SmallVec<Generic, 3> = SmallVec::new();
         
         loop {
             match cursor.peek_kind() {
@@ -264,7 +351,7 @@ where
     }
 
     pub(crate) fn parse_struct_params(&self, cursor: &mut TokenCursor<'a>) -> Option<&'bump [Param<'a, 'bump>]> {
-        let mut params: SmallVec<[Param; 8]> = SmallVec::new();
+        let mut params: SmallVec<Param, 8> = SmallVec::new();
         
         loop {
             match cursor.peek_kind() {
@@ -307,7 +394,7 @@ where
     }
 
     fn parse_function_params(&self, cursor: &mut TokenCursor<'a>) -> Option<&'bump [Param<'a, 'bump>]> {
-        let mut params: SmallVec<[Param; 8]> = SmallVec::new();
+        let mut params: SmallVec<Param, 8> = SmallVec::new();
 
         loop {
             match cursor.peek_kind() {
@@ -327,7 +414,6 @@ where
 
                     if cursor.peek_kind() == Some(TokenKind::This) {
                         cursor.advance_kind(); // consume 'this'
-                        println!("this is mut = {}", is_mut);
                         let this_param = self.bump.alloc_value(ThisParam {
                             is_mut,
                             is_move: false,
@@ -338,14 +424,14 @@ where
                     }
 
                     // Try to parse in different formats
-                    let (name, param_type) = if cursor.peek_kind() == Some(TokenKind::Ident) && cursor.peek_kind_n(1) == Some(TokenKind::Colon) {
+                    let (name, param_type, is_this) = if cursor.peek_kind() == Some(TokenKind::Ident) && cursor.peek_kind_n(1) == Some(TokenKind::Colon) {
                         // Format: name: type
                         let name = cursor.consume_ident()?;
                         cursor.expect_kind(TokenKind::Colon); // consume ':'
                         let type_name = cursor.consume_ident()?;
                         let type_str = self.context.resolve_string(&type_name);
                         let param_type = parse_to_type(type_str, cursor.peek_kind().unwrap_or(TokenKind::EOF), self.context.clone(), self.bump);
-                        (name, param_type)
+                        (name, param_type, false)
                     } else {
                         // Format: type name (or just name for 'this')
                         match cursor.peek_kind() {
@@ -355,51 +441,60 @@ where
                                 
                                 if first_str == "this" {
                                     // Special case: 'this' parameter (no type specified)
-                                    (first_ident, Type::Infer)
+                                    (first_ident, Type::infer(), true)
                                 } else if cursor.peek_kind() == Some(TokenKind::Ident) {
                                     // type name format
                                     let name = cursor.consume_ident()?;
                                     let param_type = parse_to_type(first_str, cursor.peek_kind().unwrap_or(TokenKind::EOF), self.context.clone(), self.bump);
-                                    (name, param_type)
+                                    (name, param_type, false)
                                 } else {
                                     // Just a name, infer type
-                                    (first_ident, Type::Infer)
+                                    (first_ident, Type::infer(), false)
                                 }
                             }
                             Some(TokenKind::I32) => {
                                 cursor.advance_kind(); // consume type
                                 let name = cursor.consume_ident()?;
-                                (name, Type::I32)
+                                (name, Type::i32(), false)
                             }
                             Some(TokenKind::I64) => {
                                 cursor.advance_kind(); // consume type
                                 let name = cursor.consume_ident()?;
-                                (name, Type::I64)
+                                (name, Type::i64(), false)
                             }
                             Some(TokenKind::Str) => {
                                 cursor.advance_kind(); // consume type
                                 let name = cursor.consume_ident()?;
-                                (name, Type::String)
+                                (name, Type::string(), false)
                             }
                             Some(TokenKind::Void) => {
                                 cursor.advance_kind(); // consume type
                                 let name = cursor.consume_ident()?;
-                                (name, Type::Void)
+                                (name, Type::void(), false)
                             }
                             _ => break, // Can't parse parameter
                         }
                     };
 
-                    let normal_param = self.bump.alloc_value(NormalParam {
-                        is_mut,
-                        is_move: false,
-                        name,
-                        type_annotation: param_type,
-                        visibility: Visibility::Public,
-                        default_value: None,
-                    });
-
-                    params.push(Param::Normal(normal_param));
+                    if is_this {
+                        // Create a ThisParam instead of NormalParam
+                        let this_param = self.bump.alloc_value(ThisParam {
+                            is_mut,
+                            is_move: false,
+                            type_annotation: None
+                        });
+                        params.push(Param::This(this_param));
+                    } else {
+                        let normal_param = self.bump.alloc_value(NormalParam {
+                            is_mut,
+                            is_move: false,
+                            name,
+                            type_annotation: param_type,
+                            visibility: Visibility::Public,
+                            default_value: None,
+                        });
+                        params.push(Param::Normal(normal_param));
+                    }
 
                     if cursor.peek_kind() == Some(TokenKind::Comma) {
                         cursor.advance_kind();
