@@ -90,13 +90,13 @@ mod prettify_tests {
             noinline: false,
             generics: None,
             params: None,
-            return_type: Some(HirType::Class(person_class, &[])),
+            return_type: Some(HirType::Struct(person_class, &[])),
             body: Some(HirStmt::Block {
                 body: bump.alloc_slice(&[
                     HirStmt::Let {
                         name: person_var,
-                        ty: HirType::Class(person_class, &[]),
-                        value: HirExpr::ClassInit {
+                        ty: HirType::Struct(person_class, &[]),
+                        value: HirExpr::StructInit {
                             name: bump.alloc_value(HirExpr::Ident(person_class)),
                             args: bump.alloc_slice(&[
                                 HirExpr::String(create_demo_str_id(&string_pool, "Alice")),
@@ -104,7 +104,6 @@ mod prettify_tests {
                             ]),
                             span: SourceSpan::default(),
                         },
-                        mutable: false,
                     },
                     HirStmt::Return(Some(bump.alloc_value(HirExpr::Ident(person_var)))),
                 ]),
@@ -125,24 +124,22 @@ mod prettify_tests {
                 body: bump.alloc_slice(&[
                     HirStmt::Let {
                         name: person_var,
-                        ty: HirType::Class(person_class, &[]),
+                        ty: HirType::Struct(person_class, &[]),
                         value: HirExpr::Call {
                             callee: bump.alloc_value(HirExpr::Ident(create_person_func)),
                             args: &[],
                         },
-                        mutable: false,
                     },
                     HirStmt::Let {
                         name: db_var,
-                        ty: HirType::Class(database_class, &[]),
-                        value: HirExpr::ClassInit {
+                        ty: HirType::Struct(database_class, &[]),
+                        value: HirExpr::StructInit {
                             name: bump.alloc_value(HirExpr::Ident(database_class)),
                             args: bump.alloc_slice(&[
                                 HirExpr::String(create_demo_str_id(&string_pool, "localhost:5432")),
                             ]),
                             span: SourceSpan::default(),
                         },
-                        mutable: false,
                     },
                     HirStmt::Return(Some(bump.alloc_value(HirExpr::Number(0)))),
                 ]),

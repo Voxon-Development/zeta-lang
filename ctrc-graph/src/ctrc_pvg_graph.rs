@@ -1,10 +1,10 @@
-use dashmap::DashMap;
+use std::cell::{Ref, RefCell, RefMut};
+use std::rc::Rc;
 use std::cmp::max;
 use std::cmp::min;
-use ir::ir_hasher::{FxHashBuilder, HashMap};
+use ir::ir_hasher::{FxHashBuilder, HashMap, HashSet};
 use zetaruntime::bump::GrowableBump;
 use ir::hir::*;
-use std::collections::HashSet;
 
 pub type AliasID = usize;
 pub type ProgramPoint = usize;
@@ -92,20 +92,113 @@ pub struct SolverState {
     pub(crate) predecessors: HashMap<ProgramPoint, Vec<ProgramPoint>>,
 }
 
-fn init_state(_graph: &CTRCGraph, _constraints: &[Constraint]) -> DashMap<ProgramPoint, SolverState> {
-    DashMap::default()
+fn init_state(_graph: &CTRCGraph, _constraints: &[Constraint]) -> HashMap<ProgramPoint, SolverState> {
+    HashMap::default()
 }
 
-pub(crate) fn topo_sort(_points: &[ProgramPoint]) -> Vec<ProgramPoint> { vec![] }
+/// Returns a deterministic, sorted list of program points.
+///
+/// This does **not** perform a graph-based topological sort.
+/// It simply:
+/// 1. Copies the input slice,
+/// 2. Sorts the points in ascending order,
+/// 3. Removes duplicates.
+///
+/// The solver relies on this to ensure stable iteration order.
+pub(crate) fn dedup_and_sort_points(points: &[ProgramPoint]) -> Vec<ProgramPoint> {
+    let mut v: Vec<ProgramPoint> = points.iter().copied().collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
 
-pub(crate) fn apply_widening(_state: &mut DashMap<ProgramPoint, SolverState>) {}
+/// Applies a widening step to all solver states.
+///
+/// Widening prevents the analysis from oscillating or growing without bound:
+/// - If an alias's upper bound exceeds `WIDEN_THRESHOLD`, it becomes `None`
+///   (representing an unbounded range).
+/// - Lower bounds above the threshold are clamped back down to the threshold.
+/// - If `lower > upper` where `upper` is `Some(...)`, the lower bound is reduced
+///   to maintain invariants.
+///
+/// This function guarantees monotonicity and enforces convergence in the
+/// iterative dataflow solver.
+pub(crate) fn widen_count_ranges(state: Rc<RefCell<HashMap<ProgramPoint, SolverState>>>) {
+    const WIDEN_THRESHOLD: usize = 64;
 
-pub(crate) fn classify_aliases(_state: &DashMap<ProgramPoint, SolverState>) {}
+    let mut binding: RefMut<HashMap<ProgramPoint, SolverState>> = state.borrow_mut();
+    for solver_state in binding.values_mut() {
+        for cr in solver_state.counts.values_mut() {
+            // widen upper if above threshold
+            if let Some(u) = cr.upper {
+                if u > WIDEN_THRESHOLD {
+                    cr.upper = None;
+                }
+            }
 
-pub(crate) fn final_counts(state: &DashMap<ProgramPoint, SolverState>) -> HashMap<AliasID, CountRange> {
+            // clamp lower
+            if cr.lower > WIDEN_THRESHOLD {
+                cr.lower = WIDEN_THRESHOLD;
+            }
+
+            // maintain invariant lower <= upper
+            if let Some(u) = cr.upper {
+                if cr.lower > u {
+                    cr.lower = u;
+                }
+            }
+        }
+    }
+}
+
+/// Scans all solver states and computes three classification sets:
+///
+/// - `unbounded_aliases`: aliases with `upper == None` at *any* program point
+/// - `zero_upper_aliases`: aliases with `upper == Some(0)` somewhere
+/// - `maybe_leak_aliases`: aliases that appear both unbounded *and* have
+///   a positive lower bound at some point
+///
+/// The classification is conservative: any occurrence at any program point
+/// contributes to the classification.
+///
+/// This function currently only logs a summary. It does not mutate external
+/// structures or return the computed sets. Extend or modify based on needs.
+pub(crate) fn summarize_alias_classifications(
+    state: Rc<RefCell<HashMap<ProgramPoint, SolverState>>>
+) {
+    let binding: Ref<HashMap<ProgramPoint, SolverState>> = state.borrow();
+
+    let mut unbounded_aliases: std::collections::HashSet<AliasID, FxHashBuilder> = HashSet::default();
+    let mut zero_upper_aliases: std::collections::HashSet<AliasID, FxHashBuilder> = HashSet::default();
+    let mut positive_lower_aliases: std::collections::HashSet<AliasID, FxHashBuilder> = HashSet::default();
+
+    for solver_state in binding.values() {
+        for (alias, cr) in solver_state.counts.iter() {
+            if cr.upper.is_none() { unbounded_aliases.insert(*alias); }
+
+            if cr.upper == Some(0) { zero_upper_aliases.insert(*alias); }
+
+            if cr.lower > 0 { positive_lower_aliases.insert(*alias); }
+        }
+    }
+
+    let maybe_leak_aliases: Vec<AliasID> = positive_lower_aliases
+        .intersection(&unbounded_aliases)
+        .copied()
+        .collect();
+
+    /*println!(
+        "alias classification: unbounded={}, zero_upper={}, maybe_leak={}",
+        unbounded_aliases.len(),
+        zero_upper_aliases.len(),
+        maybe_leak_aliases.len()
+    );*/
+}
+
+pub(crate) fn final_counts(state: Rc<RefCell<HashMap<ProgramPoint, SolverState>>>) -> HashMap<AliasID, CountRange> {
     let mut result: HashMap<AliasID, CountRange> = HashMap::default();
-    for s in state.iter() {
-        for (alias, cr) in &s.counts {
+    for s in state.borrow().iter() {
+        for (alias, cr) in &s.1.counts {
             result.insert(*alias, *cr);
         }
     }
@@ -114,35 +207,38 @@ pub(crate) fn final_counts(state: &DashMap<ProgramPoint, SolverState>) -> HashMa
 
 // Main solver
 pub(crate)  fn solve_ctrc(graph: &CTRCGraph, constraints: &[Constraint], program_points: &[ProgramPoint]) -> HashMap<AliasID, CountRange> {
-    let mut state: DashMap<ProgramPoint, SolverState> = init_state(graph, constraints);
+    let state: Rc<RefCell<HashMap<ProgramPoint, SolverState>>> = Rc::new(RefCell::new(init_state(graph, constraints)));
 
     loop {
         let mut changed = false;
 
-        for &pp in &topo_sort(program_points) {
-            if let Some(mut solver_state) = state.get_mut(&pp) {
-                let old_counts: HashMap<AliasID, CountRange> = solver_state.counts.clone();
-                solver_state.counts = transfer(&state, pp, constraints);
+        for pp in dedup_and_sort_points(program_points) {
+            let new_counts = transfer(state.clone(), pp, constraints);
 
-                if old_counts != solver_state.counts {
-                    changed = true;
+            {
+                let mut binding = state.borrow_mut();
+                if let Some(solver_state) = binding.get_mut(&pp) {
+                    if solver_state.counts != new_counts {
+                        solver_state.counts = new_counts;
+                        changed = true;
+                    }
                 }
-            }
+            } // and done
         }
 
         if !changed {
             break;
         }
 
-        apply_widening(&mut state);
+        widen_count_ranges(state.clone());
     }
 
-    classify_aliases(&state);
-    final_counts(&state)
+    summarize_alias_classifications(state.clone());
+    final_counts(state)
 }
 
 // Transfer counts for a program point
-pub(crate) fn transfer(state: &DashMap<ProgramPoint, SolverState>, pp: ProgramPoint, constraints: &[Constraint]) -> HashMap<AliasID, CountRange> {
+pub(crate) fn transfer(state: Rc<RefCell<HashMap<ProgramPoint, SolverState>>>, pp: ProgramPoint, constraints: &[Constraint]) -> HashMap<AliasID, CountRange> {
     let mut new_counts: HashMap<AliasID, CountRange> = HashMap::default();
 
     for c in constraints.iter().filter(|c| c.point == pp) {
@@ -150,11 +246,12 @@ pub(crate) fn transfer(state: &DashMap<ProgramPoint, SolverState>, pp: ProgramPo
         adjust_upper_count(c, entry);
     }
 
-    let Some(solver_state) = state.get(&pp) else { return new_counts; };
+    let immutable_binding = state.borrow();
+    let Some(solver_state) = immutable_binding.get(&pp) else { return new_counts; };
     let Some(preds) = solver_state.predecessors.get(&pp) else { return new_counts; };
 
     for &pred in preds {
-        let Some(pred_state) = state.get(&pred) else { continue; };
+        let Some(pred_state) = immutable_binding.get(&pred) else { continue; };
 
         for (alias, cr) in &pred_state.counts {
             let entry = new_counts.entry(*alias).or_insert(*cr);
@@ -186,8 +283,8 @@ pub(crate) fn adjust_upper_count(c: &Constraint, entry: &mut CountRange) {
 
 #[derive(Debug, Clone)]
 pub struct CTRCAnalysisResult {
-    pub structs_with_destructors: HashSet<StrId, FxHashBuilder>,
-    pub droppable_fields: HashSet<(StrId, StrId), FxHashBuilder>, // (struct_name, field_name)
+    pub structs_with_destructors: HashSet<StrId>,
+    pub droppable_fields: HashSet<(StrId, StrId)>, // (struct_name, field_name)
     pub variable_aliases: HashMap<StrId, AliasID>,
     pub allocation_sites: HashMap<ProgramPoint, AliasID>,
     pub drop_insertions: Vec<DropInsertion>,

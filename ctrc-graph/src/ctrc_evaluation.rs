@@ -12,7 +12,7 @@ impl CTRCGraph {
 
             // Complex types are potentially droppable
             HirType::String => true,
-            HirType::Class(_, _) => true,
+            HirType::Struct(_, _) => true,
             HirType::Interface(_, _) => true,
             HirType::Enum(_, _) => true,
             HirType::Lambda { .. } => true,
