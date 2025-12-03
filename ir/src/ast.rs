@@ -46,6 +46,7 @@ where
     pub ident: StrId,
     pub type_annotation: Type<'a, 'bump>,
     pub value: &'bump Expr<'a, 'bump>,
+    pub mutable: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -149,10 +150,26 @@ pub struct ForStmt<'a, 'bump>
 where
     'bump: 'a,
 {
-    pub let_stmt: Option<&'bump LetStmt<'a, 'bump>>,
-    pub condition: Option<&'bump Expr<'a, 'bump>>,
-    pub increment: Option<&'bump Expr<'a, 'bump>>,
+    pub kind: ForKind<'a, 'bump>,
     pub block: &'bump Block<'a, 'bump>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ForKind<'a, 'bump> 
+where
+    'bump: 'a,
+{
+    /// C-style: for (let i = 0; i < 10; i++)
+    CStyle {
+        let_stmt: Option<&'bump LetStmt<'a, 'bump>>,
+        condition: Option<&'bump Expr<'a, 'bump>>,
+        increment: Option<&'bump Expr<'a, 'bump>>,
+    },
+    /// Range-based: for i in 0..10 or for i in range
+    RangeBased {
+        variable: StrId,
+        iterable: &'bump Expr<'a, 'bump>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -186,6 +203,8 @@ pub enum Op {
     Gte,
     BitNot,
     LogicalNot,
+    Range,      // .. (inclusive range)
+    RangeExcl,  // ..< (exclusive range)
 }
 
 impl TryFrom<&str> for Op {
