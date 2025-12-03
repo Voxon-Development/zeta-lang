@@ -1,35 +1,37 @@
-struct Vec3f { i32 x, i32 y, i32 z } {
-    func multiply(mut this, Vec3f by) {
-        this.x *= by.x();
-        this.y *= by.y();
-        this.z *= by.z();
+struct Vec3f { x: i64, y: i64, z: i64 } {
+    ~Vec3f() {
+        println_str("Vec3f destructor called");
     }
 
-    func x(this): i32 { this.x }
-    func y(this): i32 { this.y }
-    func z(this): i32 { this.z }
-
-    func sum(this): i32 { this.x + this.y + this.z }
-}
-
-struct Vec9f { Vec3f x, Vec3f y, Vec3f z } {
-    func multiply(mut this, Vec3f by) {
-        this.x.multiply(by);
-        this.y.multiply(by);
-        this.z.multiply(by);
+    fn multiply(this, by: Vec3f): Vec3f {
+        Vec3f { x: this.x * by.x, y: this.y * by.y, z: this.z * by.z };
     }
 
-    func x(this): Vec3f { this.x }
-    func y(this): Vec3f { this.y }
-    func z(this): Vec3f { this.z }
-
-    func sum(this): i32 { this.x.sum() + this.y.sum() + this.z.sum() }
+    fn sum(this): i64 {
+        this.x + this.y + this.z
+    }
 }
 
-func main() {
-    let firstVec3f: Vec3f = Vec3f(1, 1, 1);
-    let secondVec3f: Vec3f = Vec3f(1, 1, 1);
-    let thirdVec3f: Vec3f = Vec3f(1, 1, 1);
-    let vec9f: Vec9f = Vec9f(firstVec3f, secondVec3f, thirdVec3f);
-    let secondSum: i32 = vec9f.sum();
+struct Vec9f { x: Vec3f, y: Vec3f, z: Vec3f } {
+    fn multiply(this, by: Vec3f): Vec9f {
+        Vec9f {
+            x: this.x.multiply(by),
+            y: this.y.multiply(by),
+            z: this.z.multiply(by)
+        }
+    }
+
+    fn sum(this): i64 {
+        this.x.sum() + this.y.sum() + this.z.sum()
+    }
+}
+
+fn main() {
+    let vec9f: Vec9f = Vec9f {
+        x: Vec3f { x: 1, y: 1, z: 1 },
+        y: Vec3f { x: 1, y: 1, z: 1 },
+        z: Vec3f { x: 1, y: 1, z: 1 }
+    };
+    let secondSum: i64 = vec9f.sum();
+    println_int(secondSum);
 }

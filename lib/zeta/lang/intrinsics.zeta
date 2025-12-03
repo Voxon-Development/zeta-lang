@@ -1,17 +1,10 @@
 package zeta
 
-extern "intrinsic" usize sizeof<T>()
-extern "intrinsic" usize alignof<T>()
+extern "intrinsic" fn sizeof<T>(): usize;
+extern "intrinsic" fn alignof<T>(): usize;
 
-extern "intrinsic" usize ptr_cast_to_raw<T>(T value)
-extern "intrinsic" Ptr<T> ptr_add<T>(Ptr<T> p, usize bytes)
-extern "intrinsic" T ptr_deref<T>(Ptr<T> p)
-extern "intrinsic" void ptr_store<T>(Ptr<T> p, T value)
-extern "intrinsic" Ptr<T> ptr_from_addr<T>(usize addr)
-extern "intrinsic" usize ptr_addr<T>(Ptr<T> p)
+extern "intrinsic" fn stack_alloc<T, const N: usize>(): *T;
 
-extern "intrinsic" Ptr<T> stack_alloc<T, const N: usize>()
+extern "intrinsic" fn stack_alloc_zeroed<T, const N: usize>();
 
-extern "intrinsic" Ptr<T> stack_alloc_zeroed<T, const N: usize>()
-
-extern "intrinsic" T assume_non_null<T>(Ptr<T> p)
+extern "intrinsic" fn assume_non_null<T>(p: *T): T;

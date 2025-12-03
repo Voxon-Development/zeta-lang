@@ -4,63 +4,63 @@ package zeta.lang
 const f64 PI = 3.14159265358979323846264338327950288419716939937510
 
 // Min/max for integer types
-const u8 U8_MAX = 255
-const u8 U8_MIN = 0
-const i8 I8_MAX = 127
-const i8 I8_MIN = -128
+const U8_MAX: u8 = 255
+const U8_MIN: u8 = 0
+const I8_MAX: i8 = 127
+const I8_MIN: i8 = -128
 
-const u16 U16_MAX = 65535
-const u16 U16_MIN = 0
-const i16 I16_MAX = 32767
-const i16 I16_MIN = -32768
+const U16_MAX: u16 = 65535
+const U16_MIN: u16 = 0
+const I16_MAX: i16 = 32767
+const I16_MIN: i16 = -32768
 
-const u32 U32_MAX = 4294967295
-const u32 U32_MIN = 0
-const i32 I32_MAX = 2147483647
-const i32 I32_MIN = -2147483648
+const U32_MAX: u32 = 4294967295
+const U32_MIN: u32 = 0
+const I32_MAX: i32 = 2147483647
+const I32_MIN: i32 = -2147483648
 
-const u64 U64_MAX = 18446744073709551615
-const u64 U64_MIN = 0
-const i64 I64_MAX = 9223372036854775807
-const i64 I64_MIN = -9223372036854775808
+const U64_MAX: u64 = 18446744073709551615
+const U64_MIN: u64 = 0
+const I64_MAX: i64 = 9223372036854775807
+const I64_MIN: i64 = -9223372036854775808
 
-const u128 U128_MAX = 340282366920938463463374607431768211455
-const u128 U128_MIN = 0
-const i128 I128_MAX = 170141183460469231731687303715884105727
-const i128 I128_MIN = -170141183460469231731687303715884105728
+const U128_MAX: u128 = 340282366920938463463374607431768211455
+const U128_MIN: u128 = 0
+const I128_MAX: i128 = 170141183460469231731687303715884105727
+const I128_MIN: i128 = -170141183460469231731687303715884105728
 
 // Float min/max
-const f32 F32_MAX = 3.4028235e38
-const f32 F32_MIN = -3.4028235e38
-const f64 F64_MAX = 1.7976931348623157e308
-const f64 F64_MIN = -1.7976931348623157e308
+const F32_MAX: f32 = 3.4028235e38
+const F32_MIN: f32 = -3.4028235e38
+const F64_MAX: f64 = 1.7976931348623157e308
+const F64_MIN: f64 = -1.7976931348623157e308
 
-const f64 F64_NAN = 0.0 / 0.0
+const F64_NAN: f64 = 0.0 / 0.0
 
 // Functions
-inline f64 floor(f64 x) {
+inline fn floor(x: f64): f64 {
     xi := x as i64
     if (x < xi as f64) { return (xi - 1) as f64 } else { xi as f64 }
 }
 
-inline f64 ceil(f64 x) {
+inline fn ceil(x: f64): f64 {
     xi := x as i64
     if (x > xi as f64) { return (xi + 1) as f64 } else { xi as f64 }
 }
 
-inline f64 abs(f64 x) {
+inline fn abs(x: f64): f64 {
     if (x < 0.0) { -x } else { x }
 }
 
 // Inlined to `fsqrt` instruction in the CPU by the compiler.
-extern "intrinsic" f64 fsqrt(f64 x);
+extern "intrinsic" fn fsqrt(x: f64): f64;
 
-inline f64 pow(f64 x, f64 y) {
+inline fn pow(x: f64, y: f64): f64 {
     // naive implementation using exp and ln
     exp(y * ln(x))
 }
 
-f64 ln(f64 x) {
+fn ln(x: f64): f64 {
     // simple iterative approximation for natural log
     if (x <= 0.0) { return F64_NAN }
 
@@ -75,7 +75,7 @@ f64 ln(f64 x) {
     mut result := 0.0
     mut term := (y - 1) / (y + 1)
     mut term2 := term
-    for (i := (1..50).stepBy(2)) {
+    for i in (1..50).step_by(2) {
         result += term2 / i as f64
         term2 *= term * term
     }
@@ -83,22 +83,22 @@ f64 ln(f64 x) {
     2.0 * result + n as f64
 }
 
-f64 exp(f64 x) {
+fn exp(x: f64): f64 {
     // naive Taylor series
     mut sum := 1.0
     mut term := 1.0
-    for (i := 1..50) {
+    for i in 1..50 {
         term *= x / i as f64
         sum += term
     }
     sum
 }
 
-f64 sin(f64 x) {
+fn sin(x: f64): f64 {
     mut term := x
     mut sum := x
     mut n := 1
-    for (_ := 0..10) {
+    for ignored in 0..10 {
         term *= -x * x / ((2 * n) as f64 * (2 * n + 1) as f64)
         sum += term
         n += 1
@@ -106,11 +106,11 @@ f64 sin(f64 x) {
     sum
 }
 
-f64 cos(f64 x) {
+fn cos(x: f64): f64 {
     mut term := 1.0
     mut sum := 1.0
     mut n := 1
-    for (_ := 0..10) {
+    for ignored in 0..10 {
         term *= -x * x / ((2 * n - 1) as f64 * (2 * n) as f64)
         sum += term
         n += 1
@@ -118,6 +118,6 @@ f64 cos(f64 x) {
     sum
 }
 
-inline f64 tan(f64 x) {
+inline fn tan(x: f64): f64 {
     sin(x) / cos(x)
 }
