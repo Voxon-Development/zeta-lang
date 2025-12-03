@@ -7,4 +7,4 @@ mod container_declarations;
 mod tests;
 mod integration_tests;
 
-pub use descent_parser::parse_program;
+pub use descent_parser::{parse_program, ParseResult, ParserDiagnostics, ParserError};

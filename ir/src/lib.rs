@@ -5,6 +5,6 @@ pub mod hir;
 pub mod ast;
 pub mod errors;
 pub mod ir_hasher;
-pub mod context;
 pub mod span;
 pub mod pretty;
+pub mod layout;
