@@ -10,5 +10,5 @@ opt-level = 3
 [dependencies]
 zetaruntime = { path = "../zeta_utilities" }
 ir = { path = "../ir" }
-smallvec = "1.15.0"
+smallvec = "2.0.0-alpha.12"
 arrayvec = "0.7.6"

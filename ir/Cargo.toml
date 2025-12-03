@@ -11,8 +11,8 @@ thiserror = "2.0.16"
 fxhash = "0.2.1"
 zetaruntime = { path = "../zeta_utilities" }
 parking_lot = "0.12.1"
-smallvec = "1.15.0"
+smallvec = "2.0.0-alpha.12"
 atty = "0.2"
 
 [dev-dependencies]
-rstest = "0.18.2"
+rstest = "0.26.1"

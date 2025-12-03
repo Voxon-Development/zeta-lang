@@ -7,12 +7,7 @@ edition = "2024"
 opt-level = 3
 
 [dependencies]
-pest = "2.8.1"
-pest_derive = "2.8.1"
-thiserror = "2.0.12"
-itertools = "0.14.0"
 ir = { path = "../ir" }
 zetaruntime = { path = "../zeta_utilities" }
-smallvec = "1.15.0"
-dashmap = "7.0.0-rc2"
+smallvec = "2.0.0-alpha.12"
 ctrc-graph = { path = "../ctrc-graph" }
