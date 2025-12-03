@@ -69,6 +69,20 @@ impl<'a> TokenCursor<'a> {
         self.span_idx = self.span_idx.saturating_add(1);
     }
 
+    /// Skip whitespace tokens including comments.
+    /// This will advance the cursor past any whitespace, line comments, block comments, or doc comments.
+    #[inline]
+    pub fn skip_comments(&mut self) {
+        while let Some(kind) = self.peek_kind() {
+            match kind {
+                TokenKind::LineComment | TokenKind::BlockComment | TokenKind::DocComment => {
+                    self.advance_kind();
+                }
+                _ => break,
+            }
+        }
+    }
+
     /// Advance kind and text (for tokens that carry a text index).
     #[inline]
     pub fn advance_with_text(&mut self) {
@@ -151,6 +165,12 @@ impl<'a> TokenCursor<'a> {
             }
             _ => false,
         }
+    }
+
+    /// Get the current position (token index) in the token stream
+    #[inline]
+    pub fn position(&self) -> usize {
+        self.kind_idx
     }
 
     /// Create a checkpoint of the current cursor position
