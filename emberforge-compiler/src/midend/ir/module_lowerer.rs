@@ -93,15 +93,24 @@ impl<'a, 'bump> MirModuleLowerer<'a, 'bump> {
     fn lower_class(&mut self, hir_class: &HirStruct<'a, 'bump>) {
         self.compute_field_offsets(hir_class);
         self.build_class_vtable(hir_class);
+        
+        // Add the class to the module BEFORE lowering methods so they can access class info
         self.module
             .classes
             .insert(hir_class.name, hir_class.clone());
+        
+        // Lower all methods in the class
+        if let Some(methods) = hir_class.methods {
+            for method in methods {
+                self.lower_class_method(method, hir_class.name);
+            }
+        }
     }
 
     fn compute_field_offsets(&mut self, hir_class: &HirStruct<'a, 'bump>) {
-        let mut offsets = HashMap::with_hasher(FxHashBuilder);
-        let has_interfaces = hir_class.interfaces.is_some_and(|i| !i.is_empty());
-        let field_start = if has_interfaces { 1usize } else { 0usize };
+        let mut offsets: HashMap<StrId, usize, FxHashBuilder> = HashMap::with_hasher(FxHashBuilder);
+        let has_interfaces: bool = hir_class.interfaces.is_some_and(|i| !i.is_empty());
+        let field_start: usize = if has_interfaces { 1usize } else { 0usize };
         for (i, f) in hir_class.fields.iter().enumerate() {
             offsets.insert(f.name, field_start + i);
         }
@@ -150,15 +159,14 @@ impl<'a, 'bump> MirModuleLowerer<'a, 'bump> {
     }
 
     fn lower_function(&mut self, hir_fn: &HirFunc<'a, 'bump>) {
-        println!("{:?}", hir_fn);
         let func = self.lower_function_inner(hir_fn);
-        self.module.funcs.insert(func.name.clone(), func);
+        self.module.functions.insert(func.name.clone(), func);
     }
 
     fn lower_function_inner(&self, hir_fn: &HirFunc<'a, 'bump>) -> Function {
         let mut fl = crate::midend::ir::lowerer::FunctionLowerer::new(
             hir_fn,
-            &self.module.funcs,
+            &self.module.functions,
             &self.class_field_offsets,
             &self.class_method_slots,
             &self.class_mangled_map,
@@ -169,7 +177,31 @@ impl<'a, 'bump> MirModuleLowerer<'a, 'bump> {
             self.context.clone(),
         )
         .unwrap();
-        println!("{:?}", hir_fn.body);
+        fl.lower_body(hir_fn.body);
+        fl.finish()
+    }
+
+    fn lower_class_method(&mut self, hir_method: &HirFunc<'a, 'bump>, class_name: StrId) {
+        // For class methods, lower with class context
+        let func = self.lower_class_method_inner(hir_method, class_name);
+        self.module.functions.insert(func.name.clone(), func);
+    }
+
+    fn lower_class_method_inner(&self, hir_fn: &HirFunc<'a, 'bump>, class_name: StrId) -> Function {
+        let mut fl = crate::midend::ir::lowerer::FunctionLowerer::new_with_class(
+            hir_fn,
+            class_name,
+            &self.module.functions,
+            &self.class_field_offsets,
+            &self.class_method_slots,
+            &self.class_mangled_map,
+            &self.class_vtable_slots,
+            &self.interface_id_map,
+            &self.interface_method_slots,
+            &self.module.classes,
+            self.context.clone(),
+        )
+        .unwrap();
         fl.lower_body(hir_fn.body);
         fl.finish()
     }

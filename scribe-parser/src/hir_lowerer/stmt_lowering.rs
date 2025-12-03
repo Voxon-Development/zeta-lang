@@ -1,6 +1,6 @@
 use super::context::HirLowerer;
 use ir::ast::{self, ElseBranch, LetStmt, Stmt, Type};
-use ir::hir::{HirStmt, HirType};
+use ir::hir::{Hir, HirStmt, HirType};
 
 impl<'a, 'bump> HirLowerer<'a, 'bump> {
     // ===============================
@@ -35,14 +35,29 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                     .collect();
                 let body = self.ctx.bump.alloc_value_immutable(HirStmt::Block { body: self.ctx.bump.alloc_slice(&body_vec) });
                 
-                HirStmt::For {
-                    init: for_stmt.let_stmt.map(|s| {
-                        let stmt = self.lower_stmt(Stmt::Let(s));
-                        self.ctx.bump.alloc_value_immutable(stmt)
-                    }),
-                    condition: for_stmt.condition.map(|e| self.ctx.bump.alloc_value_immutable(self.lower_expr(&e))),
-                    increment: for_stmt.increment.map(|e| self.ctx.bump.alloc_value_immutable(self.lower_expr(&e))),
-                    body,
+                match &for_stmt.kind {
+                    ir::ast::ForKind::CStyle { let_stmt, condition, increment } => {
+                        HirStmt::For {
+                            init: let_stmt.map(|s| {
+                                let stmt = self.lower_stmt(Stmt::Let(s));
+                                self.ctx.bump.alloc_value_immutable(stmt)
+                            }),
+                            condition: condition.map(|e| self.ctx.bump.alloc_value_immutable(self.lower_expr(&e))),
+                            increment: increment.map(|e| self.ctx.bump.alloc_value_immutable(self.lower_expr(&e))),
+                            body,
+                        }
+                    }
+                    ir::ast::ForKind::RangeBased { variable, iterable } => {
+                        // Convert for...in to C-style for loop
+                        // for i in iterable => for (let i = 0; i < iterable.len(); i++)
+                        // For now, just create a simple for loop
+                        HirStmt::For {
+                            init: None,
+                            condition: None,
+                            increment: None,
+                            body,
+                        }
+                    }
                 }
             }
 
@@ -78,7 +93,43 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 let body = self.ctx.bump.alloc_slice(&body_vec);
                 HirStmt::Block { body }
             }
-            _ => panic!("unhandled stmt variant: {:?}", stmt),
+
+            // Declarations should not appear as statements in function bodies
+            // They are handled at module level, not statement level
+            Stmt::FuncDecl(_) | Stmt::StructDecl(_) | Stmt::InterfaceDecl(_) | 
+            Stmt::ImplDecl(_) | Stmt::EnumDecl(_) | Stmt::StateMachineDecl(_) | 
+            Stmt::EffectDecl(_) => {
+                panic!("Declaration statements should not appear in function bodies");
+            }
+            
+            // Module-level statements that should be handled separately
+            Stmt::Import(import) => {
+                // Import statements are handled at module level for dependency tracking
+                // Return a no-op statement here
+                HirStmt::Block { body: &[] }
+            }
+            
+            Stmt::Package(package) => {
+                // Package statements are handled at module level for dependency tracking
+                // Return a no-op statement here
+                HirStmt::Block { body: &[] }
+            }
+            
+            Stmt::Const(const_stmt) => {
+                HirStmt::Const(self.ctx.bump.alloc_value_immutable(self.lower_const_stmt(*const_stmt)))
+            }
+            
+            Stmt::UnsafeBlock(unsafe_block) => {
+                let body_vec: Vec<HirStmt<'a, 'bump>> = unsafe_block
+                    .block
+                    .into_iter()
+                    .map(|s| self.lower_stmt(*s))
+                    .collect();
+                let body = self.ctx.bump.alloc_slice(&body_vec);
+                HirStmt::UnsafeBlock { body: self.ctx.bump.alloc_value_immutable(HirStmt::Block { body }) }
+            }
+            
+            Stmt::Defer(defer_stmt) => todo!()
         }
     }
 
@@ -116,7 +167,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
 
     fn lower_let_stmt(&self, l: &LetStmt<'a, 'bump>) -> HirStmt<'a, 'bump> {
         let value = self.lower_expr(&l.value);
-        let final_type: HirType<'a, 'bump> = if l.type_annotation != Type::Infer {
+        let final_type: HirType<'a, 'bump> = if l.type_annotation != Type::infer() {
             self.lower_type(&l.type_annotation)
         } else {
             self.infer_type(&value)
@@ -131,7 +182,6 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             name: l.ident,
             ty: final_type,
             value,
-            mutable: l.mutability,
         }
     }
 }

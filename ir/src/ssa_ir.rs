@@ -6,6 +6,27 @@ use std::collections::HashMap;
 use crate::hir::{HirStruct, HirEnum, HirInterface, StrId};
 use crate::ir_hasher::FxHashBuilder;
 
+impl SsaType {
+    /// Creates a new pointer type that points to the given type
+    pub fn ptr_to(inner: SsaType) -> Self {
+        SsaType::Pointer(Box::new(inner))
+    }
+
+    /// Returns true if this type is a pointer type
+    pub fn is_pointer(&self) -> bool {
+        matches!(self, SsaType::Pointer(_))
+    }
+
+    /// If this is a pointer type, returns the inner type. Otherwise, returns None.
+    pub fn as_pointer(&self) -> Option<&SsaType> {
+        if let SsaType::Pointer(inner) = self {
+            Some(inner)
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Value(pub usize);
 
@@ -13,14 +34,17 @@ pub struct Value(pub usize);
 pub enum Operand {
     Value(Value),
     ConstInt(i64),
+    ConstFloat(f64),
     ConstBool(bool),
     ConstString(StrId),
     FunctionRef(StrId),
     GlobalRef(StrId),
 }
 
+/// Represents a type in the SSA IR
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SsaType {
+    // Primitive types
     I8,
     U8,
     I16,
@@ -30,19 +54,28 @@ pub enum SsaType {
     I64,
     U64,
     I128,
+    U128,
     F32,
     F64,
-    ISize,
-    USize,
+    ISize,  // Signed pointer-sized integer
+    USize,  // Unsigned pointer-sized integer
 
+    // Special types
     Bool,
-    String,
-    Void,
-    User(StrId, Vec<SsaType>),
-    Enum(Vec<SsaType>),
-    Tuple(Vec<SsaType>),
-    Dyn,
-    Slice,
+    String,  // Fat pointer to string data
+    Void,    // Unit type, zero size
+    
+    // Composite types
+    User(StrId, Vec<SsaType>),  // User-defined type with generic parameters
+    Enum(Vec<SsaType>),         // Tagged union of types
+    Tuple(Vec<SsaType>),        // Fixed-size collection of heterogeneous types
+    
+    // Pointer types
+    Pointer(Box<SsaType>),      // Pointer to another type
+    
+    // Dynamically sized types
+    Dyn,     // Trait object (fat pointer)
+    Slice,   // Slice (fat pointer)
 }
 
 use smallvec::SmallVec;
@@ -67,14 +100,14 @@ pub enum Instruction {
     /// Phi node for SSA
     Phi {
         dest: Value,
-        incomings: SmallVec<[(BlockId, Value); 4]>, // usually <=4 predecessors
+        incoming: SmallVec<(BlockId, Value), 4>, // usually <=4 predecessors
     },
 
     /// Function call
     Call {
         dest: Option<Value>,
         func: Operand,
-        args: SmallVec<[Operand; 8]>, // most calls <8 args
+        args: SmallVec<Operand, 8>, // most calls <8 args
     },
 
     /// Direct class method call (resolved at compile time)
@@ -82,7 +115,7 @@ pub enum Instruction {
         dest: Option<Value>,
         object: Value,          // `this` pointer
         method_id: usize,       // method index
-        args: SmallVec<[Operand; 8]>,
+        args: SmallVec<Operand, 8>,
     },
 
     /// Virtual/interface call through vtable
@@ -90,7 +123,7 @@ pub enum Instruction {
         dest: Option<Value>,
         object: Value,          // interface reference
         method_slot: usize,     // vtable slot
-        args: SmallVec<[Operand; 8]>,
+        args: SmallVec<Operand, 8>,
     },
 
     /// Cast class -> interface
@@ -113,19 +146,19 @@ pub enum Instruction {
     /// Interpolation (string concatenation)
     Interpolate {
         dest: Value,
-        parts: SmallVec<[InterpolationOperand; 4]>, // usually <=4 parts
+        parts: SmallVec<InterpolationOperand, 4>, // usually <=4 parts
     },
 
     EnumConstruct {
         dest: Value,
         enum_name: StrId,
         variant: StrId,
-        args: SmallVec<[Operand; 8]>, // usually <=8 fields
+        args: SmallVec<Operand, 8>, // usually <=8 fields
     },
 
     MatchEnum {
         value: Value,
-        arms: SmallVec<[(StrId, BlockId); 8]>, // usually <=8 arms
+        arms: SmallVec<(StrId, BlockId), 8>, // usually <=8 arms
     },
 
     Jump { target: BlockId },
@@ -164,9 +197,9 @@ pub struct BasicBlock {
 #[derive(Debug, Clone)]
 pub struct Function {
     pub name: StrId,
-    pub params: SmallVec<[(Value, SsaType); 8]>,
+    pub params: SmallVec<(Value, SsaType), 8>,
     pub ret_type: SsaType,
-    pub blocks: SmallVec<[BasicBlock; 12]>,
+    pub blocks: SmallVec<BasicBlock, 3>,
     pub value_types: HashMap<Value, SsaType, FxHashBuilder>,
     pub entry: BlockId,
     pub noinline: bool,
@@ -181,17 +214,17 @@ pub struct MethodInfo {
 
 #[derive(Debug, Clone, Default)]
 pub struct ClassLayout {
-    pub vtable: SmallVec<[MethodInfo; 12]>,
+    pub vtable: SmallVec<MethodInfo, 12>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct InterfaceLayout {
-    pub methods: SmallVec<[StrId; 12]>, // names in declaration order
+    pub methods: SmallVec<StrId, 12>, // names in declaration order
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Module<'a, 'bump: 'a> {
-    pub funcs: HashMap<StrId, Function, FxHashBuilder>,
+    pub functions: HashMap<StrId, Function, FxHashBuilder>,
     pub classes: HashMap<StrId, HirStruct<'a, 'bump>, FxHashBuilder>,
     pub interfaces: HashMap<StrId, HirInterface<'a, 'bump>, FxHashBuilder>,
     pub enums: HashMap<StrId, HirEnum<'a, 'bump>, FxHashBuilder>,

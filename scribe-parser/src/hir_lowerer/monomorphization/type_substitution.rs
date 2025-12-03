@@ -11,12 +11,12 @@ pub fn substitute_type<'a, 'bump>(
 ) -> HirType<'a, 'bump> {
     match ty {
         HirType::Generic(name) => subs.get(name).copied().unwrap_or(*ty),
-        HirType::Class(name, args) => {
+        HirType::Struct(name, args) => {
             if args.is_empty() {
-                HirType::Class(*name, &[])
+                HirType::Struct(*name, &[])
             } else {
                 let new_args: Vec<HirType<'a, 'bump>> = args.iter().map(|a| substitute_type(a, subs, bump.clone())).collect();
-                HirType::Class(*name, bump.alloc_slice(&new_args))
+                HirType::Struct(*name, bump.alloc_slice(&new_args))
             }
         }
 

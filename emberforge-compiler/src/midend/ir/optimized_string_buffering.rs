@@ -11,7 +11,7 @@ pub fn build_scoped_name(maybe_cls_name: Option<&str>, field: StrId, pool: Arc<S
 
     let total_len = cls.len() + sep.len() + field.len();
 
-    let mut buf: SmallVec<[u8; 64]> = SmallVec::with_capacity(total_len);
+    let mut buf: SmallVec<u8, 64> = SmallVec::with_capacity(total_len);
 
     unsafe {
         // copy class name
@@ -39,7 +39,7 @@ pub fn make_vtable_name(name: StrId, string_pool: Arc<StringPool>) -> StrId {
     let nlen = name.len();
     let total_len = VTABLE_LEN + nlen;
 
-    let mut string: SmallVec<[u8; 32]> = SmallVec::with_capacity(total_len);
+    let mut string: SmallVec<u8, 32> = SmallVec::with_capacity(total_len);
 
     unsafe {
         let dst = string.as_mut_ptr();
@@ -52,7 +52,7 @@ pub fn make_vtable_name(name: StrId, string_pool: Arc<StringPool>) -> StrId {
 }
 
 pub fn get_type(name: StrId, string_pool: Arc<StringPool>) -> StrId {
-    let mut parts: ArrayVec<&str, 2> = arrayvec::ArrayVec::<&str, 2>::new();
+    let mut parts: ArrayVec<&str, 2> = ArrayVec::<&str, 2>::new();
     for part in string_pool.resolve_string(&*name).split('_') {
         if parts.try_push(part).is_err() {
             panic!("Unexpected type name with too many parts: {}", string_pool.resolve_string(&*name));

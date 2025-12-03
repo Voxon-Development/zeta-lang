@@ -17,11 +17,18 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         func: &HirFunc<'a, 'bump>,
         substitutions: &FxHashMap<StrId, HirType<'a, 'bump>>,
     ) -> HirFunc<'a, 'bump> {
-        self.ctx.functions.borrow().get(&self.mono.monomorphize_function(func, substitutions).unwrap()).copied().unwrap()
+        self.ctx
+            .functions
+            .borrow()
+            .get(&self.mono.monomorphize_function(func, substitutions).unwrap())
+            .copied()
+            .unwrap()
     }
 
     /// Instantiate a generic class for concrete args
     pub fn instantiate_class_for_types(&self, base: StrId, concrete_args: &[HirType<'a, '_>]) -> StrId {
-        instantiate_class_for_types(&self.ctx, &self.mono, base, concrete_args, self.ctx.bump.clone()).map(|c| c.name).unwrap()
+        instantiate_class_for_types(&self.ctx, &self.mono, base, concrete_args, self.ctx.bump.clone())
+            .map(|c| c.name)
+            .unwrap()
     }
 }

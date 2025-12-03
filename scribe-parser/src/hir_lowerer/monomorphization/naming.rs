@@ -23,7 +23,7 @@ pub fn suffix_for_subs(
     pieces.sort_by_key(|(k, _)| pool.resolve_string(k).to_string());
 
     // Build buffer
-    let mut buf: SmallVec<[u8; 128]> = SmallVec::new();
+    let mut buf: SmallVec<u8, 128> = SmallVec::new();
 
     for (i, (k, v)) in pieces.iter().enumerate() {
         if i > 0 {
@@ -45,7 +45,7 @@ pub fn instantiate_class_name(
     base: &HirStruct,
     pool: Arc<StringPool>,
 ) -> StrId {
-    let mut buf: SmallVec<[u8; 128]> = SmallVec::new();
+    let mut buf: SmallVec<u8, 128> = SmallVec::new();
     buf.extend_from_slice(pool.resolve_bytes(&*base.name));
     for arg in concrete_args {
         buf.push(b'_');

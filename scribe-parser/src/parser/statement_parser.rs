@@ -35,14 +35,22 @@ where
     }
     
     pub fn parse_stmt(&self, cursor: &mut TokenCursor<'a>) -> Stmt<'a, 'bump> {
-        // Check for type inference: `x := value`
-        if cursor.peek_kind() == Some(TokenKind::Ident) && 
-           cursor.peek_kind_n(1) == Some(TokenKind::ColonAssign) {
-            return self.parse_type_inference(cursor);
+        if let Some(value) = self.check_for_type_inference(cursor) {
+            return value;
         }
         
         match cursor.peek_kind() {
-            Some(TokenKind::Let) | Some(TokenKind::Const) => self.parse_let_or_const(cursor),
+            Some(TokenKind::Let) => self.parse_let_or_const(cursor),
+            Some(TokenKind::Const) => {
+                // Check if this is actually a const statement or something else
+                if cursor.peek_kind_n(1) == Some(TokenKind::Ident) {
+                    self.parse_let_or_const(cursor)
+                } else {
+                    // Not a const statement, skip it
+                    cursor.advance_kind();
+                    self.parse_expr_stmt(cursor)
+                }
+            }
 
             Some(TokenKind::Return) => self.parse_return(cursor),
 
@@ -74,8 +82,29 @@ where
             _ => self.parse_expr_stmt(cursor),
         }
     }
-    
+
+    fn check_for_type_inference(&self, cursor: &mut TokenCursor<'a>) -> Option<Stmt<'a, 'bump>> {
+        // Check for type inference: `x := value`
+        if cursor.peek_kind() == Some(TokenKind::Ident) {
+            let next = cursor.peek_kind_n(1);
+            if next == Some(TokenKind::ColonAssign) {
+                return Some(self.parse_type_inference(cursor));
+            } else if next == Some(TokenKind::Colon) {
+                // Check if it's inside a block like `{ x: 1 }` - if so, parse as expression
+                // This happens when we have something like `Vec3f { x: 1 }` where the inner `x: 1` is being parsed
+                // In this case, just continue to parse as expression statement
+                // Only panic if this is truly a type annotation at statement level
+                // For now, we'll let the expression parser handle it
+            } else if next == Some(TokenKind::LBrace) {
+                // This could be an expression like `Vec3f { ... }` - parse as expression statement
+                // Don't panic here
+            }
+        }
+        None
+    }
+
     fn parse_type_inference(&self, cursor: &mut TokenCursor<'a>) -> Stmt<'a, 'bump> {
+
         // Type inference: `x := value`
         let ident = cursor.consume_ident()
             .expect("Expected variable name");
@@ -84,9 +113,9 @@ where
         cursor.expect_kind(TokenKind::Semicolon);
         
         let let_stmt = self.bump.alloc_value(LetStmt {
-            mutability: false,
             ident,
-            type_annotation: Type::Infer,
+            mutable: false,
+            type_annotation: Type::infer(),
             value,
         });
         Stmt::Let(let_stmt)
@@ -95,10 +124,15 @@ where
     pub(crate) fn parse_let_or_const(&self, cursor: &mut TokenCursor<'a>) -> Stmt<'a, 'bump> {
         let is_const = cursor.peek_kind() == Some(TokenKind::Const);
         cursor.advance_kind(); // consume 'let' or 'const'
-        
-        let mutability = if cursor.peek_kind() == Some(TokenKind::Mut) {
-            cursor.advance_kind();
-            true
+
+        let mutable = if cursor.peek_kind() == Some(TokenKind::Mut) {
+            if is_const {
+                eprintln!("Warning: Unexpected 'mut' in const declaration");
+                false
+            } else {
+                cursor.advance_kind();
+                true
+            }
         } else {
             false
         };
@@ -106,55 +140,34 @@ where
         let ident = cursor.consume_ident()
             .expect("Expected identifier in let/const statement");
         
-        let type_annotation = if cursor.peek_kind() == Some(TokenKind::Colon) {
-            cursor.advance_kind(); // consume ':'
-            
-            match cursor.peek_kind() {
-                Some(TokenKind::I32) => {
-                    cursor.advance_kind();
-                    Type::I32
-                }
-                Some(TokenKind::I64) => {
-                    cursor.advance_kind();
-                    Type::I64
-                }
-                Some(TokenKind::U32) => {
-                    cursor.advance_kind();
-                    Type::U32
-                }
-                Some(TokenKind::U64) => {
-                    cursor.advance_kind();
-                    Type::U64
-                }
-                Some(TokenKind::Boolean) => {
-                    cursor.advance_kind();
-                    Type::Boolean
-                }
-                Some(TokenKind::Str) => {
-                    cursor.advance_kind();
-                    Type::String
-                }
-                Some(TokenKind::Ident) => {
-                    let type_name = cursor.consume_ident()
-                        .expect("Expected type after colon");
-                    let type_str = self.context.resolve_string(&type_name);
-                    parse_to_type(type_str, cursor.peek_kind().unwrap(), self.context.clone(), self.bump)
-                }
-                _ => {
-                    panic!("Expected type after colon, found: {:?}", cursor.peek_kind());
-                }
+        cursor.expect_kind(TokenKind::Colon);
+        
+        let type_annotation = match cursor.peek_kind() {
+            Some(TokenKind::I8) => { cursor.advance_kind(); Type::i8() }
+            Some(TokenKind::I16) => { cursor.advance_kind(); Type::i16() }
+            Some(TokenKind::I32) => { cursor.advance_kind(); Type::i32() }
+            Some(TokenKind::I64) => { cursor.advance_kind(); Type::i64() }
+            Some(TokenKind::I128) => { cursor.advance_kind(); Type::i128() }
+            Some(TokenKind::U8) => { cursor.advance_kind(); Type::u8() }
+            Some(TokenKind::U16) => { cursor.advance_kind(); Type::u16() }
+            Some(TokenKind::U32) => { cursor.advance_kind(); Type::u32() }
+            Some(TokenKind::U64) => { cursor.advance_kind(); Type::u64() }
+            Some(TokenKind::U128) => { cursor.advance_kind(); Type::u128() }
+            Some(TokenKind::F32) => { cursor.advance_kind(); Type::f32() }
+            Some(TokenKind::F64) => { cursor.advance_kind(); Type::f64() }
+            Some(TokenKind::Boolean) => { cursor.advance_kind(); Type::boolean() }
+            Some(TokenKind::String) => { cursor.advance_kind(); Type::string() }
+            Some(TokenKind::Void) => { cursor.advance_kind(); Type::void() }
+            Some(TokenKind::Ident) => {
+                let type_name = cursor.consume_ident().expect("Expected type after colon");
+                let type_str = self.context.resolve_string(&type_name);
+                parse_to_type(type_str, cursor.peek_kind().unwrap_or(TokenKind::EOF), self.context.clone(), self.bump)
             }
-        } else {
-            Type::Infer // Will be inferred from the value
+            _ => panic!("Expected type after colon, found: {:?}", cursor.peek_kind()),
         };
         
-        // Expect '=' or ':='
-        let has_assignment = cursor.peek_kind() == Some(TokenKind::Assign) 
-            || cursor.peek_kind() == Some(TokenKind::InferAssign);
-        
-        if has_assignment {
-            cursor.advance_kind();
-        }
+        // Require '=' for let/const (no ':=' allowed here)
+        cursor.expect_kind(TokenKind::Assign);
         
         // Parse value expression (placeholder for now)
         let value = self.parse_expr_placeholder(cursor);
@@ -170,10 +183,10 @@ where
             Stmt::Const(const_stmt)
         } else {
             let let_stmt = self.bump.alloc_value(LetStmt {
-                mutability,
                 ident,
                 type_annotation,
                 value,
+                mutable,
             });
             Stmt::Let(let_stmt)
         }
@@ -306,6 +319,21 @@ where
     
     fn parse_for(&self, cursor: &mut TokenCursor<'a>) -> Stmt<'a, 'bump> {
         cursor.expect_kind(TokenKind::For);
+        
+        // Check if it's range-based (for i in ...) or C-style (for (...))
+        if cursor.peek_kind() == Some(TokenKind::Ident) {
+            // Look ahead to check for 'in' keyword
+            let checkpoint = cursor.checkpoint();
+            let var_name = cursor.consume_ident();
+            let is_range_based = cursor.peek_kind() == Some(TokenKind::In);
+            cursor.restore(checkpoint);
+            
+            if is_range_based {
+                return self.parse_range_based_for(cursor);
+            }
+        }
+        
+        // C-style for loop
         cursor.expect_kind(TokenKind::LParen);
         
         let let_stmt: Option<&LetStmt> = if cursor.peek_kind() == Some(TokenKind::Let) {
@@ -344,9 +372,39 @@ where
         };
         
         let for_stmt = self.bump.alloc_value(ForStmt {
-            let_stmt,
-            condition,
-            increment,
+            kind: ForKind::CStyle {
+                let_stmt,
+                condition,
+                increment,
+            },
+            block,
+        });
+        
+        Stmt::For(for_stmt)
+    }
+    
+    fn parse_range_based_for(&self, cursor: &mut TokenCursor<'a>) -> Stmt<'a, 'bump> {
+        cursor.expect_kind(TokenKind::For);
+        
+        let variable = cursor.consume_ident().expect("Expected variable name in for loop");
+        cursor.expect_kind(TokenKind::In);
+        
+        let iterable = self.parse_expr_placeholder(cursor);
+        
+        let block = match self.parse_block(cursor) {
+            Some(block) => block,
+            None => {
+                eprintln!("Error: Expected block after for...in header");
+                let empty_stmts = self.bump.alloc_slice(&[]);
+                self.bump.alloc_value(Block { block: empty_stmts })
+            }
+        };
+        
+        let for_stmt = self.bump.alloc_value(ForStmt {
+            kind: ForKind::RangeBased {
+                variable,
+                iterable,
+            },
             block,
         });
         
@@ -451,7 +509,7 @@ where
     }
     
     /// Parse expression using the expression parser
-    fn parse_expr_placeholder(&self, cursor: &mut TokenCursor<'a>) -> &'bump Expr<'a, 'bump> {
+    pub fn parse_expr_placeholder(&self, cursor: &mut TokenCursor<'a>) -> &'bump Expr<'a, 'bump> {
         self.expr_parser.parse(cursor)
     }
     

@@ -68,7 +68,7 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
 
         // Generate new monomorphized function name
         const UNDERSCORE_LEN: usize = 1;
-        let mut small_vec: SmallVec<[u8; 32]> =
+        let mut small_vec: SmallVec<u8, 32> =
             SmallVec::with_capacity(orig_name.len() + UNDERSCORE_LEN + suffix.len());
         small_vec.extend_from_slice(self.context.resolve_bytes(&*orig_name));
         small_vec.push(b'_');
@@ -173,14 +173,13 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
                     body: self.bump.alloc_value_immutable(new_body),
                 }
             }
-            HirStmt::Let { name, ty, value, mutable } => {
+            HirStmt::Let { name, ty, value } => {
                 let new_ty = substitute_type(ty, substitutions, self.bump.clone());
                 let new_value = self.monomorphize_expr(value, substitutions);
                 HirStmt::Let {
                     name: *name,
                     ty: new_ty,
                     value: *self.bump.alloc_value_immutable(new_value),
-                    mutable: *mutable,
                 }
             }
             HirStmt::Return(opt) => {
@@ -234,13 +233,13 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
                     args: args_slice,
                 }
             }
-            HirExpr::ClassInit { name, args, span } => {
+            HirExpr::StructInit { name, args, span } => {
                 let new_name = self.monomorphize_expr(name, subs);
                 let new_args: Vec<HirExpr> = args.iter()
                     .map(|a| self.monomorphize_expr(a, subs))
                     .collect();
                 let args_slice = self.bump.alloc_slice(&new_args);
-                HirExpr::ClassInit {
+                HirExpr::StructInit {
                     name: self.bump.alloc_value_immutable(new_name),
                     args: args_slice,
                     span: *span,

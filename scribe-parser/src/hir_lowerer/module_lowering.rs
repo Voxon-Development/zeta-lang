@@ -9,29 +9,50 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     // ===============================
     pub fn lower_module(&mut self, stmts: Vec<Stmt<'a, '_>, &'_ GrowableBump>) -> HirModule<'a, 'bump> {
         let mut items: Vec<Hir<'a, 'bump>> = Vec::new();
+        let mut imports: Vec<StrId> = Vec::new();
+        
         for stmt in stmts {
-            let item = self.lower_toplevel(stmt);
-            // If we lowered a function/class/interface, register it for later resolution
-            match &item {
-                Hir::Func(f) => {
-                    self.ctx.functions.borrow_mut().insert(f.name, **f);
+            match stmt {
+                // Handle Import statements - add to imports list for dependency tracking
+                Stmt::Import(import_stmt) => {
+                    imports.push(import_stmt.path);
+                    // Import statements are tracked but don't generate HIR items
+                    // They will be used by the dependency graph for module resolution
                 }
-                Hir::Struct(c) => {
-                    self.ctx.classes.borrow_mut().insert(c.name, **c);
+                // Handle Package statements - similar to imports but for package declarations
+                Stmt::Package(package_stmt) => {
+                    // Package statements define the current module's package
+                    // Store as module metadata (could be used for namespace resolution)
+                    let _ = package_stmt.path;
+                    // Package statements are metadata, not HIR items
                 }
-                Hir::Interface(i) => {
-                    self.ctx.interfaces.borrow_mut().insert(i.name, **i);
+                // All other statements are lowered normally
+                other => {
+                    let item = self.lower_toplevel(other);
+                    // If we lowered a function/class/interface, register it for later resolution
+                    match &item {
+                        Hir::Func(f) => {
+                            self.ctx.functions.borrow_mut().insert(f.name, **f);
+                        }
+                        Hir::Struct(c) => {
+                            self.ctx.classes.borrow_mut().insert(c.name, **c);
+                        }
+                        Hir::Interface(i) => {
+                            self.ctx.interfaces.borrow_mut().insert(i.name, **i);
+                        }
+                        _ => {}
+                    }
+                    items.push(item);
                 }
-                _ => {}
             }
-            items.push(item);
         }
         
         let items_slice = self.ctx.bump.alloc_slice(&items);
+        let imports_slice = self.ctx.bump.alloc_slice(&imports);
         
         HirModule {
             name: StrId(self.ctx.context.intern("root")),
-            imports: &[],
+            imports: imports_slice,
             items: items_slice,
         }
     }
@@ -42,7 +63,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 let func = self.lower_func_decl(*f);
                 Hir::Func(self.ctx.bump.alloc_value(func))
             }
-            Stmt::ClassDecl(c) => {
+            Stmt::StructDecl(c) => {
                 let class = self.lower_struct_decl(*c);
                 Hir::Struct(self.ctx.bump.alloc_value(class))
             }
@@ -64,6 +85,9 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 let inner_block = self.ctx.bump.alloc_value_immutable(HirStmt::Block { body: body_slice });
                 let stmt = HirStmt::UnsafeBlock { body: inner_block };
                 Hir::Stmt(self.ctx.bump.alloc_value_immutable(stmt))
+            }
+            Stmt::Const(c) => {
+                Hir::Const(self.ctx.bump.alloc_value_immutable(self.lower_const_stmt(*c)))
             }
             other => {
                 let stmt = self.lower_stmt(other);
