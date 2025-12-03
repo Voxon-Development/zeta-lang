@@ -26,20 +26,30 @@ mod integration_tests {
 
     #[test]
     fn test_simple_tokenization() {
+        use crate::tokenizer::tokens::TokenKind;
+        
         let context = Arc::new(StringPool::new().expect("Failed to create string pool"));
         let source = "void main() { return; }";
         let tokens = tokenize_source(source, context);
         
         // Basic tokenization test
-        assert!(!tokens.kinds.is_empty());
+        assert!(!tokens.kinds.is_empty(), "Expected tokens to be generated");
         println!("Tokenized {} tokens", tokens.kinds.len());
+        
+        // Verify expected token sequence
+        assert_eq!(tokens.kinds[0], TokenKind::Void, "Expected first token to be 'void'");
+        assert_eq!(tokens.kinds[1], TokenKind::Ident, "Expected second token to be identifier 'main'");
+        assert_eq!(tokens.kinds[2], TokenKind::LParen, "Expected third token to be '('");
+        assert_eq!(tokens.kinds[3], TokenKind::RParen, "Expected fourth token to be ')'");
     }
 
     #[test]
     fn test_function_parsing_basic() {
+        use ir::ast::Stmt;
+        
         let (context, parser) = create_test_parser();
         let source = "void main() { return; }";
-        let tokens = Box::leak(Box::new(tokenize_source(source, context)));
+        let tokens = Box::leak(Box::new(tokenize_source(source, context.clone())));
         let mut cursor = TokenCursor::from_tokens(tokens);
         
         // Try to parse a function
@@ -48,8 +58,15 @@ mod integration_tests {
         }));
 
         match result {
-            Ok(_stmt) => {
+            Ok(stmt) => {
                 println!("Successfully parsed function statement");
+                
+                // Verify the parsed statement is a function declaration
+                if let Stmt::FuncDecl(func_decl) = stmt {
+                    assert_eq!(context.resolve_string(&func_decl.name), "main", "Expected function named 'main'");
+                } else {
+                    panic!("Expected function declaration, got {:?}", stmt);
+                }
             }
             Err(_) => {
                 panic!("Function parsing panicked - this indicates a parser bug");
@@ -85,12 +102,14 @@ mod integration_tests {
 
     #[test]
     fn test_struct_parsing_basic() {
+        use ir::ast::Stmt;
+        
         let (context, parser) = create_test_parser();
         let source = r#"
             struct Point { i32 x, i32 y } {
             }
         "#;
-        let tokens = Box::leak(Box::new(tokenize_source(source, context)));
+        let tokens = Box::leak(Box::new(tokenize_source(source, context.clone())));
         let mut cursor = TokenCursor::from_tokens(tokens);
         
         // Try to parse a struct
@@ -99,17 +118,27 @@ mod integration_tests {
         }));
         
         match result {
-            Ok(_stmt) => {
+            Ok(stmt) => {
                 println!("Successfully parsed struct statement");
+                
+                // Verify the parsed statement is a struct declaration
+                if let Stmt::StructDecl(struct_decl) = stmt {
+                    assert_eq!(context.resolve_string(&struct_decl.name), "Point", "Expected struct named 'Point'");
+                    assert_eq!(struct_decl.params.unwrap().len(), 2, "Expected Point to have 2 fields");
+                } else {
+                    panic!("Expected struct declaration, got {:?}", stmt);
+                }
             }
             Err(_) => {
-                println!("Struct parsing panicked - this indicates a parser bug");
+                panic!("Struct parsing panicked - this indicates a parser bug");
             }
         }
     }
 
     #[test]
     fn test_enum_parsing_basic() {
+        use ir::ast::Stmt;
+        
         let (context, parser) = create_test_parser();
         let source = r#"
             enum Color {
@@ -118,7 +147,7 @@ mod integration_tests {
                 Blue
             }
         "#;
-        let tokens = Box::leak(Box::new(tokenize_source(source, context)));
+        let tokens = Box::leak(Box::new(tokenize_source(source, context.clone())));
         let mut cursor = TokenCursor::from_tokens(tokens);
         
         // Try to parse an enum
@@ -127,11 +156,19 @@ mod integration_tests {
         }));
         
         match result {
-            Ok(_stmt) => {
+            Ok(stmt) => {
                 println!("Successfully parsed enum statement");
+                
+                // Verify the parsed statement is an enum declaration
+                if let Stmt::EnumDecl(enum_decl) = stmt {
+                    assert_eq!(context.resolve_string(&enum_decl.name), "Color", "Expected enum named 'Color'");
+                    assert_eq!(enum_decl.variants.len(), 3, "Expected Color to have 3 variants");
+                } else {
+                    panic!("Expected enum declaration, got {:?}", stmt);
+                }
             }
             Err(_) => {
-                println!("Enum parsing panicked - this indicates a parser bug");
+                panic!("Enum parsing panicked - this indicates a parser bug");
             }
         }
     }

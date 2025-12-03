@@ -12,14 +12,13 @@ mod tests {
     fn create_test_string(s: &str) -> StrId {
         // This is a simplified version for testing
         // In real implementation, this would use the string pool
-        use std::num::NonZeroU64;
         StrId::new(VmString {
             offset: s.as_ptr(),
             length: s.len(),
         })
     }
 
-    fn create_simple_hir_module<'bump>(bump: &'bump GrowableBump<'bump>) -> HirModule<'_, 'bump> {
+    fn create_simple_hir_module<'a, 'bump>(bump: &GrowableBump<'bump>) -> HirModule<'a, 'bump> {
         let main_func_name = create_test_string("main");
         let person_class_name = create_test_string("Person");
         let x_var_name = create_test_string("x");
@@ -27,13 +26,12 @@ mod tests {
         let class_init_name = bump.alloc_value(HirExpr::Ident(person_class_name));
         let let_stmt = HirStmt::Let {
             name: x_var_name,
-            ty: HirType::Class(person_class_name, &[]),
-            value: HirExpr::ClassInit {
+            ty: HirType::Struct(person_class_name, &[]),
+            value: HirExpr::StructInit {
                 name: class_init_name,
                 args: &[],
                 span: ir::span::SourceSpan::new("test", 0, 0),
             },
-            mutable: false,
         };
 
         let block_body = bump.alloc_slice(&[let_stmt]);
@@ -95,7 +93,7 @@ mod tests {
 
         // Test complex types (should be droppable)
         assert!(graph.is_droppable_type(&HirType::String));
-        assert!(graph.is_droppable_type(&HirType::Class(create_test_string("MyClass"), &[])));
+        assert!(graph.is_droppable_type(&HirType::Struct(create_test_string("MyClass"), &[])));
         assert!(graph.is_droppable_type(&HirType::Generic(create_test_string("T"))));
     }
 
@@ -168,14 +166,14 @@ mod tests {
         assert!(drop_points.is_empty());
     }
 
-    fn create_cyclic_hir_module<'bump>(bump: &'bump GrowableBump<'bump>) -> HirModule<'_, 'bump> {
+    fn create_cyclic_hir_module<'a, 'bump>(bump: &GrowableBump<'bump>) -> HirModule<'a, 'bump> {
         let node_class_name = create_test_string("Node");
         let next_field_name = create_test_string("next");
         let data_field_name = create_test_string("data");
 
         let next_field = HirField {
             name: next_field_name,
-            field_type: HirType::Class(node_class_name, &[]),
+            field_type: HirType::Struct(node_class_name, &[]),
             visibility: Visibility::Public,
             generics: None
         };
@@ -211,30 +209,28 @@ mod tests {
 
         // node1 = Node { next: null, data: 1 }
         let class_init_name1 = bump.alloc_value(HirExpr::Ident(node_class_name));
-        let node1_init = HirExpr::ClassInit {
+        let node1_init = HirExpr::StructInit {
             name: class_init_name1,
             args: &[],
             span: ir::span::SourceSpan::new("test", 0, 0),
         };
         let let_stmt1 = HirStmt::Let {
             name: node1_name,
-            ty: HirType::Class(node_class_name, &[]),
+            ty: HirType::Struct(node_class_name, &[]),
             value: node1_init,
-            mutable: true,
         };
 
         // node2 = Node { next: node1, data: 2 }
         let class_init_name2 = bump.alloc_value(HirExpr::Ident(node_class_name));
-        let node2_init = HirExpr::ClassInit {
+        let node2_init = HirExpr::StructInit {
             name: class_init_name2,
             args: &[],
             span: ir::span::SourceSpan::new("test", 0, 0),
         };
         let let_stmt2 = HirStmt::Let {
             name: node2_name,
-            ty: HirType::Class(node_class_name, &[]),
+            ty: HirType::Struct(node_class_name, &[]),
             value: node2_init,
-            mutable: true,
         };
 
         // node1.next = node2 (creates cycle: node1 -> node2 -> node1)
@@ -308,7 +304,7 @@ mod tests {
         // Create self-referential struct
         let field = HirField {
             name: self_field,
-            field_type: HirType::Class(self_ref_class, &[]),
+            field_type: HirType::Struct(self_ref_class, &[]),
             visibility: Visibility::Public,
             generics: None
         };
@@ -336,7 +332,7 @@ mod tests {
         let obj_name = create_test_string("obj");
 
         let class_init_name = bump.alloc_value(HirExpr::Ident(self_ref_class));
-        let obj_init = HirExpr::ClassInit {
+        let obj_init = HirExpr::StructInit {
             name: class_init_name,
             args: &[],
             span: ir::span::SourceSpan::new("test", 0, 0),
@@ -344,9 +340,8 @@ mod tests {
 
         let let_stmt = HirStmt::Let {
             name: obj_name,
-            ty: HirType::Class(self_ref_class, &[]),
+            ty: HirType::Struct(self_ref_class, &[]),
             value: obj_init,
-            mutable: true,
         };
 
         // obj.self_ptr = obj (creates self-cycle)
@@ -412,7 +407,7 @@ mod tests {
         // Create Node struct
         let field = HirField {
             name: next_field,
-            field_type: HirType::Class(node_class, &[]),
+            field_type: HirType::Struct(node_class, &[]),
             visibility: Visibility::Public,
             generics: None
         };
@@ -442,34 +437,32 @@ mod tests {
 
         // Create nodes and cycle
         let class_init1 = bump.alloc_value(HirExpr::Ident(node_class));
-        let node1_init = HirExpr::ClassInit {
+        let node1_init = HirExpr::StructInit {
             name: class_init1,
             args: &[],
             span: ir::span::SourceSpan::new("test", 0, 0),
         };
         let let_stmt1 = HirStmt::Let {
             name: node1_name,
-            ty: HirType::Class(node_class, &[]),
+            ty: HirType::Struct(node_class, &[]),
             value: node1_init,
-            mutable: true,
         };
 
         let class_init2 = bump.alloc_value(HirExpr::Ident(node_class));
-        let node2_init = HirExpr::ClassInit {
+        let node2_init = HirExpr::StructInit {
             name: class_init2,
             args: &[],
             span: ir::span::SourceSpan::new("test", 0, 0),
         };
         let let_stmt2 = HirStmt::Let {
             name: node2_name,
-            ty: HirType::Class(node_class, &[]),
+            ty: HirType::Struct(node_class, &[]),
             value: node2_init,
-            mutable: true,
         };
 
         // Break cycle by setting one reference to null (simulated as assignment to new object)
         let null_init = bump.alloc_value(HirExpr::Ident(node_class));
-        let null_obj = HirExpr::ClassInit {
+        let null_obj = HirExpr::StructInit {
             name: null_init,
             args: &[],
             span: ir::span::SourceSpan::new("test", 0, 0),
