@@ -91,7 +91,7 @@ impl PassManager {
 fn const_folding(module: &mut Module) -> bool {
     let mut changed = false;
 
-    for func in module.funcs.values_mut() {
+    for func in module.functions.values_mut() {
         for block in func.blocks.iter_mut() {
             for inst in block.instructions.iter_mut() {
                 match inst {
@@ -155,7 +155,7 @@ fn fold_binop(op: BinOp, left: Operand, right: Operand) -> Option<Operand> {
 fn dead_code_elimination(module: &mut Module) -> bool {
     let mut changed = false;
 
-    for func in module.funcs.values_mut() {
+    for func in module.functions.values_mut() {
         // Compute use-set of SSA values across all instructions
         let used = compute_used_values(func);
 
@@ -216,7 +216,7 @@ fn compute_used_value(mut used: &mut HashSet<Value>, inst: &Instruction) {
         Instruction::Unary { operand, .. } => {
             collect_val(operand, &mut used);
         }
-        Instruction::Phi { incomings, .. } => {
+        Instruction::Phi { incoming: incomings, .. } => {
             for (_, v) in incomings {
                 used.insert(*v);
             }
@@ -273,7 +273,7 @@ fn collect_val(op: &Operand, used: &mut HashSet<Value>) {
 fn copy_propagation(module: &mut Module) -> bool {
     let mut changed = false;
 
-    for func in module.funcs.values_mut() {
+    for func in module.functions.values_mut() {
         // Map SSA value -> constant operand (if known)
         let const_map = build_const_map(func);
 

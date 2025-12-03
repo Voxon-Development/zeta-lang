@@ -435,9 +435,8 @@ impl IrPrettyPrinter {
 
     fn format_hir_statement(&mut self, output: &mut String, stmt: &HirStmt<'_, '_>) -> Result<(), fmt::Error> {
         match stmt {
-            HirStmt::Let { name, ty, value, mutable } => {
-                let mut_kw = if *mutable { "mut " } else { "" };
-                write!(output, "{}let {}{}: ", self.indent(), mut_kw, self.resolve_str(*name))?;
+            HirStmt::Let { name, ty, value } => {
+                write!(output, "{}let {}: ", self.indent(), self.resolve_str(*name))?;
                 self.format_hir_type(output, ty)?;
                 write!(output, " = ")?;
                 self.format_hir_expression(output, value)?;
@@ -516,7 +515,7 @@ impl IrPrettyPrinter {
             HirExpr::Boolean(b) => {
                 write!(output, "{}", b)?;
             }
-            HirExpr::ClassInit { name, args, .. } => {
+            HirExpr::StructInit { name, args, .. } => {
                 self.format_hir_expression(output, name)?;
                 write!(output, " {{")?;
                 for (i, arg) in args.iter().enumerate() {
@@ -575,7 +574,7 @@ impl IrPrettyPrinter {
             HirType::Boolean => write!(output, "bool"),
             HirType::String => write!(output, "String"),
             HirType::Void => write!(output, "void"),
-            HirType::Class(name, generics) => {
+            HirType::Struct(name, generics) => {
                 write!(output, "{}", self.resolve_str(*name))?;
                 if !generics.is_empty() {
                     write!(output, "<")?;
@@ -625,7 +624,7 @@ impl IrPrettyPrinter {
         writeln!(output)?;
 
         // Format functions
-        for (name, function) in &module.funcs {
+        for (name, function) in &module.functions {
             writeln!(output, "// Function: {}", self.resolve_str(*name))?;
             self.format_ssa_function(&mut output, function)?;
             writeln!(output)?;
@@ -687,7 +686,7 @@ impl IrPrettyPrinter {
                     self.format_unop(*op),
                     self.format_operand(operand))?;
             }
-            Instruction::Phi { dest, incomings } => {
+            Instruction::Phi { dest, incoming: incomings } => {
                 write!(output, "{}{} = phi [", self.indent(), dest.0)?;
                 for (i, (block_id, value)) in incomings.iter().enumerate() {
                     if i > 0 { write!(output, ", ")?; }
@@ -816,6 +815,7 @@ impl IrPrettyPrinter {
             Operand::ConstString(s) => format!("\"{}\"", self.resolve_str(*s)),
             Operand::FunctionRef(name) => format!("@{}", self.resolve_str(*name)),
             Operand::GlobalRef(name) => format!("${}", self.resolve_str(*name)),
+            Operand::ConstFloat(n) => n.to_string(),
         }
     }
 
@@ -930,6 +930,7 @@ impl IrPrettyPrinter {
             }
             SsaType::Dyn => "dyn".to_string(),
             SsaType::Slice => "slice".to_string(),
+            &SsaType::U128 | &SsaType::Pointer(_) => todo!(),
         }
     }
 
@@ -981,6 +982,7 @@ impl IrPrettyPrinter {
             }
             SsaType::Dyn => write!(output, "dyn"),
             SsaType::Slice => write!(output, "slice"),
+            &SsaType::U128 | &SsaType::Pointer(_) => todo!(),
         }
     }
 
@@ -1001,8 +1003,7 @@ impl IrPrettyPrinter {
     fn format_ast_statement(&mut self, output: &mut String, stmt: &Stmt<'_, '_>) -> Result<(), fmt::Error> {
         match stmt {
             Stmt::Let(let_stmt) => {
-                let mut_kw = if let_stmt.mutability { "mut " } else { "" };
-                write!(output, "{}let {}{}: ", self.indent(), mut_kw, self.resolve_str(let_stmt.ident))?;
+                write!(output, "{}let {}: ", self.indent(), self.resolve_str(let_stmt.ident))?;
                 self.format_ast_type(output, &let_stmt.type_annotation)?;
                 write!(output, " = ")?;
                 self.format_ast_expression(output, let_stmt.value)?;
@@ -1021,7 +1022,7 @@ impl IrPrettyPrinter {
                 // Add parameters, return type, and body formatting here
                 writeln!(output, " {{ /* function body */ }}")?;
             }
-            Stmt::ClassDecl(class_decl) => {
+            Stmt::StructDecl(class_decl) => {
                 write!(output, "{}class {}", self.indent(), self.resolve_str(class_decl.name))?;
                 writeln!(output, " {{ /* class body */ }}")?;
             }

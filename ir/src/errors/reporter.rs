@@ -66,7 +66,7 @@ where 'bump: 'a {
 impl<'a, 'bump> ErrorReporter<'a, 'bump> {
     pub fn new() -> ErrorReporter<'a, 'bump> {
         ErrorReporter {
-            errors: Vec::new_in(GrowableBump::new(size_of::<CompilerError>() * 512, align_of::<CompilerError>())),
+            errors: Vec::new_in(GrowableBump::new(size_of::<CompilerError>() * 16, align_of::<CompilerError>())),
             source_files: HashMap::new(),
             use_colors: atty::is(atty::Stream::Stderr), // Auto-detect if terminal supports colors
         }
@@ -352,21 +352,30 @@ impl<'a, 'bump> ErrorReporter<'a, 'bump> {
     
     fn type_to_string(&self, ty: &crate::ast::Type) -> String {
         // Simplified type to string conversion
-        match ty {
-            crate::ast::Type::I32 => "i32".to_string(),
-            crate::ast::Type::F32 => "f32".to_string(),
-            crate::ast::Type::F64 => "f64".to_string(),
-            crate::ast::Type::I64 => "i64".to_string(),
-            crate::ast::Type::String => "String".to_string(),
-            crate::ast::Type::Boolean => "bool".to_string(),
-            crate::ast::Type::U32 => "u32".to_string(),
-            crate::ast::Type::U64 => "u64".to_string(),
-            crate::ast::Type::Void => "void".to_string(),
-            crate::ast::Type::Infer => "<inferred>".to_string(),
-            crate::ast::Type::Class { name, .. } => format!("class {}", name),
-            crate::ast::Type::Lambda { .. } => "<lambda>".to_string(),
+        let base = match &ty.kind {
+            crate::ast::TypeKind::I32 => "i32".to_string(),
+            crate::ast::TypeKind::F32 => "f32".to_string(),
+            crate::ast::TypeKind::F64 => "f64".to_string(),
+            crate::ast::TypeKind::I64 => "i64".to_string(),
+            crate::ast::TypeKind::String => "String".to_string(),
+            crate::ast::TypeKind::Boolean => "bool".to_string(),
+            crate::ast::TypeKind::U32 => "u32".to_string(),
+            crate::ast::TypeKind::U64 => "u64".to_string(),
+            crate::ast::TypeKind::Void => "void".to_string(),
+            crate::ast::TypeKind::Infer => "<inferred>".to_string(),
+            crate::ast::TypeKind::Struct { name, .. } => format!("class {}", name),
+            crate::ast::TypeKind::Lambda { .. } => "<lambda>".to_string(),
             _ => "<unknown>".to_string(),
+        };
+        
+        let mut result = base;
+        if ty.error {
+            result = format!("!{}", result);
         }
+        if ty.nullable {
+            result = format!("{}?", result);
+        }
+        result
     }
 
     // Checks if any errors were reported (for early bailout).
