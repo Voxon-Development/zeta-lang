@@ -322,7 +322,7 @@ So when you allocate through `std.pageAllocator`, you’re not passing a runtime
 In other words:
 
 ```
-Ptr<Person, A=std.pageAllocator>
+*std.pageAllocator Person
 ```
 
 is known statically, but at runtime it just knows how to free it.
@@ -355,7 +355,7 @@ return std.pageAllocator.alloc(Person { ... })
 CTRC derives:
 
 ```
-Ptr<Person, A=std.pageAllocator>
+*std.pageAllocator Person
 PVGEdge { src = std.pageAllocator, dst = callerRegion, kind = Borrow|Own }
 ```
 
@@ -382,7 +382,7 @@ You now get:
 ### Example: How it All Fits
 
 ```zeta
-Ptr<Person>? fetchPerson(u32 id) {
+fn fetchPerson(id: u32): *Person? {
     resultSet := ...
     row := resultSet.next() ?? return null
 
@@ -398,7 +398,7 @@ Ptr<Person>? fetchPerson(u32 id) {
 At compile-time, the function’s type is inferred as:
 
 ```
-Ptr<Person, A=std.pageAllocator>? fetchPerson(id: u32)
+fn fetchPerson(id: u32): *std.pageAllocator Person?
 ```
 
 When returning it, CTRC verifies that:
@@ -434,23 +434,23 @@ For a memory model to truly be memory-safe, it has to follow these rules:
 ## How does it work?
 
 To make memory safety simpler from a typical Rust borrow checker:
-- (implicit) move semantics no longer apply, making this code no longer a problem
+- move semantics apply, making this code still a problem
 ```
-mut String x = String::from("five");
-String y = x;
+let mut x: String = String::from("five");
+let y: String = x.clone();
 
 x.append("six");
 
 println(x); // prints fivesix
 println(y); // prints five
 ```
-- Since move semantics is optional and the language copies by default, we removed references, and we replaced them with pointers such as `mut Ptr<MyStruct>` and `Ptr<MyStruct>`
+- Move semantics is requires (As it's safer and more explicit), but borrowing itself does not exist, we use pointers:
 
 ```
-mut u32 x = 5;
+let mut x: u32 = 5;
 
-Ptr<u32> immutablePtr = asPtr(x);
-mut Ptr<u32> mutablePtr = asPtr(x);
+let immutablePtr: *u32 = *mut u32;
+let mut mutablePtr: *mut u32 = *mut x;
 
 x = 6; // Compiles
 
@@ -481,16 +481,14 @@ If we want to make sure use-after-free, dangling pointers or double free is impo
 
 For example, simple RAII:
 ```
-mut x := 5;
+let mut x: u32 = 5;
 
-Ptr<u32> immutablePtr = asPtr(x);
-mut Ptr<u32> mutablePtr = asPtr(x);
+let immutablePtr: *u32 = *x;
+let mut mutablePtr: *mut u32 = *mut x;
 
 x = 6; // Compiles
 
-// Auto deref pointers to values for getting or setting
-mutablePtr = 6; // Compiles
-immutablePtr = 6; // Does not compile
+*mutablePtr = 6; // Compiles
 
 // Everything is freed automatically here
 ```
@@ -505,13 +503,13 @@ Returning data that would otherwise outlive its originating region triggers regi
 struct MySQLPlayerRepository(/* fields */) {
     // Initialization, fields, etc
     
-    foo() {
+    fn foo() {
         person := fetchPerson()
         // Use person.
     }
     
 	// Data? is equivalent to Option<Data> at compile time
-    fetchPerson(u32 id) -> Ptr<Person>? {
+    fn fetchPerson(id: u32) -> *std.pageAllocator Person? {
         preparedStatement := database.prepare("SELECT * FROM person WHERE id = ? LIMIT 1;")
         preparedStatement.setUnsignedInt(1, id)
         
@@ -539,11 +537,9 @@ drop(resultSet);
 personData := resultSet.next() ?? return None; // Returns Option<Data>
 ```
 
-~~So now we need the compiler to track resultSet, if it were to be deleted just like that then it wouldn't compile, this way, you can deallocate and handle even regular deallocations just fine!~~
+The language track move semantics and would shut this down iimmediately.
 
-The language now can track move semantics which greatly simplify the compiler work, though it is not enforced, `drop` and deallocation moves the data.
-
-Though by default, pointers will be auto dropped (auto free but it doesn't just free, but it calls Drop.drop to release resources too!) at the end of scopes by default.
+Though by default, pointers will be auto dropped (auto free but it doesn't just free, but it calls the object's existing destructor to release resources too!) at the end of scopes (if ref count hits 0) by default.
 
 ## What about long-lived lifetimes?
 You may ask aswell, What about lifetimes of pointers?
