@@ -5,6 +5,7 @@ A language made to **touch the realms of cutting-edge possibility** in safety, c
 
 Example:
 
+```rs
 enum GameError {
     IO(IOError),
     Game(String)
@@ -60,7 +61,7 @@ fn main(): IOError!void {
 
     // auto drop game
 }
-
+```
 
 A memory-safe, systems programming languages, to be made in a new generation of languages like you've never seen.
 
