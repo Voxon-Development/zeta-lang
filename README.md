@@ -37,7 +37,7 @@ fn play_game(game: &mut GuessGame): GameError!void {
     for _ in 0..5 {    
         try std.out.print("Enter your guess: ") as { e -> GameError.IO { e } }  
         input := try std.io.read() as { e -> GameError.IO { e } }
-guess := try input.parse<i32>() as { e -> GameError.ParseFailed { e } }   
+        guess := try input.parse<i32>() as { e -> GameError.ParseFailed { e } }   
         match guess {    
             g if g == game.target => {    
                 try std.out.println("Correct! You win!") as { e -> GameError.IO { e } }  
