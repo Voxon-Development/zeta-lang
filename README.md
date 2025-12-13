@@ -6,60 +6,60 @@ A language made to **touch the realms of cutting-edge possibility** in safety, c
 Example:
 
 ```rs
-enum GameError {
-    IO(IOError),
-    Game(String)
+enum GameError {    
+    IO { e: IOError },   
+    Alloc { e: AllocError },  
+    RandomFailed { e: RandomNumberError },  
+    ParseFailed { e: ParsingFailedError },  
+    Game { msg: String }  
+}    
+    
+interface Printable {    
+    fn print(): IOError!void    
+}    
+    
+struct GuessGame {    
+    target: i32,    
+    attempts: i32,    
+}    
+    
+impl Printable for GuessGame {    
+    fn print(): IOError!void {    
+        try std.out.println("Welcome to Guess the Number!")    
+    }    
+}    
+    
+fn random_number(min: i32, max: i32): RandomNumberError!i32 {    
+    return try min + (std.random.int() % (max - min + 1))    
+}    
+    
+fn play_game(game: &mut GuessGame): GameError!void {    
+    for _ in 0..5 {    
+        try std.out.print("Enter your guess: ") as { e -> GameError.IO { e } }  
+        input := try std.io.read() as { e -> GameError.IO { e } }
+guess := try input.parse<i32>() as { e -> GameError.ParseFailed { e } }   
+        match guess {    
+            g if g == game.target => {    
+                try std.out.println("Correct! You win!") as { e -> GameError.IO { e } }  
+                return    
+            }    
+            g if g < game.target => try std.out.println("Too low!") as { e -> GameError.IO { e } },  
+            g if g > game.target => try std.out.println("Too high!") as { e -> GameError.IO { e } },    
+        }    
+        game.attempts += 1    
+    }    
+    try std.out.println("Out of attempts! Game over.") as { e -> GameError.IO { e } }  
+    return GameError.Game("Out of attempts!");    
 }
-
-interface Printable {
-    fn print(): !void
-}
-
-struct GuessGame {
-    target: i32,
-    attempts: i32,
-}
-
-impl Printable for GuessGame {
-    fn print(): !void {
-        try std.out.println("Welcome to Guess the Number!")
-    }
-}
-
-fn random_number(min: i32, max: i32): i32 {
-    return min + (std.random.int() % (max - min + 1))
-}
-
-fn play_game(game: *mut GuessGame): GameError!void {
-    for _ in 0..5 {
-        try std.out.print("Enter your guess: ")
-        guess := try std.io.read().parse<i32>();
-        
-        match guess {
-            g if g == game.target => {
-                try std.out.println("Correct! You win!")
-                return
-            }
-            g if g < game.target => try std.out.println("Too low!"),
-            g if g > game.target => try std.out.println("Too high!"),
-        }
-        game.attempts += 1
-    }
-    try std.out.println("Out of attempts! Game over.")
-    return GameError.Game("Out of attempts!");
-}
-
-fn main(): GameError!void {
-    // Allocate the game on the heap
-    let mut game: *mut GuessGame = try std.mem.malloc(size_of<GuessGame>())
-    game = GuessGame { target: random_number(1, 10), attempts: 0 }
-
-    game.print()
-    try play_game(game)
-
-    try std.out.println("Thanks for playing!")
-
-    // auto drop game
+fn main(): GameError!void {    
+    let mut game: Box<GuessGame> = try Box.new(GuessGame { target: try random_number(1, 10) as { e -> GameError.RandomFailed { e } }, attempts: 0 }) as { e -> GameError.Alloc { e } }  
+    
+    try game.print() as { e -> GameError.IO { e } }  
+    try play_game(&mut game)    
+    
+    try std.out.println("Thanks for playing!") as { e -> GameError.IO { e } }  
+    
+    // auto drop game, no borrow checking, its CTRC for the main logic and separation logic theory    
 }
 ```
 
