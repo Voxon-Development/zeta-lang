@@ -83,7 +83,7 @@ Zeta-Lang is licensed under the **GNU General Public License v3.0 (GPL-3.0)**.
 GNU GENERAL PUBLIC LICENSE
 Version 3, 29 June 2007
 
-Copyright (C) 2025 [Your Name or Organization]
+Copyright (C) 2025 Eyad Amr
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
