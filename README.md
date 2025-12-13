@@ -30,7 +30,7 @@ fn random_number(min: i32, max: i32): i32 {
     return min + (std.random.int() % (max - min + 1))
 }
 
-fn play_game(game: *mut GuessGame): IOError!void {
+fn play_game(game: *mut GuessGame): GameError!void {
     for _ in 0..5 {
         try std.out.print("Enter your guess: ")
         guess := try std.io.read().parse<i32>();
@@ -49,7 +49,7 @@ fn play_game(game: *mut GuessGame): IOError!void {
     return GameError.Game("Out of attempts!");
 }
 
-fn main(): IOError!void {
+fn main(): GameError!void {
     // Allocate the game on the heap
     let mut game: *mut GuessGame = try std.mem.malloc(size_of<GuessGame>())
     game = GuessGame { target: random_number(1, 10), attempts: 0 }
