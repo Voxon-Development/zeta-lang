@@ -1,47 +1,102 @@
-Discord server: https://discord.gg/VXGk2jjuzc
+# Introduction
+High-performance, fearless concurrency, and memory safe systems programming without the pain.
 
-# ALPHA STAGES
-# zeta-lang 
-New generation of JIT like you've never seen, High-performance, fearless concurrency, and memory safe systems programming without the pain.
+A language made to **touch the realms of cutting-edge possibility** in safety, correctness and performance
 
 Example:
 
 ```
-void main() {
-    println("Hello, World!")
-    println(50)
+fn main(): IOError!void {
+    try std.out.println("Hello, World!")
+    try std.out.println(50)
 
-    boolean something = true
-    if (something) {
-        i32 num = 50 + (50 * 50)
-        println(num)
+    let something: boolean = true
+    if something {
+        num := 50 + (50 * 50)
+        try std.out.println(num)
     }
 }
 ```
 
-A memory-safe, low-level, WIT-compiled, to be made in a new generation of languages like you've never seen, with fast compilation.
+A memory-safe, systems programming languages, to be made in a new generation of languages like you've never seen.
 
-# Short recap of WIT compilation
+## Roadmap
 
-WIT (When it's time) compilation is the hybrid process of JIT and AOT.
+- Stdlib
+  - Core collections, I/O, concurrency primitives, time, math
+  - Small, well-documented standard library shipped with the compiler/runtime
+- Bootstrapping
+  - Self-hosting compiler roadmap (write the compiler in zeta)
+  - Clear bootstrapping plan with intermediate toolchains
+- Bootstrapping toolchain & release process
+  - Reproducible builds and toolchain pinning
 
-AOT compiles machine code and optimizes it at compile time
+- Memory safety guarantees
+  - Borrowing/ownership model or equivalent system to avoid use-after-free and data races
+  - Clear semantics and ergonomic patterns
+- Fearless concurrency
+  - Message-passing and/or structured concurrency primitives
+  - Session types (see advanced research features)
+- Type system foundations
+  - Strong static typing, with plans for advanced type theory features
+  - Option for checking effects or resource usage
 
-JIT interprets, profiles hot paths and optimizes hot paths (while cold paths are not as optimized)
+- Separation logic
+  - Research integration options for formal reasoning about mutable state
+- Intuitionistic type theory
+  - Experimental modules or proof-oriented features for theorem-proving use-cases
+- Session types
+  - Optional language-level support for protocol-safe concurrency
+  - Library-first approach, with language-level support evaluated later
 
-Both have their disadvantages and advantages, but what if a language started with machine code, but could profile machine code? That's WIT compilation.
+  Absolutely! Here’s a solid draft for your `# Contributing` and `# License` sections, tailored for your Zeta-Lang project:
 
-WIT compilation is the process of compiling the language to an IR then to machine code, unlike AOT we store the IR at runtime for profiling and optimization, the machine code has profiler calls injected to know what's hot and what's cold
+---
 
-then it goes through tiered JIT, where the final tier will optimize away profiling unless deoptimization occurs.
+### # Contributing
 
-Check out more detail [here](https://github.com/Voxon-Development/zeta-lang/blob/main/theory/WIT.md)
+We’re excited you want to contribute to Zeta-Lang! By joining our community of developers, you’ll help shape a high-performance, memory-safe, and fearless concurrency language.
 
-A language made to **touch the realms of possibility** in JIT, memory management and performance
+**How to Contribute:**
 
-| Category | **Zeta’s Uniqueness** |
-|---------|----------------------|
-| **Concurrency** | Combines simplicity with fine-grained control (fiber-level scheduling, profiling) |
-| **Performance Tuning** | Explicit memory regions, no GC, JIT profile-directed optimizations |
-| **Memory Safety** | Combines region sets with typed pointer rules |
-| **Metaprogramming** | AST-level, powerful compile-time capabilities without runtime overhead |
+1. **Join the Discord**: Start by joining our [Discord server](https://discord.gg/VXGk2jjuzc) to discuss ideas, report issues, and get help.
+2. **Report Bugs**: Open an issue on GitHub if you encounter a bug or unexpected behavior. Include a minimal reproducible example.
+3. **Submit Pull Requests**:
+
+   * Fork the repository and create a feature branch (`git checkout -b feature/YourFeature`).
+   * Write clear, concise, and well-documented code.
+   * Include tests for new features or bug fixes.
+   * Ensure code passes existing tests before submitting.
+4. **Code Style**: Follow consistent formatting and naming conventions. Use `snake_case` for variables, `PascalCase` for types, and proper indentation.
+5. **Documentation**: Update docs when adding features or changing behavior. Clear documentation is crucial for Zeta-Lang’s adoption.
+6. **Community Etiquette**: Be respectful and collaborative. We’re here to build a language together.
+
+We welcome contributions of **all sizes**, from fixing typos to implementing major features. Your help brings Zeta-Lang closer to the cutting edge of research systems programming.
+
+---
+
+### # License
+
+Zeta-Lang is licensed under the **GNU General Public License v3.0 (GPL-3.0)**.
+
+```
+GNU GENERAL PUBLIC LICENSE
+Version 3, 29 June 2007
+
+Copyright (C) 2025 [Your Name or Organization]
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+```
+
+**Summary:** You are free to use, modify, and distribute Zeta-Lang, but any derivative works must also be released under the GPL-3.0 license.
