@@ -4,6 +4,7 @@
 mod link;
 mod main_structs;
 mod file_handling;
+mod compilation_passes;
 
 use engraver_assembly_emit::backend::Backend;
 use engraver_assembly_emit::cranelift::cranelift_backend::CraneliftBackend;
@@ -80,8 +81,8 @@ fn main() -> Result<(), CompilerError> {
     let start = Instant::now();
     let mut matches: ArgMatches = Cli::command().get_matches();
     let cli_result: Result<Cli, Error> = Cli::from_arg_matches_mut(&mut matches)
-        .map_err(|err| {
-            let mut cmd = Cli::command();
+        .map_err(|err: clap::error::Error| {
+            let mut cmd: clap::Command = Cli::command();
             err.format(&mut cmd)
         });
 
@@ -95,9 +96,9 @@ fn main() -> Result<(), CompilerError> {
         }
     };
     
-    let result = match &cli.command {
+    let result: Result<(), CompilerError> = match &cli.command {
         Commands::Build { path, out_dir, optimize, emit_obj } => {
-            let source_path = path.clone().unwrap_or_else(|| PathBuf::from("./src"));
+            let source_path: PathBuf = path.clone().unwrap_or_else(|| PathBuf::from("./src"));
             if cli.verbose {
                 println!("Building from: {}", source_path.display());
                 println!("Output directory: {}", out_dir.display());
@@ -106,7 +107,7 @@ fn main() -> Result<(), CompilerError> {
             run_compiler(path.clone(), &out_dir, *optimize, cli.verbose, *emit_obj, cli.lib)
         }
         Commands::Run { path, args } => {
-            let source_path = path.clone().unwrap_or_else(|| PathBuf::from("./src"));
+            let source_path: PathBuf = path.clone().unwrap_or_else(|| PathBuf::from("./src"));
             if cli.verbose {
                 println!("Running from: {}", source_path.display());
                 if !args.is_empty() {

@@ -51,5 +51,11 @@ pub enum CompilerError {
     FinishError(EmitError),
 
     #[error("Linking failed")]
-    LinkFailed
+    LinkFailed,
+
+    #[error("Type error: {0}")]
+    TypeError(String),
+
+    #[error("Type checking failed")]
+    TypeCheckError,
 }
