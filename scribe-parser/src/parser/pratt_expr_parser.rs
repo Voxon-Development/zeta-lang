@@ -78,11 +78,11 @@ where
     /// Parse expression with given minimum binding power (Pratt parsing)
     fn parse_expr(&self, cursor: &mut TokenCursor<'a>, min_bp: BindingPower) -> &'bump Expr<'a, 'bump> {
         // Parse prefix/primary expression
-        let mut lhs = self.parse_prefix(cursor);
+        let mut lhs: &'bump Expr<'a, 'bump> = self.parse_prefix(cursor);
 
         // Parse infix and postfix operations
         loop {
-            let token = match cursor.peek_kind() {
+            let token: TokenKind = match cursor.peek_kind() {
                 Some(t) => t,
                 None => break,
             };
@@ -103,10 +103,10 @@ where
                 }
 
                 cursor.advance_kind(); // consume operator
-                let rhs = self.parse_expr(cursor, r_bp);
+                let rhs: &'bump Expr<'a, 'bump> = self.parse_expr(cursor, r_bp);
 
                 let op = Self::token_to_op(token).expect("Valid operator");
-                let span = cursor.current_span();
+                let span: SourceSpan<'a> = cursor.current_span();
                 
                 lhs = if Self::is_assignment_op(op) {
                     self.bump.alloc_value(Expr::Assignment {
@@ -211,32 +211,47 @@ where
 
                 // Check for struct initialization: Type { field: value, ... }
                 // Only treat as struct init if we see named fields (ident: pattern)
+                // AND the identifier looks like a type name (typically starts with uppercase)
                 if cursor.peek_kind() == Some(TokenKind::LBrace) {
-                    // Look ahead to check if this is a named field pattern
-                    let checkpoint = cursor.checkpoint();
-                    cursor.advance_kind(); // consume '{'
+                    let name_str = self.context.resolve_string(&name);
+                    // Check if name looks like a type (starts with uppercase letter)
+                    let looks_like_type = name_str.chars().next().map_or(false, |c| c.is_uppercase());
                     
-                    let is_named_fields = if cursor.peek_kind() == Some(TokenKind::RBrace) {
-                        // Empty struct init is valid
-                        true
-                    } else if cursor.peek_kind() == Some(TokenKind::Ident) {
-                        cursor.advance_kind(); // skip ident
-                        cursor.peek_kind() == Some(TokenKind::Colon)
-                    } else {
-                        false
-                    };
-                    cursor.restore(checkpoint);
+                    eprintln!("Debug: parse_prefix - Ident followed by LBrace, name={}, looks_like_type={}", 
+                        name_str, looks_like_type);
                     
-                    if is_named_fields {
+                    if looks_like_type {
+                        // Look ahead to check if this is a named field pattern
+                        let checkpoint = cursor.checkpoint();
                         cursor.advance_kind(); // consume '{'
-                        let args = self.parse_class_init_args(cursor);
-                        self.bump.alloc_value(Expr::StructDecl {
-                            callee: self.bump.alloc_value_immutable(Expr::Ident { name, span }),
-                            arguments: self.bump.alloc_slice_copy(&args),
-                            positional: true,
-                            span,
-                        })
+                        
+                        let is_named_fields = if cursor.peek_kind() == Some(TokenKind::RBrace) {
+                            // Empty struct init is valid
+                            true
+                        } else if cursor.peek_kind() == Some(TokenKind::Ident) {
+                            cursor.advance_kind(); // skip ident
+                            cursor.peek_kind() == Some(TokenKind::Colon)
+                        } else {
+                            false
+                        };
+                        cursor.restore(checkpoint);
+                        
+                        eprintln!("Debug: parse_prefix - is_named_fields={}", is_named_fields);
+                        
+                        if is_named_fields {
+                            cursor.advance_kind(); // consume '{'
+                            let args = self.parse_class_init_args(cursor);
+                            self.bump.alloc_value(Expr::StructDecl {
+                                callee: self.bump.alloc_value_immutable(Expr::Ident { name, span }),
+                                arguments: self.bump.alloc_slice_copy(&args),
+                                positional: true,
+                                span,
+                            })
+                        } else {
+                            self.bump.alloc_value(Expr::Ident { name, span })
+                        }
                     } else {
+                        eprintln!("Debug: parse_prefix - Not a type name, returning ident");
                         self.bump.alloc_value(Expr::Ident { name, span })
                     }
                 } else {
@@ -283,35 +298,50 @@ where
             }
 
             Some(TokenKind::LBrace) => {
-                // Check if this is a struct initialization with named fields
-                let checkpoint = cursor.checkpoint();
-                cursor.advance_kind(); // consume '{'
+                // Only treat as struct initialization if expr is a simple identifier or field access
+                // Don't treat function calls or other complex expressions as struct initializers
+                let is_struct_like = matches!(expr, Expr::Ident { .. } | Expr::Get { .. });
                 
-                let is_named_fields = if cursor.peek_kind() == Some(TokenKind::RBrace) {
-                    // Empty struct init is valid
-                    true
-                } else if cursor.peek_kind() == Some(TokenKind::Ident) {
-                    cursor.advance_kind(); // skip ident
-                    cursor.peek_kind() == Some(TokenKind::Colon)
-                } else {
-                    false
-                };
-                cursor.restore(checkpoint);
+                eprintln!("Debug: parse_postfix - LBrace check, is_struct_like={}", is_struct_like);
                 
-                if is_named_fields {
-                    // Class initialization: MyStruct { field: value, ... }
-                    let span = cursor.current_span();
+                if is_struct_like {
+                    // Check if this is a struct initialization with named fields
+                    let checkpoint = cursor.checkpoint();
                     cursor.advance_kind(); // consume '{'
-                    let args = self.parse_class_init_args(cursor);
-                    let args_slice = self.bump.alloc_slice_copy(&args);
-                    self.bump.alloc_value(Expr::StructDecl {
-                        callee: expr,
-                        arguments: args_slice,
-                        positional: false,
-                        span,
-                    })
+                    
+                    let is_named_fields = if cursor.peek_kind() == Some(TokenKind::RBrace) {
+                        // Empty struct init is valid
+                        true
+                    } else if cursor.peek_kind() == Some(TokenKind::Ident) {
+                        cursor.advance_kind(); // skip ident
+                        cursor.peek_kind() == Some(TokenKind::Colon)
+                    } else {
+                        false
+                    };
+                    cursor.restore(checkpoint);
+                    
+                    eprintln!("Debug: parse_postfix - is_named_fields={}", is_named_fields);
+                    
+                    if is_named_fields {
+                        // Class initialization: MyStruct { field: value, ... }
+                        let span = cursor.current_span();
+                        cursor.advance_kind(); // consume '{'
+                        let args = self.parse_class_init_args(cursor);
+                        let args_slice = self.bump.alloc_slice_copy(&args);
+                        self.bump.alloc_value(Expr::StructDecl {
+                            callee: expr,
+                            arguments: args_slice,
+                            positional: false,
+                            span,
+                        })
+                    } else {
+                        // Not a struct init, just return the expression as-is
+                        eprintln!("Debug: parse_postfix - Not a struct init, returning expr as-is");
+                        expr
+                    }
                 } else {
-                    // Not a struct init, just return the expression as-is
+                    // Not a struct-like expression, don't treat as struct init
+                    eprintln!("Debug: parse_postfix - Not struct-like, returning expr as-is");
                     expr
                 }
             }
@@ -374,11 +404,14 @@ where
             let field_name = match cursor.consume_ident() {
                 Some(name) => name,
                 None => {
+                    eprintln!("Debug: parse_class_init_args - Expected field name, got: {:?}", cursor.peek_kind());
                     eprintln!("Warning: Expected field name in struct initialization");
                     cursor.advance_kind();
                     continue;
                 }
             };
+            eprintln!("Debug: parse_class_init_args - Parsed field name: {:?}, next token: {:?}", 
+                self.context.resolve_string(&field_name), cursor.peek_kind());
             cursor.expect_kind(TokenKind::Colon);
 
             // Parse field value
@@ -406,6 +439,7 @@ where
             // Check for comma or closing brace
             match cursor.peek_kind() {
                 Some(TokenKind::Comma) => {
+                    eprintln!("Debug: parse_class_init_args - Found comma after field");
                     cursor.advance_kind();
                     // Allow trailing comma
                     if cursor.peek_kind() == Some(TokenKind::RBrace) {
@@ -413,11 +447,13 @@ where
                     }
                 }
                 Some(TokenKind::RBrace) => {
+                    eprintln!("Debug: parse_class_init_args - Found closing brace");
                     break;
                 }
                 _ => {
                     // Skip unexpected token and try to recover
                     let token = cursor.peek_kind();
+                    eprintln!("Debug: parse_class_init_args - Unexpected token after field value: {:?}", token);
                     eprintln!("Warning: Expected ',' or '}}' after struct field, but got: {:?}", token);
                     cursor.advance_kind(); // Skip the problematic token
                     // Try to continue parsing

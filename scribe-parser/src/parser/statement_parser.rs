@@ -215,14 +215,21 @@ where
         
         cursor.expect_kind(TokenKind::RParen);
         
-        let then_branch = match self.parse_block(cursor) {
-            Some(block) => block,
-            None => {
-                eprintln!("Error: Expected block after if condition");
-                // Create empty block as fallback
-                let empty_stmts = self.bump.alloc_slice(&[]);
-                self.bump.alloc_value(Block { block: empty_stmts })
+        let then_branch = if cursor.peek_kind() == Some(TokenKind::LBrace) {
+            match self.parse_block(cursor) {
+                Some(block) => block,
+                None => {
+                    // Create empty block as fallback
+                    let empty_stmts = self.bump.alloc_slice(&[]);
+                    self.bump.alloc_value(Block { block: empty_stmts })
+                }
             }
+        } else {
+            // Single expression without braces - wrap in a block
+            let expr = self.parse_expr_placeholder(cursor);
+            let expr_stmt = Stmt::ExprStmt(self.bump.alloc_value(InternalExprStmt { expr }));
+            let stmts_slice = self.bump.alloc_slice_copy(&[expr_stmt]);
+            self.bump.alloc_value(Block { block: stmts_slice })
         };
         
         // Handle else/else-if chains iteratively
@@ -236,7 +243,7 @@ where
                 cursor.expect_kind(TokenKind::LParen);
                 let elif_condition = self.parse_expr_placeholder(cursor);
                 cursor.expect_kind(TokenKind::RParen);
-                let elif_then = self.parse_block(cursor).expect("Expected then branch");
+                let elif_then = self.parse_block_or_expr(cursor);
                 
                 if_chain.push((elif_condition, elif_then));
                 
@@ -248,12 +255,12 @@ where
                         cursor.expect_kind(TokenKind::LParen);
                         let elif_condition = self.parse_expr_placeholder(cursor);
                         cursor.expect_kind(TokenKind::RParen);
-                        let elif_then = self.parse_block(cursor).expect("Expected then branch");
+                        let elif_then = self.parse_block_or_expr(cursor);
                         if_chain.push((elif_condition, elif_then));
                     } else {
-                        let else_block = self.parse_block(cursor);
+                        let else_block = self.parse_block_or_expr(cursor);
                         
-                        let mut current_else: Option<&ElseBranch> = else_block.map(|b| self.bump.alloc_value_immutable(ElseBranch::Else(b)));
+                        let mut current_else: Option<&ElseBranch> = Some(self.bump.alloc_value_immutable(ElseBranch::Else(else_block)));
                         
                         for (elif_condition, elif_then) in if_chain.into_iter().rev() {
                             let elif_stmt = self.bump.alloc_value(IfStmt {
@@ -286,8 +293,8 @@ where
                 
                 current_else
             } else {
-                let else_block = self.parse_block(cursor);
-                else_block.map(|b| self.bump.alloc_value_immutable(ElseBranch::Else(b)))
+                let else_block = self.parse_block_or_expr(cursor);
+                Some(self.bump.alloc_value_immutable(ElseBranch::Else(else_block)))
             }
         } else {
             None
@@ -506,6 +513,24 @@ where
         };
         
         Some(self.bump.alloc_value(Block { block: stmts_slice }))
+    }
+    
+    /// Parse either a block or a single expression, wrapping the expression in a block if needed
+    fn parse_block_or_expr(&self, cursor: &mut TokenCursor<'a>) -> &'bump Block<'a, 'bump> {
+        if cursor.peek_kind() == Some(TokenKind::LBrace) {
+            match self.parse_block(cursor) {
+                Some(block) => block,
+                None => {
+                    let empty_stmts = self.bump.alloc_slice(&[]);
+                    self.bump.alloc_value(Block { block: empty_stmts })
+                }
+            }
+        } else {
+            let expr = self.parse_expr_placeholder(cursor);
+            let expr_stmt = Stmt::ExprStmt(self.bump.alloc_value(InternalExprStmt { expr }));
+            let stmts_slice = self.bump.alloc_slice_copy(&[expr_stmt]);
+            self.bump.alloc_value(Block { block: stmts_slice })
+        }
     }
     
     /// Parse expression using the expression parser

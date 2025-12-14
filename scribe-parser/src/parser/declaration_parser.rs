@@ -6,6 +6,7 @@ use crate::tokenizer::cursor::TokenCursor;
 use ir::ast::*;
 use ir::hir::StrId;
 use smallvec::SmallVec;
+use ir::span::SourceSpan;
 use zetaruntime::bump::GrowableBump;
 use zetaruntime::string_pool::StringPool;
 
@@ -44,16 +45,44 @@ where
         Stmt::Import(import_stmt)
     }
     
-    /// Parse package statement: package "name"
+    /// Parse package statement: package pkg.name
+    pub fn parse_path(
+        &self,
+        cursor: &mut TokenCursor<'a>,
+    ) -> Option<&'bump Path<'bump>> {
+        let mut segments = Vec::new_in(self.bump);
+
+        // First segment
+        let first = cursor.consume_ident()?;
+        segments.push(first);
+
+        // (. ident)*
+        while cursor.expect_kind(TokenKind::Dot) {
+            let ident = cursor
+                .consume_ident()
+                .expect("Expected identifier after '.' in package path");
+            segments.push(ident);
+        }
+
+        let segments = self.bump.alloc_slice_copy(segments.as_slice());
+        Some(self.bump.alloc_value_immutable(Path { path: segments }))
+    }
+
     pub fn parse_package(&self, cursor: &mut TokenCursor<'a>) -> Stmt<'a, 'bump> {
         cursor.expect_kind(TokenKind::Package);
-        let path = cursor.consume_string()
-            .expect("Expected string literal for package name");
+
+        let path = self
+            .parse_path(cursor)
+            .expect("Expected package path");
+
         cursor.expect_kind(TokenKind::Semicolon);
-        
+
         let package_stmt = self.bump.alloc_value(PackageStmt { path });
         Stmt::Package(package_stmt)
     }
+
+
+
 
     pub(crate) fn fetch_visibility(cursor: &mut TokenCursor) -> Visibility {
         match cursor.peek_kind() {
@@ -318,35 +347,333 @@ where
         Some(self.bump.alloc_value(Block { block: stmts_slice }))
     }
 
-    pub(crate) fn parse_generics(&self, cursor: &mut TokenCursor<'a>) -> Option<&'bump [Generic<'bump>]> {
+    /// Parses generic parameters with better error recovery and support for associated types
+    pub(crate) fn parse_generics(&self, cursor: &mut TokenCursor<'a>) -> Option<&'bump [Generic<'a, 'bump>]> {
         let mut generics: SmallVec<Generic, 3> = SmallVec::new();
-        
-        loop {
+        let mut errors: SmallVec<(SourceSpan, String), 2> = SmallVec::new();
+
+        // Verify we're actually in a generic parameter list
+        if !cursor.expect_kind(TokenKind::Lt) {
+            return None;
+        }
+
+        // Keep track of the last valid position for error recovery
+        let mut last_valid_pos = cursor.position();
+        let mut recovery_point = cursor.checkpoint();
+
+        'outer: loop {
+            // Skip any stray commas or other delimiters
+            while matches!(
+            cursor.peek_kind(),
+            Some(TokenKind::Comma) | Some(TokenKind::Semicolon) | Some(TokenKind::Colon)
+        ) {
+                cursor.advance_kind();
+            }
+
             match cursor.peek_kind() {
                 Some(TokenKind::Gt) => {
-                    cursor.advance_kind(); // consume '>'
+                    cursor.advance_kind();
                     break;
                 }
+                Some(TokenKind::Const) => {
+                    // Save state before parsing const generic
+                    cursor.advance_kind(); // consume 'const'
+
+                    let name = match cursor.consume_ident() {
+                        Some(name) => name,
+                        None => {
+                            errors.push((
+                                cursor.current_span(),
+                                "Expected identifier after 'const' in generic parameter".to_string(),
+                            ));
+                            // Try to recover by finding the next parameter or end of generics
+                            if !self.recover_to_next_parameter(cursor) {
+                                break 'outer;
+                            }
+                            continue;
+                        }
+                    };
+
+                    // Parse type annotation
+                    if !cursor.expect_kind(TokenKind::Colon) {
+                        errors.push((
+                            cursor.current_span(),
+                            format!("Expected ':' after const generic parameter '{}'",
+                                    self.context.resolve_string(&name)),
+                        ));
+                        if !self.recover_to_next_parameter(cursor) {
+                            break 'outer;
+                        }
+                        continue;
+                    }
+
+                    let type_span = cursor.current_span();
+                    if let Some(type_name) = cursor.peek_text()
+                            .map(|str_id| (str_id, cursor.peek_kind().unwrap()))
+                            .map(|id| parse_to_type(id.0.as_str(), id.1, self.context.clone(), self.bump)) 
+                    {
+                        generics.push(Generic {
+                            const_generic: true,
+                            type_name: name,
+                            constraints: self.bump.alloc_slice_copy(&[type_name]),
+                        });
+                        last_valid_pos = cursor.position();
+                        recovery_point = cursor.checkpoint();
+                    } else {
+                        errors.push((
+                            type_span,
+                            format!("Expected type after ':' in const generic parameter '{}'",
+                                    self.context.resolve_string(&name)),
+                        ));
+                        if !self.recover_to_next_parameter(cursor) {
+                            break 'outer;
+                        }
+                    }
+                }
                 Some(TokenKind::Ident) => {
-                    let name = cursor.consume_ident()?;
+                    let name = match cursor.consume_ident() {
+                        Some(name) => name,
+                        None => {
+                            // Shouldn't happen since we just peeked an ident
+                            cursor.advance_kind(); // Skip the invalid token
+                            continue;
+                        }
+                    };
+
+                    // Parse constraints if present
+                    let mut constraints: &[Type<'a, 'bump>] = if cursor.peek_kind() == Some(TokenKind::Colon) {
+                        cursor.advance_kind();
+                        match self.parse_generic_constraints(cursor) {
+                            Ok(constraints) => constraints,
+                            Err(e) => {
+                                errors.push((cursor.current_span(), e));
+                                self.bump.alloc_slice(&[])
+                            }
+                        }
+                    } else {
+                        self.bump.alloc_slice(&[])
+                    };
+
+                    // Parse associated type bounds if present
+                    if cursor.peek_kind() == Some(TokenKind::Lt) {
+                        if let Some(associated) = self.parse_associated_type_bounds(cursor) {
+                            // Merge with existing constraints
+                            let mut all_constraints: SmallVec<Type<'a, 'bump>, 4> = SmallVec::new();
+                            all_constraints.extend_from_slice(constraints);
+                            all_constraints.extend_from_slice(associated);
+                            constraints = self.bump.alloc_slice_copy(&all_constraints);
+                        }
+                    }
+
                     generics.push(Generic {
                         const_generic: false,
                         type_name: name,
-                        constraints: self.bump.alloc_slice(&[]),
+                        constraints,
                     });
-                    
-                    if cursor.peek_kind() == Some(TokenKind::Comma) {
-                        cursor.advance_kind();
+                    last_valid_pos = cursor.position();
+                    recovery_point = cursor.checkpoint();
+                }
+                Some(_) => {
+                    // Try to recover from unexpected tokens
+                    if !self.recover_to_next_parameter(cursor) {
+                        break;
                     }
                 }
-                _ => break,
+                None => {
+                    // End of input reached
+                    errors.push((
+                        cursor.current_span(),
+                        "Unterminated generic parameters".to_string(),
+                    ));
+                    break;
+                }
+            }
+
+            // Handle comma or end of parameters
+            match cursor.peek_kind() {
+                Some(TokenKind::Comma) => {
+                    cursor.advance_kind();
+                    // Check for trailing comma followed by >
+                    if cursor.peek_kind() == Some(TokenKind::Gt) {
+                        cursor.advance_kind();
+                        break;
+                    }
+                }
+                Some(TokenKind::Gt) => {
+                    // Will be handled in the next iteration
+                    continue;
+                }
+                Some(_) => {
+                    // Try to recover by inserting a virtual comma
+                    errors.push((
+                        cursor.current_span(),
+                        "Expected ',' or '>' after generic parameter".to_string(),
+                    ));
+                    // Try to recover by pretending there was a comma
+                    if cursor.peek_kind().is_some() {
+                        continue;
+                    }
+                }
+                None => break,
             }
         }
-        
+
+        // Report any accumulated errors
+        for (span, msg) in errors {
+            eprintln!("{} at {}", msg, span);
+        }
+
         if generics.is_empty() {
             None
         } else {
             Some(self.bump.alloc_slice_copy(generics.as_slice()))
+        }
+    }
+
+    /// Parses generic constraints with support for associated types
+    fn parse_generic_constraints(
+        &self,
+        cursor: &mut TokenCursor<'a>,
+    ) -> Result<&'bump [Type<'a, 'bump>], String> {
+        let mut constraints: SmallVec<Type<'a, 'bump>, 3> = SmallVec::new();
+
+        // Helper to parse a single constraint
+        let parse_constraint = |cursor: &mut TokenCursor| -> Option<Type<'a, 'bump>> {
+            let ident: StrId = cursor.consume_ident()?;
+
+            // Check for associated type bounds
+            if cursor.peek_kind() == Some(TokenKind::Lt) {
+                // For now, just skip the associated type bounds
+                // In a full implementation, you'd want to parse these properly
+                cursor.advance_kind(); // consume '<'
+                let mut depth = 1;
+                while let Some(tok) = cursor.peek_kind() {
+                    match tok {
+                        TokenKind::Lt => depth += 1,
+                        TokenKind::Gt => {
+                            depth -= 1;
+                            if depth == 0 {
+                                cursor.advance_kind();
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    cursor.advance_kind();
+                }
+            }
+
+            let type_str = self.context.resolve_string(&ident);
+            let ty = parse_to_type(
+                type_str,
+                cursor.peek_kind().unwrap_or(TokenKind::EOF),
+                self.context.clone(),
+                self.bump,
+            );
+            Some(ty)
+
+        };
+
+        // Parse the first constraint
+        if let Some(constraint) = parse_constraint(cursor) {
+            constraints.push(constraint);
+        } else {
+            return Err("Expected trait or type after ':'".to_string());
+        }
+
+        while cursor.peek_kind() == Some(TokenKind::Add) {
+            cursor.advance_kind(); // consume '+'
+
+            while cursor.peek_kind() == Some(TokenKind::Add) {
+                cursor.advance_kind();
+            }
+
+            if let Some(constraint) = parse_constraint(cursor) {
+                // Avoid duplicate constraints
+                if !constraints.iter().any(|&c| c == constraint) {
+                    constraints.push(constraint);
+                }
+            } else {
+                return Err("Expected trait or type after '+' in constraints".to_string());
+            }
+        }
+
+        if constraints.is_empty() {
+            Err("Expected at least one constraint".to_string())
+        } else {
+            Ok(self.bump.alloc_slice_copy(constraints.as_slice()))
+        }
+    }
+
+    /// Helper to recover to the next parameter or end of generics
+    fn recover_to_next_parameter(&self, cursor: &mut TokenCursor<'a>) -> bool {
+        while let Some(tok) = cursor.peek_kind() {
+            match tok {
+                TokenKind::Comma | TokenKind::Gt => return true,
+                TokenKind::Const | TokenKind::Ident => return true,
+                _ => cursor.advance_kind(),
+            }
+        }
+
+        false
+    }
+
+    /// Parses associated type bounds like `Iterator<Item = T>`
+    fn parse_associated_type_bounds(&self, cursor: &mut TokenCursor<'a>) -> Option<&'bump [Type<'a, 'bump>]> {
+        let checkpoint = cursor.checkpoint();
+        let mut constraints: SmallVec<Type<'a, 'bump>, 2> = SmallVec::new();
+
+        if !cursor.expect_kind(TokenKind::Lt) {
+            return None;
+        }
+
+        // Parse associated type bounds
+        while cursor.peek_kind() != Some(TokenKind::Gt) {
+            if let Some(ident) = cursor.consume_ident() {
+                if cursor.expect_kind(TokenKind::Eq) {
+                    let type_str = self.context.resolve_string(&ident);
+                    let ty: Type<'a, 'bump> = parse_to_type(
+                        type_str,
+                        cursor.peek_kind().unwrap_or(TokenKind::EOF),
+                        self.context.clone(),
+                        self.bump,
+                    );
+
+                    if constraints.iter().all(|c: &Type<'a, 'bump>| c != &ty) {
+                        constraints.push(ty);
+                    }
+
+                    while !matches!(cursor.peek_kind(), Some(TokenKind::Comma) | Some(TokenKind::Gt) | None) {
+                        cursor.advance_kind();
+                    }
+                }
+            } else {
+                // Skip unexpected tokens
+                cursor.advance_kind();
+            }
+
+            if cursor.peek_kind() == Some(TokenKind::Comma) {
+                cursor.advance_kind();
+            } else if cursor.peek_kind() != Some(TokenKind::Gt) {
+                // Error recovery: skip until comma or closing angle
+                while !matches!(
+                cursor.peek_kind(),
+                Some(TokenKind::Comma) | Some(TokenKind::Gt) | None
+            ) {
+                    cursor.advance_kind();
+                }
+            }
+        }
+
+        if !cursor.expect_kind(TokenKind::Gt) {
+            cursor.restore(checkpoint);
+            return None;
+        }
+
+        if constraints.is_empty() {
+            None
+        } else {
+            Some(self.bump.alloc_slice_copy(constraints.as_slice()))
         }
     }
 
@@ -356,16 +683,15 @@ where
         loop {
             match cursor.peek_kind() {
                 Some(TokenKind::RParen) => {
-                    cursor.advance_kind(); // Consume the closing paren
+                    cursor.advance_kind();
                     break;
                 }
                 Some(TokenKind::Ident) => {
-                    // Parse type
                     let type_name = cursor.consume_ident()?;
 
                     let name = cursor.consume_ident()?;
                     let type_str = self.context.resolve_string(&type_name);
-                    let param_type = parse_to_type(type_str, cursor.peek_kind().unwrap(), self.context.clone(), self.bump);
+                    let param_type: Type<'a, 'bump> = parse_to_type(type_str, cursor.peek_kind().unwrap(), self.context.clone(), self.bump);
                     
                     let normal_param = self.bump.alloc_value(NormalParam {
                         is_mut: false,

@@ -67,7 +67,7 @@ where
             TokenKind::Import => Some(self.declaration_parser.parse_import(cursor)),
             TokenKind::Package => {
                 // Disambiguate: package statement vs package visibility modifier
-                if cursor.peek_kind_n(1) == Some(TokenKind::String) {
+                if cursor.peek_kind_n(1) == Some(TokenKind::Ident) {
                     // package "name"; - this is a package statement
                     Some(self.declaration_parser.parse_package(cursor))
                 } else {

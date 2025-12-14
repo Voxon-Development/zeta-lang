@@ -5,7 +5,7 @@ use std::fmt::{Display, Formatter};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Stmt<'a, 'bump> where 'bump: 'a {
     Import(&'bump ImportStmt),
-    Package(&'bump PackageStmt),
+    Package(&'bump PackageStmt<'bump>),
     Let(&'bump LetStmt<'a, 'bump>),
     Const(&'bump ConstStmt<'a, 'bump>),
     Return(&'bump ReturnStmt<'a, 'bump>),
@@ -34,8 +34,13 @@ pub struct ImportStmt {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PackageStmt {
-    pub path: StrId,
+pub struct PackageStmt<'bump> {
+    pub path: &'bump Path<'bump>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Path<'bump> {
+    pub path: &'bump [StrId],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -64,7 +69,7 @@ pub struct ImplDecl<'a, 'bump>
 where
     'bump: 'a,
 {
-    pub generics: Option<&'bump [Generic<'a>]>,
+    pub generics: Option<&'bump [Generic<'a, 'bump>]>,
     pub interface: StrId,
     pub target: StrId,
     pub methods: Option<&'bump [FuncDecl<'a, 'bump>]>,
@@ -80,14 +85,14 @@ where
     pub sealed: bool,
     pub permits: Option<&'bump PermitsExpr<'a, 'bump>>,
     pub methods: Option<&'bump [FuncDecl<'a, 'bump>]>,
-    pub generics: Option<&'bump [Generic<'a>]>,
+    pub generics: Option<&'bump [Generic<'a, 'bump>]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EnumDecl<'a, 'bump> {
     pub name: StrId,
     pub visibility: Visibility,
-    pub generics: Option<&'bump [Generic<'a>]>,
+    pub generics: Option<&'bump [Generic<'a, 'bump>]>,
     pub variants: &'bump [EnumVariant<'a, 'bump>],
 }
 
@@ -315,7 +320,7 @@ where
     pub noinline: bool,
     pub extern_string: Option<StrId>,
     pub name: StrId,
-    pub generics: Option<&'bump [Generic<'a>]>,
+    pub generics: Option<&'bump [Generic<'a, 'bump>]>,
     pub params: Option<&'bump [Param<'a, 'bump>]>,
     pub return_type: Option<Type<'a, 'bump>>,
     pub body: Option<&'bump Block<'a, 'bump>>,
@@ -328,7 +333,7 @@ where
 {
     pub visibility: Visibility,
     pub name: StrId,
-    pub generics: Option<&'bump [Generic<'a>]>,
+    pub generics: Option<&'bump [Generic<'a, 'bump>]>,
     pub params: Option<&'bump [Param<'a, 'bump>]>,
     pub body: &'bump [FuncDecl<'a, 'bump>],
     pub constants: &'bump [ConstStmt<'a, 'bump>],
@@ -393,10 +398,10 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Generic<'bump> {
+pub struct Generic<'a, 'bump> {
     pub const_generic: bool,
     pub type_name: StrId,
-    pub constraints: &'bump [StrId],
+    pub constraints: &'bump [Type<'a, 'bump>],
 }
 
 #[derive(Debug, Clone, PartialEq)]
