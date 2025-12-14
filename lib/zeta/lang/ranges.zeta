@@ -1,7 +1,7 @@
 package zeta.lang
 
 struct Range<T> { start: T, end: T } {
-    fn new<T>(start: T, end: T): Range<T> {
+    fn new(start: T, end: T): Range<T> {
         Range { start: start, end: end }
     }
 
