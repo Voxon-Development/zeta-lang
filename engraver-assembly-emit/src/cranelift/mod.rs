@@ -1,4 +1,3 @@
-use ir::layout::TargetInfo;
 use cranelift::prelude::types;
 use ir::ssa_ir::SsaType;
 use cranelift_codegen::ir::Type;
