@@ -4,6 +4,8 @@ mod tests {
     use ir::hir::{HirModule, StrId};
     use zetaruntime::string_pool::{StringPool, VmString};
     use std::sync::Arc;
+    use ir::ir_hasher::HashMap;
+    use crate::NodeIdx;
 
     /// Helper to create a test string pool
     fn create_test_pool() -> Arc<StringPool> {
@@ -219,10 +221,10 @@ mod tests {
         let node = graph.push_node(NodeKind::TypeDecl { module_idx: 0, item_idx: 0 }, Some(StrId(pool.intern("MyType"))));
         graph.register_item_node(0, 0, "type", node);
         
-        let table = graph.build_symbol_table(&pool);
+        let table: HashMap<(StrId, usize), (usize, usize, &str)> = graph.build_symbol_table();
         
         // Should have entry for MyType in module 0
-        assert!(table.contains_key(&("MyType".to_string(), 0)));
+        assert!(table.contains_key(&(StrId(pool.intern("MyType")), 0)));
     }
 
     #[test]
@@ -233,8 +235,8 @@ mod tests {
         let node = graph.push_node(NodeKind::TypeDecl { module_idx: 0, item_idx: 0 }, Some(StrId(pool.intern("MyType"))));
         graph.register_item_node(0, 0, "type", node);
         
-        let table = graph.build_symbol_table(&pool);
-        let resolved = graph.resolve_name("MyType", 0, &table);
+        let table: HashMap<(StrId, usize), (usize, usize, &str)> = graph.build_symbol_table();
+        let resolved = graph.resolve_name(StrId(pool.intern("MyTyped")), 0, &table);
         
         assert_eq!(resolved, Some(node));
     }
@@ -251,8 +253,8 @@ mod tests {
         // Module 0 imports module 1
         graph.register_import(0, 1);
         
-        let table = graph.build_symbol_table(&pool);
-        let resolved = graph.resolve_name("MyType", 0, &table);
+        let table: HashMap<(StrId, usize), (usize, usize, &str)> = graph.build_symbol_table();
+        let resolved: Option<NodeIdx> = graph.resolve_name(StrId(pool.intern("MyType")), 0, &table);
         
         assert_eq!(resolved, Some(type_node));
     }

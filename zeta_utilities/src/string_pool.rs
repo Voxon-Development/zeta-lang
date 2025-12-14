@@ -3,7 +3,7 @@ use smallvec::SmallVec;
 use std::alloc::AllocError;
 
 use std::hash::{BuildHasher, Hash, Hasher};
-use std::ptr;
+use std::{fmt, ptr};
 use std::simd::cmp::SimdPartialEq;
 use std::simd::num::SimdUint;
 use std::simd::Simd;
@@ -89,6 +89,12 @@ impl Hash for VmString {
 
         let mixed = ptr_val.wrapping_mul(0x9e3779b97f4a7c15) ^ len_val;
         mixed.hash(state);
+    }
+}
+
+impl fmt::Display for VmString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
     }
 }
 
