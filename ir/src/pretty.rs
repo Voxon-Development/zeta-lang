@@ -877,6 +877,8 @@ impl IrPrettyPrinter {
             Operator::LessThan => "<",
             Operator::GreaterThanOrEqual => ">=",
             Operator::LessThanOrEqual => "<=",
+            Operator::LogicalAnd => "&&",
+            Operator::LogicalOr => "||",
         }
     }
 
