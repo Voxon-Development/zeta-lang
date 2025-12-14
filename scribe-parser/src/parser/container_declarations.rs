@@ -27,7 +27,7 @@ where
 
         cursor.expect_kind(TokenKind::LBrace);
 
-        let mut variants_vec = Vec::new();
+        let mut variants_vec: Vec<EnumVariant<'_, '_>> = Vec::new();
         while cursor.peek_kind() != Some(TokenKind::RBrace) && !cursor.at_end() {
             let variant_name = match cursor.consume_ident() {
                 Some(name) => name,
@@ -323,7 +323,7 @@ where
         let name = cursor.consume_ident()
             .expect("Expected class name");
 
-        let generics: Option<&'bump [Generic<'bump>]> = if cursor.peek_kind() == Some(TokenKind::Lt) {
+        let generics: Option<&'bump [Generic<'a, 'bump>]> = if cursor.peek_kind() == Some(TokenKind::Lt) {
             cursor.advance_kind();
             self.parse_generics(cursor)
         } else {
