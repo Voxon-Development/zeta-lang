@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{VecDeque};
+use ir::ir_hasher::{HashMap, HashSet};
 
 use ir::hir::{Hir, HirModule, StrId};
 use zetaruntime::string_pool::StringPool;
@@ -75,20 +76,20 @@ pub struct DepGraph {
     /// instantiation queue
     inst_queue: VecDeque<InstanceKey>,
     /// symbol table: (name, module_idx) -> (module_idx, item_idx, tag)
-    symbol_table: HashMap<(String, usize), (usize, usize, &'static str)>,
+    symbol_table: HashMap<(StrId, usize), (usize, usize, &'static str)>,
     /// package hierarchy: module_idx -> package_path
-    package_hierarchy: HashMap<usize, String>,
+    package_hierarchy: HashMap<usize, StrId>,
 }
 
 impl DepGraph {
     pub fn new() -> Self {
         DepGraph {
             nodes: Vec::new(),
-            item_index: HashMap::new(),
-            instance_map: HashMap::new(),
+            item_index: HashMap::default(),
+            instance_map: HashMap::default(),
             inst_queue: VecDeque::new(),
-            symbol_table: HashMap::new(),
-            package_hierarchy: HashMap::new(),
+            symbol_table: HashMap::default(),
+            package_hierarchy: HashMap::default(),
         }
     }
 
@@ -356,7 +357,7 @@ impl DepGraph {
 
     /// Build SCC DAG: collapse SCCs into nodes, provide topological order of SCCs.
     pub fn scc_topo_order(&self) -> Vec<Vec<NodeIdx>> {
-        let sccs = self.tarjan_scc();
+        let sccs: Vec<Vec<NodeIdx>> = self.tarjan_scc();
         // map node -> scc_idx
         let mut node_to_scc: Vec<usize> = vec![0usize; self.nodes.len()];
         for (sidx, comp) in sccs.iter().enumerate() {
@@ -364,20 +365,18 @@ impl DepGraph {
                 node_to_scc[n] = sidx;
             }
         }
+
         // build scc adjacency
         let scc_count = sccs.len();
-        let mut scc_adj: Vec<HashSet<usize>> = vec![HashSet::new(); scc_count];
+        let mut scc_adj: Vec<HashSet<usize>> = vec![HashSet::default(); scc_count];
         let mut indeg: Vec<usize> = vec![0usize; scc_count];
 
         for (u, node) in self.nodes.iter().enumerate() {
             let su = node_to_scc[u];
             for &v in &node.deps {
                 let sv = node_to_scc[v];
-                if su != sv {
-                    if scc_adj[su].insert(sv) {
-                        indeg[sv] += 1;
-                    }
-                }
+                if su == sv { continue; };
+                if scc_adj[su].insert(sv) { indeg[sv] += 1; }
             }
         }
 
@@ -446,9 +445,8 @@ impl DepGraph {
 
     /// Register a package dependency: module belongs to package
     /// This creates a package hierarchy for namespace resolution
-    pub fn register_package(&mut self, module_idx: usize, package_path: StrId, pool: &StringPool) {
-        let package_str = pool.resolve_string(&package_path).to_string();
-        self.package_hierarchy.insert(module_idx, package_str);
+    pub fn register_package(&mut self, module_idx: usize, package_path: StrId, _pool: &StringPool) {
+        self.package_hierarchy.insert(module_idx, package_path);
         
         // Also set the hint on the module node for diagnostics
         if let Some(module_node_idx) = self.lookup_item_node(module_idx, 0, "module") {
@@ -465,18 +463,15 @@ impl DepGraph {
 
     /// Get all modules that a given module imports
     pub fn get_module_imports(&self, module_idx: usize) -> Vec<usize> {
-        let mut imports = Vec::new();
-        
-        if let Some(module_node_idx) = self.lookup_item_node(module_idx, 0, "module") {
-            if let Some(node) = self.nodes.get(module_node_idx) {
-                for &dep_idx in &node.deps {
-                    if let Some(dep_node) = self.nodes.get(dep_idx) {
-                        if let NodeKind::Module { module_idx: imported_idx } = dep_node.kind {
-                            imports.push(imported_idx);
-                        }
-                    }
-                }
-            }
+        let mut imports: Vec<usize> = Vec::new();
+
+        let Some(module_node_idx) = self.lookup_item_node(module_idx, 0, "module") else { return imports; };
+        let Some(node) = self.nodes.get(module_node_idx) else { return imports; };
+
+        for &dep_idx in &node.deps {
+            let Some(dep_node) = self.nodes.get(dep_idx) else { continue; };
+            let NodeKind::Module { module_idx: imported_idx } = dep_node.kind else { continue; };
+            imports.push(imported_idx);
         }
         
         imports
@@ -485,17 +480,14 @@ impl DepGraph {
     /// Get all modules that import a given module (reverse dependencies)
     pub fn get_module_importers(&self, module_idx: usize) -> Vec<usize> {
         let mut importers = Vec::new();
-        
-        if let Some(module_node_idx) = self.lookup_item_node(module_idx, 0, "module") {
-            if let Some(node) = self.nodes.get(module_node_idx) {
-                for &rev_dep_idx in &node.rev_deps {
-                    if let Some(rev_dep_node) = self.nodes.get(rev_dep_idx) {
-                        if let NodeKind::Module { module_idx: importer_idx } = rev_dep_node.kind {
-                            importers.push(importer_idx);
-                        }
-                    }
-                }
-            }
+
+        let Some(module_node_idx) = self.lookup_item_node(module_idx, 0, "module") else { return importers; };
+        let Some(node) = self.nodes.get(module_node_idx) else { return importers; };
+
+        for &rev_dep_idx in &node.rev_deps {
+            let Some(rev_dep_node) = self.nodes.get(rev_dep_idx) else { continue; };
+            let NodeKind::Module { module_idx: importer_idx } = rev_dep_node.kind else { continue; };
+            importers.push(importer_idx);
         }
         
         importers
@@ -503,8 +495,8 @@ impl DepGraph {
 
     /// Detect circular imports: returns Vec of cycles (each cycle is a Vec of module indices)
     pub fn detect_circular_imports(&self) -> Vec<Vec<usize>> {
-        let sccs = self.tarjan_scc();
-        let mut cycles = Vec::new();
+        let sccs: Vec<Vec<NodeIdx>> = self.tarjan_scc();
+        let mut cycles: Vec<Vec<usize>> = Vec::new();
 
         for scc in sccs {
             // An SCC with more than one node is a cycle
@@ -544,7 +536,7 @@ impl DepGraph {
         self.phase_a_create_nodes(modules);
 
         // Phase A.5: Populate internal symbol table for name resolution
-        self.populate_symbol_table(pool);
+        self.populate_symbol_table();
 
         // Phase B: Extract edges by walking HIR
         self.phase_b_extract_edges_from_hir(modules, pool);
@@ -554,13 +546,12 @@ impl DepGraph {
     }
     
     /// Populate internal symbol table from item_index using node hints
-    fn populate_symbol_table(&mut self, pool: &StringPool) {
+    fn populate_symbol_table(&mut self) {
         for (key, &node_idx) in &self.item_index.clone() {
             let (module_idx, item_idx, tag): (usize, usize, &str) = *key;
             if let Some(node) = self.nodes.get(node_idx) {
                 if let Some(hint) = node.hint {
-                    let name_str = pool.resolve_string(&hint).to_string();
-                    self.symbol_table.insert((name_str, module_idx), (module_idx, item_idx, tag));
+                    self.symbol_table.insert((hint, module_idx), (module_idx, item_idx, tag));
                 }
             }
         }
@@ -809,10 +800,8 @@ impl DepGraph {
         match ty {
             HirType::Struct(name, _) | HirType::Enum(name, _) | HirType::Interface(name, _) => {
                 // Resolve the type name using the symbol table
-                let name_str = pool.resolve_string(name).to_string();
-                
                 // Try to find in current module first
-                if let Some(&(m, i, tag)) = self.symbol_table.get(&(name_str.clone(), module_idx)) {
+                if let Some(&(m, i, tag)) = self.symbol_table.get(&(name.clone(), module_idx)) {
                     if let Some(to_node) = self.lookup_item_node(m, i, tag) {
                         self.add_edge(from_node, to_node);
                     }
@@ -822,7 +811,7 @@ impl DepGraph {
                 // Try to find in imported modules
                 let imports = self.get_module_imports(module_idx);
                 for imported_idx in imports {
-                    if let Some(&(m, i, tag)) = self.symbol_table.get(&(name_str.clone(), imported_idx)) {
+                    if let Some(&(m, i, tag)) = self.symbol_table.get(&(*name, imported_idx)) {
                         if let Some(to_node) = self.lookup_item_node(m, i, tag) {
                             self.add_edge(from_node, to_node);
                         }
@@ -939,16 +928,15 @@ impl DepGraph {
 
     /// Create a symbol table for name resolution
     /// Maps (name_str, module_idx) -> (target_module_idx, item_idx, tag)
-    pub fn build_symbol_table(&self, pool: &StringPool) -> HashMap<(String, usize), (usize, usize, &'static str)> {
-        let mut table: HashMap<(String, usize), (usize, usize, &'static str)> = HashMap::new();
+    pub fn build_symbol_table(&self) -> HashMap<(StrId, usize), (usize, usize, &'static str)> {
+        let mut table: HashMap<(StrId, usize), (usize, usize, &'static str)> = HashMap::default();
 
+        // key: &(usize, usize, &str)
         for (key, &node_idx) in &self.item_index {
             let (module_idx, item_idx, tag): &(usize, usize, &str) = key;
             let Some(node) = self.nodes.get(node_idx) else { continue; };
             let Some(hint) = node.hint else { continue; };
-
-            let name_str = pool.resolve_string(&hint).to_string();
-            table.insert((name_str, *module_idx), (*module_idx, *item_idx, tag));
+            table.insert((hint, *module_idx), (*module_idx, *item_idx, tag));
         }
 
         table
@@ -956,16 +944,16 @@ impl DepGraph {
 
     /// Resolve a name to its definition node
     /// Searches in current module first, then in imported modules
-    pub fn resolve_name(&self, name: &str, current_module_idx: usize, symbol_table: &HashMap<(String, usize), (usize, usize, &'static str)>) -> Option<NodeIdx> {
+    pub fn resolve_name(&self, name: StrId, current_module_idx: usize, symbol_table: &HashMap<(StrId, usize), (usize, usize, &'static str)>) -> Option<NodeIdx> {
         // First try current module
-        if let Some(&(m, i, tag)) = symbol_table.get(&(name.to_string(), current_module_idx)) {
+        if let Some(&(m, i, tag)) = symbol_table.get(&(name, current_module_idx)) {
             return self.lookup_item_node(m, i, tag);
         }
 
         // Then try imported modules
         let imports: Vec<usize> = self.get_module_imports(current_module_idx);
         for imported_idx in imports {
-            let Some(&(m, i, tag)) = symbol_table.get(&(name.to_string(), imported_idx)) else { continue; };
+            let Some(&(m, i, tag)) = symbol_table.get(&(name, imported_idx)) else { continue; };
             return self.lookup_item_node(m, i, tag);
         }
 
@@ -977,7 +965,7 @@ impl DepGraph {
     pub fn get_module_compilation_order(&self) -> Vec<usize> {
         let sccs: Vec<Vec<NodeIdx>> = self.scc_topo_order();
         let mut order: Vec<usize> = Vec::new();
-        let mut seen: HashSet<usize> = std::collections::HashSet::new();
+        let mut seen: HashSet<usize> = HashSet::default();
 
         // Reverse the SCC order because scc_topo_order gives us dependents first, we want dependencies first
         for scc in sccs.iter().rev() {
