@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use zetaruntime::string_pool::StringPool;
 use ir::errors::reporter::ErrorReporter;
+use ir::hir::StrId;
 use ir::span::SourceSpan;
 use crate::parser::descent_parser::ParserError;
 
@@ -38,14 +39,14 @@ impl<'a> ParserDiagnostics<'a> {
             ParserError::LexerError(msg) => {
                 let span = SourceSpan::new(self.file_name, 1, 1);
                 reporter.add_parser_error(
-                    format!("Lexer error: {}", msg),
+                    StrId::from(self.string_pool.intern(format!("Lexer error: {}", msg).as_str())),
                     Some(span),
                 );
             }
             ParserError::UnexpectedToken { expected, found } => {
                 let span = SourceSpan::new(self.file_name, 1, 1); // TODO: Get actual position
                 reporter.add_parser_error(
-                    format!("Expected '{}', but found '{}'", expected, found),
+                    StrId::from(self.string_pool.intern(format!("Expected '{}', but found '{}'", expected, found).as_str())),
                     Some(span),
                 );
             }
@@ -56,7 +57,7 @@ impl<'a> ParserDiagnostics<'a> {
                 
                 let span = SourceSpan::new(self.file_name, last_line, last_col);
                 reporter.add_parser_error(
-                    "Unexpected end of file".to_string(),
+                    StrId::from(self.string_pool.intern("Unexpected end of file")),
                     Some(span),
                 );
             }
@@ -71,7 +72,7 @@ impl<'a> ParserDiagnostics<'a> {
         reporter: &mut ErrorReporter<'a, 'bump>,
     ) {
         let span = SourceSpan::new(self.file_name, line, col);
-        reporter.add_parser_error(message.to_string(), Some(span));
+        reporter.add_parser_error(StrId::from(self.string_pool.intern(message)), Some(span));
     }
     
     pub fn report_missing_semicolon<'bump>(
@@ -82,7 +83,7 @@ impl<'a> ParserDiagnostics<'a> {
     ) {
         let span = SourceSpan::new(self.file_name, line, col);
         reporter.add_parser_error(
-            "Missing semicolon".to_string(),
+            StrId::from(self.string_pool.intern("Missing semicolon")),
             Some(span),
         );
     }
@@ -96,7 +97,7 @@ impl<'a> ParserDiagnostics<'a> {
     ) {
         let span = SourceSpan::new(self.file_name, line, col);
         reporter.add_parser_error(
-            format!("Missing {}", brace_type),
+            StrId::from(self.string_pool.intern(format!("Missing {}", brace_type).as_str())),
             Some(span),
         );
     }
@@ -110,7 +111,7 @@ impl<'a> ParserDiagnostics<'a> {
     ) {
         let span = SourceSpan::new(self.file_name, line, col);
         reporter.add_parser_error(
-            format!("Invalid syntax in {}", context),
+            StrId::from(self.string_pool.intern(format!("Invalid syntax in {}", context).as_str())),
             Some(span),
         );
     }

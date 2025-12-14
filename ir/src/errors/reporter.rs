@@ -5,6 +5,7 @@ use zetaruntime::bump::GrowableBump;
 
 use is_terminal::IsTerminal;
 use owo_colors::OwoColorize;
+use crate::hir::StrId;
 
 #[derive(Debug, Clone)]
 pub enum DiagnosticLevel {
@@ -27,11 +28,11 @@ pub struct Diagnostic<'a> {
 pub enum CompilerError<'a, 'bump> {
     TypeError(TypeError<'a, 'bump>),
     ParserError {
-        message: String,
+        message: StrId,
         span: Option<SourceSpan<'a>>,
     },
     CTRCError {
-        message: String,
+        message: StrId,
         span: Option<SourceSpan<'a>>,
         leak_info: Option<CTRCLeakInfo>,
     },
@@ -78,11 +79,11 @@ impl<'a, 'bump> ErrorReporter<'a, 'bump> {
         self.errors.push(CompilerError::TypeError(error));
     }
 
-    pub fn add_parser_error(&mut self, message: String, span: Option<SourceSpan<'a>>) {
+    pub fn add_parser_error(&mut self, message: StrId, span: Option<SourceSpan<'a>>) {
         self.errors.push(CompilerError::ParserError { message, span });
     }
 
-    pub fn add_ctrc_error(&mut self, message: String, span: Option<SourceSpan<'a>>, leak_info: Option<CTRCLeakInfo>) {
+    pub fn add_ctrc_error(&mut self, message: StrId, span: Option<SourceSpan<'a>>, leak_info: Option<CTRCLeakInfo>) {
         self.errors.push(CompilerError::CTRCError { message, span, leak_info });
     }
 
@@ -103,8 +104,8 @@ impl<'a, 'bump> ErrorReporter<'a, 'bump> {
     fn report_error(&self, error: &CompilerError<'a, 'bump>) {
         match error {
             CompilerError::TypeError(te) => self.report_type_error(te),
-            CompilerError::ParserError { message, span } => self.report_parser_error(message, span.as_ref()),
-            CompilerError::CTRCError { message, span, leak_info } => self.report_ctrc_error(message, span.as_ref(), leak_info.as_ref()),
+            CompilerError::ParserError { message, span } => self.report_parser_error(message.as_str(), span.as_ref()),
+            CompilerError::CTRCError { message, span, leak_info } => self.report_ctrc_error(message.as_str(), span.as_ref(), leak_info.as_ref()),
         }
     }
 

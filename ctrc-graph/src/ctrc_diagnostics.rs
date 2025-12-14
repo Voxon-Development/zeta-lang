@@ -1,6 +1,8 @@
 use std::collections::HashMap;
+use smallvec::SmallVec;
 use zetaruntime::string_pool::StringPool;
 use ir::errors::reporter::{ErrorReporter, CTRCLeakInfo};
+use ir::hir::StrId;
 use ir::span::SourceSpan;
 use crate::ctrc_pvg_graph::{CTRCAnalysisResult, AliasID};
 
@@ -55,11 +57,18 @@ impl<'a> CTRCDiagnostics<'a> {
             potential_cycles: vec![], // Will be filled by cycle detection
         };
         
-        // Create a dummy span for now - in a real implementation, you'd track spans through the analysis
         let span = SourceSpan::new(file_name, 1, 1);
+
+        const START: &'static str = "Potential memory leak detected for variable '";
+        const END: &'static str = "'";
+
+        let mut buf: SmallVec<u8, 64> = SmallVec::with_capacity(START.len() + variable_name.len() + END.len());
+        buf.extend_from_slice(START.as_bytes());
+        buf.extend_from_slice(variable_name.as_bytes());
+        buf.extend_from_slice(END.as_bytes());
         
         reporter.add_ctrc_error(
-            format!("Potential memory leak detected for variable '{}'", variable_name),
+            StrId::from(self.string_pool.intern_bytes(buf.as_slice())),
             Some(span),
             Some(leak_info),
         );
@@ -105,7 +114,7 @@ impl<'a> CTRCDiagnostics<'a> {
             };
             
             reporter.add_ctrc_error(
-                "Potential reference cycle detected".to_string(),
+                StrId::from(self.string_pool.intern("Potential reference cycle detected")),
                 Some(span),
                 Some(leak_info),
             );
@@ -134,9 +143,24 @@ impl<'a> CTRCDiagnostics<'a> {
                     .unwrap_or("<unknown>");
                 
                 let span = SourceSpan::new(file_name, 1, 1);
+
+                // Fast alternative to interning `String` directly.
+                const START: &'static str = "Potential double-free detected for variable '";
+                const MIDDLE: &'static str = "' (dropped ";
+                const END: &'static str = " times)";
+
+                let string = count.to_string();
+                let bytes = string.as_bytes();
+
+                let mut buf: SmallVec<u8, 64> = SmallVec::with_capacity(START.len() + variable_name.len() + MIDDLE.len() + bytes.len() + END.len());
+                buf.extend_from_slice(START.as_bytes());
+                buf.extend_from_slice(variable_name.as_bytes());
+                buf.extend_from_slice(MIDDLE.as_bytes());
+                buf.extend_from_slice(bytes);
+                buf.extend_from_slice(END.as_bytes());
                 
                 reporter.add_ctrc_error(
-                    format!("Potential double-free detected for variable '{}' (dropped {} times)", variable_name, count),
+                    StrId::from(self.string_pool.intern_bytes(buf.as_slice())),
                     Some(span),
                     None,
                 );
@@ -152,10 +176,22 @@ impl<'a> CTRCDiagnostics<'a> {
     ) {
         if result.has_memory_safety_issues() {
             let span = SourceSpan::new(file_name, 1, 1);
-            
+
+            const START: &'static str = "Module '";
+            const MIDDLE: &'static str = "' has ";
+            const END: &'static str = " potential memory safety issues";
+
+            let string = result.potential_leaks.len().to_string();
+            let bytes = string.as_bytes();
+            let mut buf: SmallVec<u8, 64> = SmallVec::with_capacity(START.len() + file_name.len() + MIDDLE.len() + bytes.len() + END.len());
+            buf.extend_from_slice(START.as_bytes());
+            buf.extend_from_slice(file_name.as_bytes());
+            buf.extend_from_slice(MIDDLE.as_bytes());
+            buf.extend_from_slice(bytes);
+            buf.extend_from_slice(END.as_bytes());
+
             reporter.add_ctrc_error(
-                format!("Module '{}' has {} potential memory safety issues", 
-                       file_name, result.potential_leaks.len()),
+                StrId::from(self.string_pool.intern_bytes(buf.as_slice())),
                 Some(span),
                 None,
             );

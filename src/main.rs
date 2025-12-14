@@ -17,6 +17,7 @@ use std::time::Instant;
 
 use clap::{ArgMatches, CommandFactory, Error, FromArgMatches, Parser, Subcommand};
 use snmalloc_rs::SnMalloc;
+use ir::hir::StrId;
 
 #[global_allocator]
 static ALLOCATOR: SnMalloc = SnMalloc;
@@ -166,7 +167,7 @@ fn run_compiler(
     for module_with_arena in stdlib_modules_result {
         if module_with_arena.parser_diagnostics.has_errors() {
             for error in &module_with_arena.parser_diagnostics.errors {
-                error_reporter.add_parser_error(error.to_string(), None);
+                error_reporter.add_parser_error(StrId::from(arc.intern(error.to_string().as_str())), None);
             }
         }
         if module_with_arena.valid {
@@ -191,7 +192,7 @@ fn run_compiler(
     for module_with_arena in user_modules_result {
         if module_with_arena.parser_diagnostics.has_errors() {
             for error in &module_with_arena.parser_diagnostics.errors {
-                error_reporter.add_parser_error(error.to_string(), None);
+                error_reporter.add_parser_error(StrId::from(arc.intern(error.to_string().as_str())), None);
             }
         }
         if module_with_arena.valid {

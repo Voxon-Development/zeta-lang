@@ -11,5 +11,6 @@ thiserror = "2.0.17"
 zetaruntime = { path = "../zeta_utilities" }
 iris-math = { path = "../iris-math" }
 ir = { path = "../ir" }
+smallvec = "2.0.0-alpha.12"
 dashmap = "7.0.0-rc2"
 codex-dependency-graph = { path = "../codex-dependency-graph" }

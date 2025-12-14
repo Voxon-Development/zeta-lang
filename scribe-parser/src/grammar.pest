@@ -24,9 +24,9 @@ generic_placeholder = { ident ~ (":" ~ ident)? }
 
 state_ref = { ident | "*" }
 
-block_stmt = _{ if_stmt | while_stmt | for_stmt | match_stmt | fun_decl | struct_decl | enum_decl | unsafe_block | block }
+block_stmt = _{ if_stmt | while_stmt | for_stmt | match_stmt | fun_decl | destructor_decl | struct_decl | enum_decl | effect_decl | unsafe_block | block }
 
-simple_stmt = _{ (import_stmt | let_stmt | const_stmt | return_stmt | expr_stmt | break_stmt | continue_stmt | defer_stmt) ~ stmt_terminator? }
+simple_stmt = _{ (import_stmt | let_stmt | shorthand_let_stmt | const_stmt | return_stmt | expr_stmt | break_stmt | continue_stmt | defer_stmt) ~ stmt_terminator? }
 
 defer_stmt = { "defer" ~ (block | stmt) }
 
@@ -50,7 +50,7 @@ sealed_keyword   = { "sealed" }
 
 import_stmt        = { "import" ~ string ~ stmt_terminator? }
 package_stmt       = { "package" ~ (ident ~ ("." ~ ident)*) ~ stmt_terminator? }
-let_stmt           = { mut_keyword? ~ var_type ~ ident ~ "=" ~ expr ~ stmt_terminator? }
+let_stmt           = { "let" ~ mut_keyword? ~ (var_type ~ ident ~ "=" | ident ~ ":=") ~ expr ~ stmt_terminator? }
 shorthand_let_stmt = { mut_keyword? ~ ident ~ ":=" ~ expr ~ stmt_terminator? }
 const_stmt         = { "const" ~ var_type ~ ident ~ "=" ~ expr ~ stmt_terminator? }
 return_stmt        = { "return" ~ expr? ~ stmt_terminator? }
@@ -59,6 +59,17 @@ while_stmt         = { "while" ~ expr ~ block ~ stmt_terminator? }
 for_stmt           = { "for" ~ atom ~ ":=" ~ expr ~ block ~ stmt_terminator? }
 
 stmt_ending = _{ "\n" | WHITESPACE* }
+
+destructor_decl = {
+    visibility_modifier? ~ "~" ~ ident ~ "(" ~ ")" ~ block ~ stmt_terminator?
+}
+
+effect_decl = {
+    visibility_modifier? ~ sealed_keyword? ~ "effect" ~ ident ~ permits_expr? ~ "(" ~ param_list ~ ")" ~ block
+}
+
+effect_annotation = { "\\" ~ type_expr }
+
 
 match_stmt   = { "match" ~ expr ~ "{" ~ match_arm* ~ "}" ~ stmt_terminator? }
 unsafe_block = { "unsafe" ~ block ~ stmt_terminator? }
@@ -75,9 +86,9 @@ struct_decl = { visibility_modifier? ~ "struct" ~ ident ~ generic_params? ~ fiel
 fun_decl = {
     visibility_modifier? ~ unsafe_modifier? ~
     (extern_modifier ~ string)? ~
-    (inline_keyword | noinline_keyword)? ~
+    (comptime_keyword | inline_keyword | noinline_keyword)? ~ // can't inline a comptime/noinline function and vice versa
     var_type ~ ident ~
-    generic_params? ~ param_list ~ (block | arrow_expr)? ~ stmt_terminator?
+    generic_params? ~ param_list ~ effect_annotation* ~ (block | arrow_expr)? ~ stmt_terminator?
 }
 
 own_keyword = { "own" }
@@ -127,17 +138,21 @@ private_keyword =  { "private" }
 module_keyword  =  { "module" }
 package_keyword =  { "package" }
 
+comptime_keyword = { "comptime" }
+
 mut_keyword =  { "mut" }
-keyword     = _{ "true" | "false" | "if" | "else" | "while" | "return" | "for" | "enum" | "type" }
+keyword     = _{ "true" | "false" | "if" | "else" | "while" | "return" | "for" | "enum" | "type" | "let" | "const" | "mut" | "struct" | "interface" | "impl" | "match" | "break" | "continue" | "unsafe" | "extern" | "inline" | "noinline" | "comptime" | "defer" | "import" | "package" | "this" }
 
 ident        = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 number       = @{ "-"? ~ ASCII_DIGIT+ }
+decimal      = @{ "-"? ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
+char         = @{ "'" ~ ("\\" ~ ANY | (!"'" ~ ANY)) ~ "'" }
 string       = @{ "\"" ~ string_inner* ~ "\"" }
 string_inner = _{ "\\\"" | "\\\\" | (!"\"" ~ ANY) }
 
 expr = { assignment }
 
-assign_op = { "=" }
+assign_op = { ":=" | "=" }
 compound_assign_op = {
     "+="
   | "-="
@@ -165,24 +180,24 @@ boolean = { "true" | "false" }
 logic_or   = { logic_and ~ ("||" ~ logic_and)* }
 logic_and  = { bit_or ~ ("&&" ~ bit_or)* }
 
-bit_or     = { bit_xor ~ (("|" ~ "=") ~ bit_xor)* }
-bit_xor    = { bit_and ~ (("^" ~ "=") ~ bit_and)* }
-bit_and    = { equality ~ (("&" ~ "=") ~ equality)* }
+bit_or     = { bit_xor ~ ("|" ~ bit_xor)* }
+bit_xor    = { bit_and ~ ("^" ~ bit_and)* }
+bit_and    = { equality ~ ("&" ~ equality)* }
 
-equality   = { comparison ~ (("==" | "~=") ~ comparison)* }
+equality   = { comparison ~ (("==" | "!=" | "~=") ~ comparison)* }
 comparison = { shift ~ (comparison_operators ~ shift)* }
 
-operator_shift = { (">>>" ~ "=") | ("<<<" ~ "=") | (">>" ~ "=") | ("<<" ~ "=") }
+operator_shift = { ">>>" | "<<<" | ">>" | "<<" }
 shift      = { term ~ ((operator_shift) ~ term)* }
 
 term                 = { factor ~ (operator_add_sub ~ factor)* }
 factor               = { unary ~ (operator_mul_div ~ unary)* }
 unary                = { ("~" | "-" | "+")* ~ primary }
 
-operator_add_sub = { ("+" ~ "=") | ("-" ~ "=") }
-operator_mul_div = { ("*" ~ "=") | ("/" ~ "=") | ("%" ~ "=") }
+operator_add_sub = { "+" | "-" }
+operator_mul_div = { "*" | "/" | "%" }
 
-comparison_operators = { "<" | ">" | "<=" | ">=" | "~=" | "==" }
+comparison_operators = { "<=" | ">=" | "<" | ">" | "~=" | "!=" | "==" }
 
 primary = {
       atom ~ postfix
@@ -199,8 +214,11 @@ atom = _{ parenthesized_expr
         | class_initialization
         | boolean
         | array_literal
+        | lambda_expr
         | ident
+        | decimal
         | number
+        | char
         | string
         | this_type }
 
@@ -220,8 +238,8 @@ type_list = { var_type ~ ("," ~ var_type)* }
 
 nullable_suffix = { "?" }
 
-array_suffix = { "[" ~ atom ~ "]" }
-basic_type   = { (ident ~ ("<" ~ type_list ~ ">")?) | "i32" | "u32" | "f64" | "uf64" | "i64" | "u64" | "i128" | "u128" | "u8" | "i8" | "i16" | "u16" | "boolean" }
+array_suffix = { "[" ~ expr ~ "]" }
+basic_type   = { (ident ~ ("<" ~ type_list ~ ">")?) | "i32" | "u32" | "f32" | "f64" | "uf32" | "uf64" | "i64" | "u64" | "i128" | "u128" | "u8" | "i8" | "i16" | "u16" | "boolean" | "char" | "str" }
 
 parenthesized_expr = { "(" ~ expr ~ ")" }
 operator_pow       = { "^" }
