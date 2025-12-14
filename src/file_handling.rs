@@ -16,6 +16,7 @@ use zetaruntime::arena::GrowableAtomicBump;
 use zetaruntime::bump::GrowableBump;
 use zetaruntime::string_pool::StringPool;
 use crate::main_structs::{CompilerError, ModuleWithArena};
+use crate::compilation_passes::{pass_hir_lowering, pass_type_checking_and_ctrc, pass_monomorphization};
 
 pub(crate) fn compiler_lib_path() -> Result<PathBuf, CompilerError> {
     let exe = std::env::current_exe()
@@ -156,24 +157,22 @@ where
         bump.clone(),
     );
 
-    //println!("{:#?}", parse_result.statements);
+    println!("Stmts: {:#?}", parse_result.statements);
 
-    let mut lowerer = HirLowerer::new(context.clone(), bump.clone());
-    let module = lowerer.lower_module(parse_result.statements);
+    // ============================================
+    // PASS 1: HIR Lowering
+    // ============================================
+    let module = pass_hir_lowering(parse_result.statements, context.clone(), bump.clone())?;
 
-    let temp_bump = GrowableBump::new(4096, 8);
-    let ctrc: CTRCAnalysisResult = ctrc_graph::analyze_hir_for_ctrc(&module, &temp_bump);
+    // ============================================
+    // PASS 2: Type Checking and CTRC Analysis
+    // ============================================
+    pass_type_checking_and_ctrc(&module, context.clone(), file_name_static)?;
 
-    let mut temp_reporter: ErrorReporter = ErrorReporter::new();
-    temp_reporter.add_source_file(file_name_static.into(), contents_static.into());
-    analyze_ctrc_and_report(&ctrc, &*context, &mut temp_reporter, file_name_static);
-
-    /*let string = analyze_and_pretty_print(module, &temp_bump, context.clone()).unwrap();
-    println!("{}", string);*/
-
-    if temp_reporter.has_errors() {
-        temp_reporter.report_all();
-    }
+    // ============================================
+    // PASS 3: Monomorphization (deferred to backend)
+    // ============================================
+    pass_monomorphization(&module)?;
 
     Ok(ModuleWithArena {
         parse_and_hir_bump: bump,
