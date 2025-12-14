@@ -1,7 +1,9 @@
-use std::fmt::{Display, Formatter};
+use std::fmt::{Display, Formatter, Write};
 use std::ops::Deref;
 use zetaruntime::string_pool::VmString;
 use crate::span::SourceSpan;
+use std::fmt;
+
 // =====================================
 // HIR (High-Level IR)
 // =====================================
@@ -9,8 +11,14 @@ use crate::span::SourceSpan;
 type AliasID = usize;
 
 /// A reference to an interned string in the global string pool
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct StrId(pub VmString);
+
+impl fmt::Debug for StrId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 impl Deref for StrId {
     type Target = VmString;
@@ -29,16 +37,6 @@ impl StrId {
     /// Get the underlying VmString
     pub fn into_inner(self) -> VmString {
         self.0
-    }
-
-    /// Get the hash of the string
-    pub fn hash(&self) -> u64 {
-        // Use the VmString's hash method if available, or a fallback
-        // This is a simplified version - in practice, you'd want to expose the hash from VmString
-        // or use a different approach to get a unique identifier
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        std::hash::Hash::hash(&self.0, &mut hasher);
-        std::hash::Hasher::finish(&hasher)
     }
 
     pub fn as_str(&self) -> &str {
@@ -64,8 +62,7 @@ impl From<VmString> for StrId {
 
 impl Display for StrId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        // This will be resolved properly when we have access to the context
-        write!(f, "StrId({:?})", self.0)
+        write!(f, "{}", self.as_str())
     }
 }
 
@@ -114,7 +111,7 @@ where
     pub is_unsafe: bool,
     pub inline: bool,
     pub noinline: bool,
-    pub generics: Option<&'bump [HirGeneric<'bump>]>,
+    pub generics: Option<&'bump [HirGeneric<'a, 'bump>]>,
     pub params: Option<&'bump [HirParam<'a, 'bump>]>,
     pub return_type: Option<HirType<'a, 'bump> >,
     pub body: Option<HirStmt<'a, 'bump>>,
@@ -127,7 +124,7 @@ where
 {
     pub name: StrId,
     pub visibility: Visibility,
-    pub generics: Option<&'bump [HirGeneric<'bump>]>,
+    pub generics: Option<&'bump [HirGeneric<'a, 'bump>]>,
     pub fields: &'bump [HirField<'a, 'bump>],
     pub interfaces: Option<&'bump [StrId]>, // implemented interfaces
     pub methods: Option<&'bump [HirFunc<'a, 'bump>]>,
@@ -140,7 +137,7 @@ pub struct HirImpl<'a, 'bump>
 where
     'bump: 'a,
 {
-    pub generics: Option<&'bump [HirGeneric<'bump>]>,
+    pub generics: Option<&'bump [HirGeneric<'a, 'bump>]>,
     pub interface: StrId,
     pub target: StrId,
     pub methods: Option<&'bump [HirFunc<'a, 'bump>]>,
@@ -153,7 +150,7 @@ where
 {
     pub name: StrId,
     pub visibility: Visibility,
-    pub generics: Option<&'bump [HirGeneric<'bump>]>,
+    pub generics: Option<&'bump [HirGeneric<'a, 'bump>]>,
     pub methods: Option<&'bump [HirFunc<'a, 'bump>]>,
 }
 
@@ -161,7 +158,7 @@ where
 pub struct HirEnum<'a, 'bump> {
     pub name: StrId,
     pub visibility: Visibility,
-    pub generics: Option<&'bump [HirGeneric<'bump>]>,
+    pub generics: Option<&'bump [HirGeneric<'a, 'bump>]>,
     pub variants: &'bump [HirEnumVariant<'a, 'bump>],
 }
 
@@ -203,9 +200,9 @@ impl<'a, 'bump> HirParam<'a, 'bump> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct HirGeneric<'bump> {
+pub struct HirGeneric<'a, 'bump> {
     pub name: StrId,
-    pub constraints: &'bump [StrId],
+    pub constraints: &'bump [HirType<'a, 'bump>],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -405,6 +402,8 @@ pub enum Operator {
     ShiftRightAssign,
     BitNot,
     LogicalNot,
+    LogicalAnd,
+    LogicalOr,
     Equals,
     NotEquals,
     GreaterThan,
