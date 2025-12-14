@@ -29,7 +29,6 @@ use std::error::Error;
 use std::{fmt, io};
 use std::sync::Arc;
 use cranelift_codegen::settings::Configurable;
-use cranelift_codegen::timing::Pass::unreachable_code;
 use ir::ir_hasher::FxHashBuilder;
 use ir::layout::sizeof_ssa;
 use zetaruntime::string_pool::{StringPool, VmString};
@@ -52,7 +51,7 @@ pub struct CraneliftBackend {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ZetaDataId(DataId);
 
-impl leapfrog::Value for ZetaDataId {
+/*impl leapfrog::Value for ZetaDataId {
     fn is_redirect(&self) -> bool {
         false
     }
@@ -68,7 +67,7 @@ impl leapfrog::Value for ZetaDataId {
     fn null() -> Self {
         ZetaDataId(DataId::new(usize::MAX - 1))
     }
-}
+}*/
 
 impl CraneliftBackend {
     pub fn new(context: Arc<StringPool>, optimize: bool, verbose: bool) -> Self {
