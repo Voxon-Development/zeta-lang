@@ -8,10 +8,7 @@ opt-level = 3
 
 [dependencies]
 thiserror = "2.0.17"
-seahash = "4.1.0"
 ir = { path = "../ir" }
-leapfrog = "0.3.2"
-parking_lot = "0.12.4"
 cranelift = "0.126.1"
 cranelift-module = "0.126.1"
 cranelift-codegen = "0.126.1"

@@ -10,9 +10,9 @@ opt-level = 3
 thiserror = "2.0.16"
 fxhash = "0.2.1"
 zetaruntime = { path = "../zeta_utilities" }
-parking_lot = "0.12.1"
 smallvec = "2.0.0-alpha.12"
-atty = "0.2"
+is-terminal = "0.4.17"
+owo-colors = "4.2.3"
 
 [dev-dependencies]
 rstest = "0.26.1"

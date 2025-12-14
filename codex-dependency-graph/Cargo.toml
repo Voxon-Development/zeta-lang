@@ -8,6 +8,5 @@ opt-level = 3
 
 [dependencies]
 thiserror = "2.0.12"
-fxhash = "0.2.1"
 zetaruntime = { path = "../zeta_utilities" }
 ir = { path = "../ir" }
