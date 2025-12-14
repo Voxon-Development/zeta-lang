@@ -14,10 +14,10 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             .into_iter()
             .map(|g| HirGeneric {
                 name: g.type_name,
-                constraints: g.constraints,
+                constraints: self.ctx.bump.alloc_slice_immutable(g.constraints.iter().map(|ty| self.lower_type(ty)).collect::<Vec<_>>().as_slice()),
             })
             .collect();
-        let generics = self.ctx.bump.alloc_slice(&generics_vec);
+        let generics: &mut [HirGeneric<'a, 'bump>] = self.ctx.bump.alloc_slice(&generics_vec);
 
         let params_vec: Vec<hir::HirParam<'a, 'bump>> = func
             .params
@@ -66,20 +66,18 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     }
 
     pub(super) fn lower_struct_decl(&mut self, c: StructDecl<'a, 'bump>) -> HirStruct<'a, 'bump> {
-        let generics_vec: Vec<HirGeneric> = c
-            .generics
+        let generics_vec: Vec<HirGeneric> = c.generics
             .unwrap_or_default()
             .into_iter()
             .map(|g| HirGeneric {
                 name: g.type_name,
-                constraints: g.constraints,
+                constraints: self.ctx.bump.alloc_slice_immutable(g.constraints.iter().map(|ty| self.lower_type(ty)).collect::<Vec<_>>().as_slice()),
             })
             .collect();
         
         let generics = self.ctx.bump.alloc_slice(&generics_vec);
 
-        let fields_vec: Vec<HirField<'a, 'bump>> = c
-            .params
+        let fields_vec: Vec<HirField<'a, 'bump>> = c.params
             .unwrap_or_default()
             .iter()
             .map(|p| self.lower_field(p))
@@ -142,7 +140,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             .into_iter()
             .map(|g| HirGeneric {
                 name: g.type_name,
-                constraints: g.constraints,
+                constraints: self.ctx.bump.alloc_slice_immutable(g.constraints.iter().map(|ty| self.lower_type(ty)).collect::<Vec<_>>().as_slice()),
             })
             .collect();
         let generics = self.ctx.bump.alloc_slice(&generics_vec);
@@ -162,7 +160,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             .into_iter()
             .map(|g| HirGeneric {
                 name: g.type_name,
-                constraints: g.constraints,
+                constraints: self.ctx.bump.alloc_slice_immutable(g.constraints.iter().map(|ty| self.lower_type(ty)).collect::<Vec<_>>().as_slice()),
             })
             .collect();
         let generics = self.ctx.bump.alloc_slice(&generics_vec);
@@ -218,18 +216,17 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             })
             .collect();
         
-        let variants = self.ctx.bump.alloc_slice(&variants_vec);
+        let variants: &mut [HirEnumVariant<'a, 'bump>] = self.ctx.bump.alloc_slice(&variants_vec);
 
-        let generics_vec: Vec<HirGeneric> = e
-            .generics
+        let generics_vec: Vec<HirGeneric> = e.generics
             .unwrap_or_default()
             .into_iter()
             .map(|g| HirGeneric {
                 name: g.type_name,
-                constraints: g.constraints,
+                constraints: self.ctx.bump.alloc_slice_immutable(g.constraints.iter().map(|ty| self.lower_type(ty)).collect::<Vec<_>>().as_slice()),
             })
             .collect();
-        let generics = self.ctx.bump.alloc_slice(&generics_vec);
+        let generics: &mut [HirGeneric<'a, 'bump>] = self.ctx.bump.alloc_slice(&generics_vec);
 
         HirEnum {
             name: e.name,
