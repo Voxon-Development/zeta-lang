@@ -3,7 +3,6 @@ mod parser_tests {
     use crate::tokenizer::lexer::Lexer;
     use crate::parser::descent_parser::DescentParser;
     use std::sync::Arc;
-    use ctrc_graph::hir_integration::convenience::analyze_and_pretty_print;
     use ir::pretty::IrPrettyPrinter;
     use zetaruntime::arena::GrowableAtomicBump;
     use zetaruntime::bump::GrowableBump;
@@ -25,16 +24,32 @@ mod parser_tests {
         let bump_ref = Box::leak(parser_bump);
         let parser = DescentParser::new(context, bump_ref);
         
-        let _stmts = parser.parse(tokens);
+        let stmts = parser.parse(tokens);
+        println!("{:?}", stmts);
         Ok(true) // Just return success for now
     }
 
     #[test]
     fn test_simple_function_declaration() {
         let source = r#"
-            void main() {
+            fn main() {
                 return;
             }
+        "#;
+
+        let (context, bump) = create_test_context();
+        let result = parse_source(source, context.clone(), &bump);
+        assert!(result.is_ok(), "Failed to parse simple function: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_package_function_declaration() {
+        let source = r#"
+        package zeta.lang;
+
+        package fn main() {
+            return;
+        }
         "#;
 
         let (context, bump) = create_test_context();
