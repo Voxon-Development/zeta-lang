@@ -60,7 +60,7 @@ impl IrPrettyPrinter {
         // Format imports
         if !module.imports.is_empty() {
             for import in module.imports {
-                writeln!(output, "{}import {};", self.indent(), self.resolve_str(*import))?;
+                writeln!(output, "{}import;", self.indent())?;
             }
             writeln!(output)?;
         }
@@ -100,7 +100,7 @@ impl IrPrettyPrinter {
         // Format imports
         if !module.imports.is_empty() {
             for import in module.imports {
-                writeln!(output, "{}import {};", self.indent(), self.resolve_str(*import))?;
+                writeln!(output, "{}import;", self.indent())?;
             }
             writeln!(output)?;
         }
