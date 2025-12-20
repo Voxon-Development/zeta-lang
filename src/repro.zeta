@@ -1,0 +1,7 @@
+package zeta.repro
+
+struct Range<T> { start: T, end: T } {
+    fn new(start: T, end: T): Range<T> { 
+        Range { start: start, end: end } 
+    }
+}

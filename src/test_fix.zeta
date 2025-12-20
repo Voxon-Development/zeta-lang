@@ -1,0 +1,11 @@
+package zeta.test
+
+struct Range<T> { start: T, end: T } {
+    fn new(start: T, end: T): Range<T> { 
+        Range { start: start, end: end } 
+    }
+}
+
+fn main() {
+   let r = Range { start: 10, end: 20 };
+}
