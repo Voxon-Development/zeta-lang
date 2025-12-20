@@ -15,26 +15,26 @@ struct Array<T, const N: usize> { ptr: *mut T } {
         Array { ptr: p }
     }
     
-    inline fn get(*this, usize index): !T {
+    inline fn get(*this, index: usize): !T {
         if (index >= length) {
             return ArrayError.IndexOutOfBounds;
         }
         get_unchecked(index)
     }
     
-    inline fn set(*mut this, usize index, T value) {
+    inline fn set(*mut this, index: usize, value: T) {
         if (index >= this.length) {
             return ArrayError.IndexOutOfBound;
         }
         set_unchecked(index, value);
     }
     
-    inline fn get_unchecked(*this, usize index): T {
+    inline fn get_unchecked(*this, index: usize): T {
         p := this.ptr + offset;
         *p
     }
     
-    inline fn set_unchecked(*mut this, usize index, T value) {
+    inline fn set_unchecked(*mut this, index: usize, value: T) {
         p := this.ptr + offset;
         *p = value;
     }
