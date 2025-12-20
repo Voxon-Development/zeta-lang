@@ -1,4 +1,5 @@
 use super::context::HirLowerer;
+use ir::ast::Path;
 use ir::ast::Stmt;
 use ir::hir::{Hir, HirModule, HirStmt, StrId};
 use zetaruntime::bump::GrowableBump;
@@ -7,15 +8,18 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     // ===============================
     // Module Lowering
     // ===============================
-    pub fn lower_module(&mut self, stmts: Vec<Stmt<'a, '_>, &'_ GrowableBump>) -> HirModule<'a, 'bump> {
+    pub fn lower_module(
+        &mut self,
+        stmts: Vec<Stmt<'a, '_>, &'_ GrowableBump>,
+    ) -> HirModule<'a, 'bump> {
         let mut items: Vec<Hir<'a, 'bump>> = Vec::new();
-        let mut imports: Vec<StrId> = Vec::new();
-        
+        let mut imports: Vec<Path<'bump>> = Vec::new();
+
         for stmt in stmts {
             match stmt {
                 // Handle Import statements - add to imports list for dependency tracking
                 Stmt::Import(import_stmt) => {
-                    imports.push(import_stmt.path);
+                    imports.push(*import_stmt.path);
                     // Import statements are tracked but don't generate HIR items
                     // They will be used by the dependency graph for module resolution
                 }
@@ -29,7 +33,6 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 // All other statements are lowered normally
                 other => {
                     let item = self.lower_toplevel(other);
-                    // If we lowered a function/class/interface, register it for later resolution
                     match &item {
                         Hir::Func(f) => {
                             self.ctx.functions.borrow_mut().insert(f.name, **f);
@@ -46,10 +49,10 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 }
             }
         }
-        
+
         let items_slice = self.ctx.bump.alloc_slice(&items);
         let imports_slice = self.ctx.bump.alloc_slice(&imports);
-        
+
         HirModule {
             name: StrId(self.ctx.context.intern("root")),
             imports: imports_slice,
@@ -80,15 +83,21 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 Hir::Enum(self.ctx.bump.alloc_value(enum_decl))
             }
             Stmt::UnsafeBlock(b) => {
-                let body_vec: Vec<HirStmt<'a, 'bump>> = b.block.into_iter().map(|s| self.lower_stmt(*s)).collect();
+                let body_vec: Vec<HirStmt<'a, 'bump>> =
+                    b.block.into_iter().map(|s| self.lower_stmt(*s)).collect();
                 let body_slice = self.ctx.bump.alloc_slice(&body_vec);
-                let inner_block = self.ctx.bump.alloc_value_immutable(HirStmt::Block { body: body_slice });
+                let inner_block = self
+                    .ctx
+                    .bump
+                    .alloc_value_immutable(HirStmt::Block { body: body_slice });
                 let stmt = HirStmt::UnsafeBlock { body: inner_block };
                 Hir::Stmt(self.ctx.bump.alloc_value_immutable(stmt))
             }
-            Stmt::Const(c) => {
-                Hir::Const(self.ctx.bump.alloc_value_immutable(self.lower_const_stmt(*c)))
-            }
+            Stmt::Const(c) => Hir::Const(
+                self.ctx
+                    .bump
+                    .alloc_value_immutable(self.lower_const_stmt(*c)),
+            ),
             other => {
                 let stmt = self.lower_stmt(other);
                 Hir::Stmt(self.ctx.bump.alloc_value(stmt))

@@ -1,9 +1,13 @@
-use ir::ast::{Block, StructDecl, ConstStmt, EffectDecl, EnumDecl, EnumVariant, Field, FuncDecl, Generic, ImplDecl, InterfaceDecl, NormalParam, Param, PermitsExpr, StateMachineDecl, StateRef, Stmt, Transition, Type, Visibility};
-use ir::hir::StrId;
 use crate::parser::declaration_parser::DeclarationParser;
-use crate::parser::parser_types::parse_to_type;
+use crate::parser::parser_types::parse_type;
 use crate::tokenizer::cursor::TokenCursor;
 use crate::tokenizer::tokens::TokenKind;
+use ir::ast::{
+    Block, ConstStmt, EffectDecl, EnumDecl, EnumVariant, Field, FuncDecl, Generic, ImplDecl,
+    InterfaceDecl, NormalParam, Param, PermitsExpr, StateMachineDecl, StateRef, Stmt, StructDecl,
+    Transition, Type, Visibility,
+};
+use ir::hir::StrId;
 use smallvec::SmallVec;
 
 impl<'a, 'bump> DeclarationParser<'a, 'bump>
@@ -15,8 +19,7 @@ where
 
         let visibility = Self::fetch_visibility(cursor);
 
-        let name = cursor.consume_ident()
-            .expect("Expected enum name");
+        let name = cursor.consume_ident().expect("Expected enum name");
 
         let generics = if cursor.peek_kind() == Some(TokenKind::Lt) {
             cursor.advance_kind();
@@ -44,61 +47,14 @@ where
                 cursor.advance_kind(); // consume '('
 
                 while cursor.peek_kind() != Some(TokenKind::RParen) && !cursor.at_end() {
-                    let type_name = match cursor.consume_ident() {
-                        Some(name) => name,
-                        None => {
-                            eprintln!("Error: Expected field type");
-                            cursor.advance_kind(); // Skip invalid token
-                            continue;
-                        }
-                    };
-
-                    let type_str = self.context.resolve_string(&type_name);
-                    let field_type = parse_to_type(type_str, cursor.peek_kind().unwrap_or(TokenKind::EOF), self.context.clone(), self.bump);
-
-                    let generics = if cursor.peek_kind() == Some(TokenKind::Lt) {
-                        cursor.advance_kind(); // consume '<'
-                        let mut generic_params = Vec::new();
-                        
-                        while cursor.peek_kind() != Some(TokenKind::Gt) && !cursor.at_end() {
-                            let type_name = match cursor.consume_ident() {
-                                Some(name) => name,
-                                None => {
-                                    eprintln!("Error: Expected type in generic parameters");
-                                    cursor.advance_kind();
-                                    continue;
-                                }
-                            };
-
-                            let type_str = self.context.resolve_string(&type_name);
-                            let ty = parse_to_type(type_str, cursor.peek_kind().unwrap_or(TokenKind::EOF), self.context.clone(), self.bump);
-                            generic_params.push(ty);
-                            
-                            if cursor.peek_kind() == Some(TokenKind::Comma) {
-                                cursor.advance_kind();
-                            } else if cursor.peek_kind() != Some(TokenKind::Gt) {
-                                eprintln!("Expected ',' or '>' in generic parameters");
-                                break;
-                            }
-                        }
-                        
-                        if cursor.peek_kind() == Some(TokenKind::Gt) {
-                            cursor.advance_kind(); // consume '>'
-                            Some(self.bump.alloc_slice(&generic_params))
-                        } else {
-                            eprintln!("Expected '>' after generic parameters");
-                            None
-                        }
-                    } else {
-                        None
-                    };
+                    let field_type = parse_type(cursor, self.context.clone(), self.bump);
 
                     let dummy_name = self.context.intern("_");
                     fields_vec.push(Field {
                         name: StrId(dummy_name),
                         field_type,
                         visibility: Visibility::Public,
-                        generics,
+                        generics: None,
                     });
 
                     if cursor.peek_kind() == Some(TokenKind::Comma) {
@@ -138,8 +94,7 @@ where
     pub fn parse_state_machine(&self, cursor: &mut TokenCursor<'a>) -> Stmt<'a, 'bump> {
         cursor.expect_kind(TokenKind::Statem);
 
-        let name = cursor.consume_ident()
-            .expect("Expected state machine name");
+        let name = cursor.consume_ident().expect("Expected state machine name");
 
         cursor.expect_kind(TokenKind::LBrace);
 
@@ -168,7 +123,8 @@ where
 
         cursor.expect_kind(TokenKind::RBrace);
 
-        let transitions_slice: &[Transition<'a, 'bump>] = self.bump.alloc_slice_copy(&transitions_vec);
+        let transitions_slice: &[Transition<'a, 'bump>] =
+            self.bump.alloc_slice_copy(&transitions_vec);
         let state_machine_decl = self.bump.alloc_value(StateMachineDecl {
             name,
             transitions: transitions_slice,
@@ -206,25 +162,18 @@ where
             false
         };
 
-        let name = cursor.consume_ident()
-            .expect("Expected interface name");
+        let name = cursor.consume_ident().expect("Expected interface name");
 
-        let mut current_kind = cursor.peek_kind();
-        let permits: Option<&PermitsExpr> = if current_kind == Some(TokenKind::Permits) {
+        let permits: Option<&PermitsExpr> = if cursor.peek_kind() == Some(TokenKind::Permits) {
             cursor.advance_kind();
-            current_kind = cursor.peek_kind();
             let mut types_vec = Vec::new();
 
             loop {
-                let type_name = cursor.consume_ident()
-                    .expect("Expected type in permits clause");
-                let type_str = self.context.resolve_string(&type_name);
-                let permit_type = parse_to_type(type_str, current_kind.unwrap(), self.context.clone(), self.bump);
+                let permit_type = parse_type(cursor, self.context.clone(), self.bump);
                 types_vec.push(permit_type);
 
-                if current_kind == Some(TokenKind::Comma) {
+                if cursor.peek_kind() == Some(TokenKind::Comma) {
                     cursor.advance_kind();
-                    current_kind = cursor.peek_kind();
                 } else {
                     break;
                 }
@@ -283,11 +232,9 @@ where
             None
         };
 
-        let interface = cursor.consume_ident()
-            .expect("Expected interface name");
+        let interface = cursor.consume_ident().expect("Expected interface name");
 
-        let target = cursor.consume_ident()
-            .expect("Expected target type name");
+        let target = cursor.consume_ident().expect("Expected target type name");
 
         cursor.expect_kind(TokenKind::LBrace);
 
@@ -318,85 +265,73 @@ where
     pub fn parse_struct_decl(&self, cursor: &mut TokenCursor<'a>) -> Stmt<'a, 'bump> {
         cursor.expect_kind(TokenKind::Struct);
 
-        let visibility = Self::fetch_visibility(cursor);
+        let name = cursor.consume_ident().expect("Expected struct name");
+        eprintln!(
+            "DEBUG struct {} next token = {:?}",
+            name,
+            cursor.peek_kind()
+        );
 
-        let name = cursor.consume_ident()
-            .expect("Expected class name");
 
-        let generics: Option<&'bump [Generic<'a, 'bump>]> = if cursor.peek_kind() == Some(TokenKind::Lt) {
-            cursor.advance_kind();
+        let generics = if cursor.peek_kind() == Some(TokenKind::Lt) {
             self.parse_generics(cursor)
         } else {
             None
         };
 
-        let params: Option<&'bump [Param<'a, 'bump>]> = if cursor.peek_kind() == Some(TokenKind::LParen) {
-            println!("Debug: Parsing struct params in parentheses");
-            cursor.advance_kind();
-            self.parse_struct_params(cursor)
-        } else if cursor.peek_kind() == Some(TokenKind::LBrace) {
-            cursor.advance_kind();
-            let fields = self.parse_struct_fields(cursor);
-            cursor.expect_kind(TokenKind::RBrace);
-            fields
-        } else {
-            println!("Debug: No struct params/fields found");
-            None
-        };
+        cursor.expect_kind(TokenKind::LBrace);
+        let params = self.parse_struct_fields(cursor);
+        cursor.expect_kind(TokenKind::RBrace);
 
         cursor.expect_kind(TokenKind::LBrace);
 
-        let mut methods_vec: Vec<FuncDecl> = Vec::new();
-        let constants_vec: Vec<ConstStmt> = Vec::new();
-        let mut destructor: Option<&'bump Block<'a, 'bump>> = None;
+        let mut methods = Vec::new();
+        let constants = Vec::new();
+        let mut destructor = None;
 
         while cursor.peek_kind() != Some(TokenKind::RBrace) && !cursor.at_end() {
-            if cursor.peek_kind() == Some(TokenKind::BitNot) {
-                cursor.advance_kind(); // consume '~'
-                let destructor_name = cursor.consume_ident()
-                    .expect("Expected destructor name");
-
-                let _ = cursor.expect_kind(TokenKind::LParen);
-                let _ = cursor.expect_kind(TokenKind::RParen);
-
-                if destructor_name != name {
-                    eprintln!("Warning: Destructor name doesn't match class name");
+            match cursor.peek_kind() {
+                Some(TokenKind::Fn) => {
+                    methods.push(self.parse_function_decl(cursor));
                 }
-
-                destructor = self.parse_block(cursor);
-            } else if cursor.peek_kind() == Some(TokenKind::Const) {
-                cursor.advance_kind();
-                // Skip const parsing for now
-                while cursor.peek_kind() != Some(TokenKind::Semicolon) && !cursor.at_end() {
+                Some(TokenKind::Const) => {
                     cursor.advance_kind();
+                    while cursor.peek_kind() != Some(TokenKind::Semicolon) && !cursor.at_end() {
+                        cursor.advance_kind();
+                    }
+                    cursor.expect_kind(TokenKind::Semicolon);
                 }
-                cursor.expect_kind(TokenKind::Semicolon);
-            } else if cursor.peek_kind() == Some(TokenKind::Fn) {
-                let func_decl = self.parse_function_decl(cursor);
-                methods_vec.push(func_decl);
-            } else {
-                // Skip unknown tokens in struct body
-                cursor.advance_kind();
+                Some(TokenKind::BitNot) => {
+                    cursor.advance_kind();
+                    let dtor_name = cursor.consume_ident().expect("Expected destructor name");
+                    cursor.expect_kind(TokenKind::LParen);
+                    cursor.expect_kind(TokenKind::RParen);
+
+                    if dtor_name != name {
+                        eprintln!("Warning: destructor name does not match struct name");
+                    }
+
+                    destructor = self.parse_block(cursor);
+                }
+                _ => {
+                    cursor.advance_kind(); // hard skip
+                }
             }
         }
 
         cursor.expect_kind(TokenKind::RBrace);
 
-        let body_slice = self.bump.alloc_slice_copy(&methods_vec);
-        let constants_slice = self.bump.alloc_slice_copy(&constants_vec);
-
-
-        let class_decl = self.bump.alloc_value(StructDecl {
-            visibility,
+        let struct_decl = self.bump.alloc_value(StructDecl {
+            visibility: Visibility::Public,
             name,
             generics,
             params,
-            body: body_slice,
-            constants: constants_slice,
+            body: self.bump.alloc_slice_copy(&methods),
+            constants: self.bump.alloc_slice_copy(&constants),
             destructor,
         });
 
-        Stmt::StructDecl(class_decl)
+        Stmt::StructDecl(struct_decl)
     }
 
     pub fn parse_effect(&self, cursor: &mut TokenCursor<'a>) -> Stmt<'a, 'bump> {
@@ -411,25 +346,18 @@ where
             false
         };
 
-        let name = cursor.consume_ident()
-            .expect("Expected effect name");
+        let name = cursor.consume_ident().expect("Expected effect name");
 
-        let mut current_kind = cursor.peek_kind();
         let permits: Option<&[Type]> = if cursor.peek_kind() == Some(TokenKind::Permits) {
             cursor.advance_kind();
-            current_kind = cursor.peek_kind();
             let mut types_vec: Vec<Type> = Vec::with_capacity(3);
 
             loop {
-                let type_name = cursor.consume_ident()
-                    .expect("Expected type in permits clause");
-                let type_str = self.context.resolve_string(&type_name);
-                let permit_type = parse_to_type(type_str, current_kind.unwrap(), self.context.clone(), self.bump);
+                let permit_type = parse_type(cursor, self.context.clone(), self.bump);
                 types_vec.push(permit_type);
 
-                if current_kind == Some(TokenKind::Comma) {
+                if cursor.peek_kind() == Some(TokenKind::Comma) {
                     cursor.advance_kind();
-                    current_kind = cursor.peek_kind();
                 } else {
                     break;
                 }
@@ -462,130 +390,68 @@ where
     }
 
     /// Parse struct field declarations: { i32 x, y: String }
-    fn parse_struct_fields(&self, cursor: &mut TokenCursor<'a>) -> Option<&'bump [Param<'a, 'bump>]> {
+    fn parse_struct_fields(
+        &self,
+        cursor: &mut TokenCursor<'a>,
+    ) -> Option<&'bump [Param<'a, 'bump>]> {
         let mut fields: SmallVec<Param, 8> = SmallVec::new();
-        
+
         loop {
-            match cursor.peek_kind() {
-                Some(TokenKind::RBrace) => {
-                    // Don't consume RBrace here - let the caller handle it
-                    break;
-                }
-                Some(TokenKind::I32) | Some(TokenKind::I64) | Some(TokenKind::U32) | Some(TokenKind::U64) | 
-                Some(TokenKind::F32) | Some(TokenKind::F64) | Some(TokenKind::Boolean) | Some(TokenKind::Str) => {
-                    let type_token = cursor.peek_kind().unwrap();
-                    cursor.advance_kind(); // consume type token
-                    
-                    let name = cursor.consume_ident().expect("Expected field name after type");
-                    let param_type = match type_token {
-                        TokenKind::I32 => Type::i32(),
-                        TokenKind::I64 => Type::i64(),
-                        TokenKind::U32 => Type::i32(),
-                        TokenKind::U64 => Type::i64(),
-                        TokenKind::F32 => Type::f32(),
-                        TokenKind::F64 => Type::f64(),
-                        TokenKind::Boolean => Type::boolean(),
-                        TokenKind::Str => Type::string(),
-                        _ => Type::void(),
-                    };
-                    
-                    let normal_param = self.bump.alloc_value(NormalParam {
-                        is_mut: false,
-                        is_move: false,
-                        name,
-                        type_annotation: param_type,
-                        visibility: Visibility::Public,
-                        default_value: None,
-                    });
-                    
-                    fields.push(Param::Normal(normal_param));
-                }
-                Some(TokenKind::Ident) => {
-                    // Check if it's "name: type" syntax
-                    let name = cursor.consume_ident().expect("Expected field name");
-                    
-                    if cursor.peek_kind() == Some(TokenKind::Colon) {
-                        // Parse: name: type (e.g., "y: String" or "y: i32")
-                        cursor.advance_kind(); // consume ':'
-                        
-                        // Get the next token kind to determine if it's a primitive type
-                        let type_kind = cursor.peek_kind().expect("Expected type after colon");
-                        let param_type = match type_kind {
-                            TokenKind::I8 | TokenKind::I16 | TokenKind::I32 | TokenKind::I64 | TokenKind::I128 |
-                            TokenKind::U8 | TokenKind::U16 | TokenKind::U32 | TokenKind::U64 | TokenKind::U128 |
-                            TokenKind::F32 | TokenKind::F64 | TokenKind::Boolean | TokenKind::String | TokenKind::Void => {
-                                cursor.advance_kind(); // consume the primitive type token
-                                match type_kind {
-                                    TokenKind::I8 => Type::i8(),
-                                    TokenKind::I16 => Type::i16(),
-                                    TokenKind::I32 => Type::i32(),
-                                    TokenKind::I64 => Type::i64(),
-                                    TokenKind::I128 => Type::i128(),
-                                    TokenKind::U8 => Type::u8(),
-                                    TokenKind::U16 => Type::u16(),
-                                    TokenKind::U32 => Type::u32(),
-                                    TokenKind::U64 => Type::u64(),
-                                    TokenKind::U128 => Type::u128(),
-                                    TokenKind::F32 => Type::f32(),
-                                    TokenKind::F64 => Type::f64(),
-                                    TokenKind::Boolean => Type::boolean(),
-                                    TokenKind::String => Type::string(),
-                                    TokenKind::Void => Type::void(),
-                                    _ => unreachable!(),
-                                }
-                            },
-                            TokenKind::Ident => {
-                                let type_name = cursor.consume_ident().expect("Expected type after colon");
-                                let type_str = self.context.resolve_string(&type_name);
-                                parse_to_type(type_str, type_kind, self.context.clone(), self.bump)
-                            },
-                            _ => {
-                                panic!("Expected type after colon, found: {:?}", type_kind);
-                            }
-                        };
-                        
-                        let normal_param = self.bump.alloc_value(NormalParam {
-                            is_mut: false,
-                            is_move: false,
-                            name,
-                            type_annotation: param_type,
-                            visibility: Visibility::Public,
-                            default_value: None,
-                        });
-                        
-                        fields.push(Param::Normal(normal_param));
-                    } else {
-                        let type_str = self.context.resolve_string(&name);
-                        let field_name = cursor.consume_ident().expect("Expected field name after type");
-                        let param_type = parse_to_type(type_str, cursor.peek_kind().unwrap_or(TokenKind::EOF), self.context.clone(), self.bump);
-                        
-                        let normal_param = self.bump.alloc_value(NormalParam {
-                            is_mut: false,
-                            is_move: false,
-                            name: field_name,
-                            type_annotation: param_type,
-                            visibility: Visibility::Public,
-                            default_value: None,
-                        });
-                        
-                        fields.push(Param::Normal(normal_param));
-                    }
-                }
-                _ => {
-                    println!("Debug: Unexpected token in struct fields: {:?}", cursor.peek_kind());
-                    break;
-                }
+            if cursor.peek_kind() == Some(TokenKind::RBrace) {
+                break;
             }
-            
+
+            // Check for "name: type" syntax
+            if cursor.peek_kind() == Some(TokenKind::Ident)
+                && cursor.peek_kind_n(1) == Some(TokenKind::Colon)
+            {
+                let name = cursor.consume_ident().unwrap();
+                cursor.advance_kind(); // consume ':'
+
+                let param_type = parse_type(cursor, self.context.clone(), self.bump);
+
+                let normal_param = self.bump.alloc_value(NormalParam {
+                    is_mut: false,
+                    is_move: false,
+                    name,
+                    type_annotation: param_type,
+                    visibility: Visibility::Public,
+                    default_value: None,
+                });
+
+                fields.push(Param::Normal(normal_param));
+            } else {
+                let name = cursor
+                    .consume_ident()
+                    .unwrap_or_else(|| panic!("Expected field name before type, found: {:?}", cursor.peek_kind()));
+
+                cursor.expect_kind(TokenKind::Colon);
+                let param_type = parse_type(cursor, self.context.clone(), self.bump);
+
+                let normal_param = self.bump.alloc_value(NormalParam {
+                    is_mut: false,
+                    is_move: false,
+                    name,
+                    type_annotation: param_type,
+                    visibility: Visibility::Public,
+                    default_value: None,
+                });
+
+                fields.push(Param::Normal(normal_param));
+            }
+
             // Handle comma separator
             if cursor.peek_kind() == Some(TokenKind::Comma) {
                 cursor.advance_kind();
             } else if cursor.peek_kind() != Some(TokenKind::RBrace) {
-                println!("Debug: Expected comma or RBrace, found: {:?}", cursor.peek_kind());
+                println!(
+                    "Debug: Expected comma or RBrace, found: {:?}",
+                    cursor.peek_kind()
+                );
                 break;
             }
         }
-        
+
         if fields.is_empty() {
             None
         } else {

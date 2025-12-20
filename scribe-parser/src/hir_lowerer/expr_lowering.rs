@@ -40,7 +40,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 }
             }
 
-            Expr::StructDecl { callee, arguments, positional: _, span } => {
+            Expr::StructInit { callee, arguments, positional: _, span } => {
                 let name = self.lower_expr(callee);
                 let args_vec: Vec<HirExpr<'a, 'bump>> = arguments.iter().map(|a| self.lower_expr(a)).collect();
                 let args = self.ctx.bump.alloc_slice(&args_vec);

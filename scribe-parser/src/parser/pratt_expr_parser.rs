@@ -241,7 +241,7 @@ where
                         if is_named_fields {
                             cursor.advance_kind(); // consume '{'
                             let args = self.parse_class_init_args(cursor);
-                            self.bump.alloc_value(Expr::StructDecl {
+                            self.bump.alloc_value(Expr::StructInit {
                                 callee: self.bump.alloc_value_immutable(Expr::Ident { name, span }),
                                 arguments: self.bump.alloc_slice_copy(&args),
                                 positional: true,
@@ -328,7 +328,7 @@ where
                         cursor.advance_kind(); // consume '{'
                         let args = self.parse_class_init_args(cursor);
                         let args_slice = self.bump.alloc_slice_copy(&args);
-                        self.bump.alloc_value(Expr::StructDecl {
+                        self.bump.alloc_value(Expr::StructInit {
                             callee: expr,
                             arguments: args_slice,
                             positional: false,

@@ -1,3 +1,4 @@
+use crate::ast::Path;
 use std::fmt::{Display, Formatter, Write};
 use std::ops::Deref;
 use zetaruntime::string_pool::VmString;
@@ -97,7 +98,7 @@ where
     'bump: 'a,
 {
     pub name: StrId,
-    pub imports: &'bump [StrId],
+    pub imports: &'bump [Path<'bump>],
     pub items: &'bump [Hir<'a, 'bump>],
 }
 

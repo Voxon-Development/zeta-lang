@@ -50,10 +50,6 @@ pub fn pass_type_checking_and_ctrc(
 }
 
 /// Pass 3: Monomorphization
-/// Instantiates generic functions and types with concrete type arguments
-/// This pass is typically run during code generation, not here
 pub fn pass_monomorphization(_module: &HirModule) -> Result<(), CompilerError> {
-    // Monomorphization happens during MIR lowering in the backend
-    // This is a placeholder for future explicit monomorphization pass
     Ok(())
 }

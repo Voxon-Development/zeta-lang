@@ -1,22 +1,18 @@
+use crate::compilation_passes::{
+    pass_hir_lowering, pass_monomorphization, pass_type_checking_and_ctrc,
+};
+use crate::main_structs::{CompilerError, ModuleWithArena};
+use codex_dependency_graph::DepGraph;
+use emberforge_compiler::midend::ir::module_lowerer::MirModuleLowerer;
 use engraver_assembly_emit::backend::Backend;
+use engraver_assembly_emit::cranelift::cranelift_backend::CraneliftBackend;
+use ir::hir::HirModule;
+use ir::ssa_ir::Module;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use walkdir::WalkDir;
-use codex_dependency_graph::module_collection_builder::ModuleBuilder;
-use codex_dependency_graph::topo::topo_sort;
-use codex_dependency_graph::DepGraph;
-use ctrc_graph::{analyze_ctrc_and_report, CTRCAnalysisResult};
-use emberforge_compiler::midend::ir::module_lowerer::MirModuleLowerer;
-use engraver_assembly_emit::cranelift::cranelift_backend::CraneliftBackend;
-use ir::errors::reporter::ErrorReporter;
-use ir::hir::HirModule;
-use ir::ssa_ir::Module;
-use scribe_parser::hir_lowerer::HirLowerer;
 use zetaruntime::arena::GrowableAtomicBump;
-use zetaruntime::bump::GrowableBump;
 use zetaruntime::string_pool::StringPool;
-use crate::main_structs::{CompilerError, ModuleWithArena};
-use crate::compilation_passes::{pass_hir_lowering, pass_type_checking_and_ctrc, pass_monomorphization};
 
 pub(crate) fn compiler_lib_path() -> Result<PathBuf, CompilerError> {
     let exe = std::env::current_exe()
@@ -51,7 +47,7 @@ pub(crate) fn collect_zeta_files(dir: &Path) -> Result<Vec<PathBuf>, CompilerErr
 
 pub(crate) fn compile_files<'a, 'bump>(
     files: &[PathBuf],
-    pool: Arc<StringPool>
+    pool: Arc<StringPool>,
 ) -> Result<Vec<ModuleWithArena<'a, 'bump>>, CompilerError> {
     let modules: Vec<ModuleWithArena> = files
         .iter()
@@ -69,10 +65,10 @@ pub(crate) fn compile_files<'a, 'bump>(
 pub(crate) fn emit_all(
     modules: Vec<HirModule>,
     backend: &mut CraneliftBackend,
-    pool: Arc<StringPool>
+    pool: Arc<StringPool>,
 ) {
     let mut dep_graph = DepGraph::new();
-    
+
     dep_graph.build_from_hir(&modules, &pool);
 
     let len = modules.len();
@@ -81,16 +77,19 @@ pub(crate) fn emit_all(
         let user_indices: Vec<usize> = (1..len).collect();
         dep_graph.link_stdlib_to_user(stdlib_idx, &user_indices);
     }
-    
+
     let compilation_order: Vec<usize> = dep_graph.get_module_compilation_order();
-    
+
     for module_idx in compilation_order {
         if module_idx < len {
             let hir_module: HirModule = modules[module_idx];
             let mir_module: Module = MirModuleLowerer::new(pool.clone()).lower_module(hir_module);
             CraneliftBackend::emit_module(backend, &mir_module);
         } else {
-            eprintln!("Warning: index {} is out of bounds for module list of length {}", module_idx, len);
+            eprintln!(
+                "Warning: index {} is out of bounds for module list of length {}",
+                module_idx, len
+            );
         }
     }
 }
@@ -127,7 +126,8 @@ where
     let bump: Arc<GrowableAtomicBump<'bump>> = Arc::new(atomic_bump);
 
     let file_name_static: &str = {
-        let file_name_string = path.file_name()
+        let file_name_string = path
+            .file_name()
             .and_then(|s| s.to_str())
             .ok_or_else(|| CompilerError::InvalidFileName(Vec::new()))?;
 
@@ -144,8 +144,10 @@ where
         let stored: &mut [u8] = bump
             .alloc_many(contents_bytes)
             .ok_or(CompilerError::FailedToAllocateBump)?;
-        std::str::from_utf8(unsafe { std::slice::from_raw_parts(stored.as_ptr(), contents_bytes.len()) })
-            .unwrap()
+        std::str::from_utf8(unsafe {
+            std::slice::from_raw_parts(stored.as_ptr(), contents_bytes.len())
+        })
+        .unwrap()
     };
 
     println!("{}", contents_static);

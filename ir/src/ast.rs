@@ -4,7 +4,7 @@ use std::fmt::{Display, Formatter};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Stmt<'a, 'bump> where 'bump: 'a {
-    Import(&'bump ImportStmt),
+    Import(&'bump ImportStmt<'bump>),
     Package(&'bump PackageStmt<'bump>),
     Let(&'bump LetStmt<'a, 'bump>),
     Const(&'bump ConstStmt<'a, 'bump>),
@@ -29,8 +29,8 @@ pub enum Stmt<'a, 'bump> where 'bump: 'a {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ImportStmt {
-    pub path: StrId,
+pub struct ImportStmt<'bump> {
+    pub path: &'bump Path<'bump>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -428,7 +428,7 @@ where
         rhs: &'bump Expr<'a, 'bump>,
         span: SourceSpan<'a>,
     },
-    StructDecl {
+    StructInit {
         callee: &'bump Expr<'a, 'bump>,
         arguments: &'bump [Expr<'a, 'bump>],
         positional: bool,

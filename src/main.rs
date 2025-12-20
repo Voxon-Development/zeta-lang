@@ -115,6 +115,7 @@ fn main() -> Result<(), CompilerError> {
                     println!("Arguments: {:?}", args);
                 }
             }
+            //run_compiler(path.clone(), &out_dir, *optimize, cli.verbose, *emit_obj, cli.lib);
             // TODO: Implement actual run logic
             Ok(())
         }
@@ -211,9 +212,9 @@ fn run_compiler(
     emit_all(stdlib_modules, &mut backend, arc.clone());
     emit_all(user_modules, &mut backend, arc.clone());
 
-    let out_obj = backend.finish(out_dir).map_err(CompilerError::FinishError)?;
+    let out_obj: PathBuf = backend.finish(out_dir).map_err(CompilerError::FinishError)?;
     if !emit_obj {
-        let program_path = out_dir.join("program");
+        let program_path: PathBuf = out_dir.join("program");
         link(&[out_obj.to_str().unwrap()], program_path.to_str().unwrap(), true)?;
     }
 

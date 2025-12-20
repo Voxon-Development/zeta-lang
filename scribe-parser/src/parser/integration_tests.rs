@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod integration_tests {
-    use crate::tokenizer::lexer::Lexer;
-    use crate::tokenizer::cursor::TokenCursor;
     use crate::parser::declaration_parser::DeclarationParser;
     use crate::parser::statement_parser::StatementParser;
+    use crate::tokenizer::cursor::TokenCursor;
+    use crate::tokenizer::lexer::Lexer;
     use std::sync::Arc;
     use zetaruntime::bump::GrowableBump;
     use zetaruntime::string_pool::StringPool;
@@ -11,15 +11,15 @@ mod integration_tests {
     fn create_test_parser() -> (Arc<StringPool>, DeclarationParser<'static, 'static>) {
         let context = Arc::new(StringPool::new().expect("Failed to create string pool"));
         let bump = Box::new(GrowableBump::new(4096, 8));
-        
+
         // Leak the bump allocator to extend its lifetime for testing
         let bump_ref = Box::leak(bump);
         let parser = DeclarationParser::new(context.clone(), bump_ref);
-        
+
         (context, parser)
     }
 
-    fn tokenize_source(source: &str, context: Arc<StringPool>) -> crate::tokenizer::tokens::Tokens {
+    fn tokenize_source<'a>(source: &str, context: Arc<StringPool>) -> crate::tokenizer::tokens::Tokens<'a> {
         let lexer = Lexer::from_str(source, "test.zeta", context);
         lexer.tokenize()
     }
@@ -27,31 +27,47 @@ mod integration_tests {
     #[test]
     fn test_simple_tokenization() {
         use crate::tokenizer::tokens::TokenKind;
-        
+
         let context = Arc::new(StringPool::new().expect("Failed to create string pool"));
         let source = "void main() { return; }";
         let tokens = tokenize_source(source, context);
-        
+
         // Basic tokenization test
         assert!(!tokens.kinds.is_empty(), "Expected tokens to be generated");
         println!("Tokenized {} tokens", tokens.kinds.len());
-        
+
         // Verify expected token sequence
-        assert_eq!(tokens.kinds[0], TokenKind::Void, "Expected first token to be 'void'");
-        assert_eq!(tokens.kinds[1], TokenKind::Ident, "Expected second token to be identifier 'main'");
-        assert_eq!(tokens.kinds[2], TokenKind::LParen, "Expected third token to be '('");
-        assert_eq!(tokens.kinds[3], TokenKind::RParen, "Expected fourth token to be ')'");
+        assert_eq!(
+            tokens.kinds[0],
+            TokenKind::Void,
+            "Expected first token to be 'void'"
+        );
+        assert_eq!(
+            tokens.kinds[1],
+            TokenKind::Ident,
+            "Expected second token to be identifier 'main'"
+        );
+        assert_eq!(
+            tokens.kinds[2],
+            TokenKind::LParen,
+            "Expected third token to be '('"
+        );
+        assert_eq!(
+            tokens.kinds[3],
+            TokenKind::RParen,
+            "Expected fourth token to be ')'"
+        );
     }
 
     #[test]
     fn test_function_parsing_basic() {
         use ir::ast::Stmt;
-        
+
         let (context, parser) = create_test_parser();
         let source = "void main() { return; }";
         let tokens = Box::leak(Box::new(tokenize_source(source, context.clone())));
         let mut cursor = TokenCursor::from_tokens(tokens);
-        
+
         // Try to parse a function
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             parser.parse_function(&mut cursor)
@@ -60,10 +76,14 @@ mod integration_tests {
         match result {
             Ok(stmt) => {
                 println!("Successfully parsed function statement");
-                
+
                 // Verify the parsed statement is a function declaration
                 if let Stmt::FuncDecl(func_decl) = stmt {
-                    assert_eq!(context.resolve_string(&func_decl.name), "main", "Expected function named 'main'");
+                    assert_eq!(
+                        context.resolve_string(&func_decl.name),
+                        "main",
+                        "Expected function named 'main'"
+                    );
                 } else {
                     panic!("Expected function declaration, got {:?}", stmt);
                 }
@@ -79,17 +99,17 @@ mod integration_tests {
         let context = Arc::new(StringPool::new().expect("Failed to create string pool"));
         let bump = Box::new(GrowableBump::new(4096, 8));
         let bump_ref = Box::leak(bump);
-        
+
         let stmt_parser = StatementParser::new(context.clone(), bump_ref);
         let source = "42 + 3 * 5";
         let tokens = Box::leak(Box::new(tokenize_source(source, context)));
         let mut cursor = TokenCursor::from_tokens(tokens);
-        
+
         // Try to parse an expression statement
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             stmt_parser.parse_expr_stmt(&mut cursor)
         }));
-        
+
         match result {
             Ok(_stmt) => {
                 println!("Successfully parsed expression statement");
@@ -103,7 +123,7 @@ mod integration_tests {
     #[test]
     fn test_struct_parsing_basic() {
         use ir::ast::Stmt;
-        
+
         let (context, parser) = create_test_parser();
         let source = r#"
             struct Point { i32 x, i32 y } {
@@ -111,20 +131,28 @@ mod integration_tests {
         "#;
         let tokens = Box::leak(Box::new(tokenize_source(source, context.clone())));
         let mut cursor = TokenCursor::from_tokens(tokens);
-        
+
         // Try to parse a struct
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             parser.parse_struct_decl(&mut cursor)
         }));
-        
+
         match result {
             Ok(stmt) => {
                 println!("Successfully parsed struct statement");
-                
+
                 // Verify the parsed statement is a struct declaration
                 if let Stmt::StructDecl(struct_decl) = stmt {
-                    assert_eq!(context.resolve_string(&struct_decl.name), "Point", "Expected struct named 'Point'");
-                    assert_eq!(struct_decl.params.unwrap().len(), 2, "Expected Point to have 2 fields");
+                    assert_eq!(
+                        context.resolve_string(&struct_decl.name),
+                        "Point",
+                        "Expected struct named 'Point'"
+                    );
+                    assert_eq!(
+                        struct_decl.params.unwrap().len(),
+                        2,
+                        "Expected Point to have 2 fields"
+                    );
                 } else {
                     panic!("Expected struct declaration, got {:?}", stmt);
                 }
@@ -138,7 +166,7 @@ mod integration_tests {
     #[test]
     fn test_enum_parsing_basic() {
         use ir::ast::Stmt;
-        
+
         let (context, parser) = create_test_parser();
         let source = r#"
             enum Color {
@@ -149,20 +177,28 @@ mod integration_tests {
         "#;
         let tokens = Box::leak(Box::new(tokenize_source(source, context.clone())));
         let mut cursor = TokenCursor::from_tokens(tokens);
-        
+
         // Try to parse an enum
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             parser.parse_enum(&mut cursor)
         }));
-        
+
         match result {
             Ok(stmt) => {
                 println!("Successfully parsed enum statement");
-                
+
                 // Verify the parsed statement is an enum declaration
                 if let Stmt::EnumDecl(enum_decl) = stmt {
-                    assert_eq!(context.resolve_string(&enum_decl.name), "Color", "Expected enum named 'Color'");
-                    assert_eq!(enum_decl.variants.len(), 3, "Expected Color to have 3 variants");
+                    assert_eq!(
+                        context.resolve_string(&enum_decl.name),
+                        "Color",
+                        "Expected enum named 'Color'"
+                    );
+                    assert_eq!(
+                        enum_decl.variants.len(),
+                        3,
+                        "Expected Color to have 3 variants"
+                    );
                 } else {
                     panic!("Expected enum declaration, got {:?}", stmt);
                 }
@@ -174,23 +210,65 @@ mod integration_tests {
     }
 
     #[test]
+    fn test_struct_parsing_generics() {
+        use ir::ast::Stmt;
+
+        let (context, parser) = create_test_parser();
+        let source = "struct Range<T> { start: T, end: T } { fn new() {} }";
+        let tokens = Box::leak(Box::new(tokenize_source(source, context.clone())));
+        let mut cursor = TokenCursor::from_tokens(tokens);
+
+        // Debug tokens
+        let mut debug_cursor = TokenCursor::from_tokens(tokens);
+        println!("Tokens for struct parsing:");
+        while !debug_cursor.at_end() {
+            println!("{:?}", debug_cursor.peek_kind());
+            debug_cursor.advance_kind();
+        }
+
+        let stmt = parser.parse_struct_decl(&mut cursor);
+        match stmt {
+            Stmt::StructDecl(decl) => {
+                println!("Parsed struct: {:?}", decl.name);
+                assert_eq!(context.resolve_string(&decl.name), "Range");
+                assert!(decl.generics.is_some(), "Generics should be parsed");
+                assert!(decl.params.is_some(), "Params should be parsed");
+                assert!(!decl.body.is_empty(), "Body should not be empty");
+            }
+            _ => panic!("Expected StructDecl, got {:?}", stmt),
+        }
+    }
+
+    #[test]
     fn test_type_parsing() {
-        use crate::parser::parser_types::parse_to_type;
-        use crate::tokenizer::tokens::TokenKind;
-        
+        use crate::parser::parser_types::parse_type;
+
         let context = Arc::new(StringPool::new().expect("Failed to create string pool"));
         let bump = GrowableBump::new(4096, 8);
         let bump_ref = Box::leak(Box::new(bump));
-        
+
+        let source = "i32 String MyClass Range<T>";
+        let tokens = Box::leak(Box::new(tokenize_source(source, context.clone())));
+        let mut cursor = TokenCursor::from_tokens(tokens);
+
         // Test basic type parsing
-        let i32_type = parse_to_type("i32", TokenKind::I32, context.clone(), bump_ref);
+        let i32_type = parse_type(&mut cursor, context.clone(), bump_ref);
         println!("Parsed i32 type: {:?}", i32_type);
-        
-        let string_type = parse_to_type("String", TokenKind::String, context.clone(), bump_ref);
+
+        let string_type = parse_type(&mut cursor, context.clone(), bump_ref);
         println!("Parsed String type: {:?}", string_type);
-        
-        let custom_type = parse_to_type("MyClass", TokenKind::Ident, context.clone(), bump_ref);
+
+        let custom_type = parse_type(&mut cursor, context.clone(), bump_ref);
         println!("Parsed custom type: {:?}", custom_type);
+
+        // Generics parsing via parse_type might require specific cursor state or helper?
+        // parse_type currently handles parsing ONE type.
+        // Range<T> starts with Ident Range. parse_type consumes Ident.
+        // Then it checks for <?
+        // Let's verify parse_basic_type (called by parse_type) handles generics.
+        // It does!
+        let generic_type = parse_type(&mut cursor, context.clone(), bump_ref);
+        println!("Parsed generic type: {:?}", generic_type);
     }
 
     #[test]
@@ -199,19 +277,19 @@ mod integration_tests {
         let source = "void main ( ) { return ; }";
         let tokens = Box::leak(Box::new(tokenize_source(source, context)));
         let mut cursor = TokenCursor::from_tokens(tokens);
-        
+
         // Test basic cursor operations
         println!("Initial token: {:?}", cursor.peek_kind());
-        
+
         cursor.advance_kind();
         println!("After advance: {:?}", cursor.peek_kind());
-        
+
         if let Some(ident) = cursor.consume_ident() {
             println!("Consumed identifier: {:?}", ident);
         }
-        
+
         println!("Current token after consume: {:?}", cursor.peek_kind());
-        
+
         // Test lookahead
         println!("Next token: {:?}", cursor.peek_kind_n(1));
         println!("Token after next: {:?}", cursor.peek_kind_n(2));
@@ -220,16 +298,19 @@ mod integration_tests {
     #[test]
     fn test_error_conditions() {
         let context = Arc::new(StringPool::new().expect("Failed to create string pool"));
-        
+
         // Test empty source
         let empty_tokens = Box::leak(Box::new(tokenize_source("", context.clone())));
         let empty_cursor = TokenCursor::from_tokens(empty_tokens);
         assert!(empty_cursor.at_end());
-        
+
         // Test malformed source
-        let malformed_tokens = Box::leak(Box::new(tokenize_source("void main ( { return", context.clone())));
+        let malformed_tokens = Box::leak(Box::new(tokenize_source(
+            "void main ( { return",
+            context.clone(),
+        )));
         let mut malformed_cursor = TokenCursor::from_tokens(malformed_tokens);
-        
+
         // The cursor should handle malformed input gracefully
         while !malformed_cursor.at_end() {
             println!("Token: {:?}", malformed_cursor.peek_kind());
