@@ -459,6 +459,8 @@ impl<'a, 'bump> Lexer<'a, 'bump> {
             "ensures" => self.push_token(TokenKind::Ensures),
             "uses" => self.push_token(TokenKind::Uses),
 
+            "this" => self.push_token(TokenKind::This),
+
             "u8" => self.push_token(TokenKind::U8),
             "u16" => self.push_token(TokenKind::U16),
             "u32" => self.push_token(TokenKind::U32),

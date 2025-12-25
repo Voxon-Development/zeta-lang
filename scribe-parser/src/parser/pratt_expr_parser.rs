@@ -210,48 +210,33 @@ where
                 let name = cursor.consume_ident().unwrap();
 
                 // Check for struct initialization: Type { field: value, ... }
-                // Only treat as struct init if we see named fields (ident: pattern)
-                // AND the identifier looks like a type name (typically starts with uppercase)
+                // Treat as struct init if we see named fields (ident: pattern)
                 if cursor.peek_kind() == Some(TokenKind::LBrace) {
-                    let name_str = self.context.resolve_string(&name);
-                    // Check if name looks like a type (starts with uppercase letter)
-                    let looks_like_type = name_str.chars().next().map_or(false, |c| c.is_uppercase());
-                    
-                    eprintln!("Debug: parse_prefix - Ident followed by LBrace, name={}, looks_like_type={}", 
-                        name_str, looks_like_type);
-                    
-                    if looks_like_type {
-                        // Look ahead to check if this is a named field pattern
-                        let checkpoint = cursor.checkpoint();
-                        cursor.advance_kind(); // consume '{'
-                        
-                        let is_named_fields = if cursor.peek_kind() == Some(TokenKind::RBrace) {
-                            // Empty struct init is valid
-                            true
-                        } else if cursor.peek_kind() == Some(TokenKind::Ident) {
-                            cursor.advance_kind(); // skip ident
-                            cursor.peek_kind() == Some(TokenKind::Colon)
-                        } else {
-                            false
-                        };
-                        cursor.restore(checkpoint);
-                        
-                        eprintln!("Debug: parse_prefix - is_named_fields={}", is_named_fields);
-                        
-                        if is_named_fields {
-                            cursor.advance_kind(); // consume '{'
-                            let args = self.parse_class_init_args(cursor);
-                            self.bump.alloc_value(Expr::StructInit {
-                                callee: self.bump.alloc_value_immutable(Expr::Ident { name, span }),
-                                arguments: self.bump.alloc_slice_copy(&args),
-                                positional: true,
-                                span,
-                            })
-                        } else {
-                            self.bump.alloc_value(Expr::Ident { name, span })
-                        }
+                    // Look ahead to check if this is a named field pattern
+                    let checkpoint = cursor.checkpoint();
+                    cursor.advance_kind(); // consume '{'
+
+                    let is_named_fields = if cursor.peek_kind() == Some(TokenKind::RBrace) {
+                        // Empty struct init is valid
+                        true
+                    } else if cursor.peek_kind() == Some(TokenKind::Ident) {
+                        cursor.advance_kind(); // skip ident
+                        cursor.peek_kind() == Some(TokenKind::Colon)
                     } else {
-                        eprintln!("Debug: parse_prefix - Not a type name, returning ident");
+                        false
+                    };
+                    cursor.restore(checkpoint);
+
+                    if is_named_fields {
+                        cursor.advance_kind(); // consume '{'
+                        let args = self.parse_class_init_args(cursor);
+                        self.bump.alloc_value(Expr::StructInit {
+                            callee: self.bump.alloc_value_immutable(Expr::Ident { name, span }),
+                            arguments: self.bump.alloc_slice_copy(&args),
+                            positional: true,
+                            span,
+                        })
+                    } else {
                         self.bump.alloc_value(Expr::Ident { name, span })
                     }
                 } else {
