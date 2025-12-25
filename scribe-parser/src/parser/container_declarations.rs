@@ -314,7 +314,21 @@ where
                     destructor = self.parse_block(cursor);
                 }
                 _ => {
-                    cursor.advance_kind(); // hard skip
+                    eprintln!(
+                        "Warning: Unexpected token {:?} in struct method block. Skipping to next fn/const/~/}}.",
+                        cursor.peek_kind()
+                    );
+                    // Skip to next meaningful token (fn, const, ~, or })
+                    while !matches!(
+                        cursor.peek_kind(),
+                        Some(TokenKind::Fn)
+                        | Some(TokenKind::Const)
+                        | Some(TokenKind::BitNot)
+                        | Some(TokenKind::RBrace)
+                        | None
+                    ) && !cursor.at_end() {
+                        cursor.advance_kind();
+                    }
                 }
             }
         }
@@ -401,43 +415,30 @@ where
                 break;
             }
 
-            // Check for "name: type" syntax
-            if cursor.peek_kind() == Some(TokenKind::Ident)
-                && cursor.peek_kind_n(1) == Some(TokenKind::Colon)
-            {
-                let name = cursor.consume_ident().unwrap();
-                cursor.advance_kind(); // consume ':'
-
-                let param_type = parse_type(cursor, self.context.clone(), self.bump);
-
-                let normal_param = self.bump.alloc_value(NormalParam {
-                    is_mut: false,
-                    is_move: false,
-                    name,
-                    type_annotation: param_type,
-                    visibility: Visibility::Public,
-                    default_value: None,
+            // Parse struct field - always use "name: type" format
+            if cursor.peek_kind() == Some(TokenKind::Ident) {
+                let name = cursor.consume_ident().unwrap_or_else(|| {
+                    panic!("Expected field name, found: {:?}", cursor.peek_kind())
                 });
 
-                fields.push(Param::Normal(normal_param));
+                if cursor.expect_kind(TokenKind::Colon) {
+                    let param_type = parse_type(cursor, self.context.clone(), self.bump);
+
+                    let normal_param = self.bump.alloc_value(NormalParam {
+                        is_mut: false,
+                        is_move: false,
+                        name,
+                        type_annotation: param_type,
+                        visibility: Visibility::Public,
+                        default_value: None,
+                    });
+
+                    fields.push(Param::Normal(normal_param));
+                } else {
+                    panic!("Expected ':' after field name, found: {:?}", cursor.peek_kind());
+                }
             } else {
-                let name = cursor
-                    .consume_ident()
-                    .unwrap_or_else(|| panic!("Expected field name before type, found: {:?}", cursor.peek_kind()));
-
-                cursor.expect_kind(TokenKind::Colon);
-                let param_type = parse_type(cursor, self.context.clone(), self.bump);
-
-                let normal_param = self.bump.alloc_value(NormalParam {
-                    is_mut: false,
-                    is_move: false,
-                    name,
-                    type_annotation: param_type,
-                    visibility: Visibility::Public,
-                    default_value: None,
-                });
-
-                fields.push(Param::Normal(normal_param));
+                panic!("Expected field name (identifier), found: {:?}", cursor.peek_kind());
             }
 
             // Handle comma separator

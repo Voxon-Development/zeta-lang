@@ -460,6 +460,48 @@ where
                 break;
             }
 
+            // Handle const generic parameters: const N: usize
+            // Skip const generics entirely as Generic struct doesn't support const value types yet
+            if cursor.peek_kind() == Some(TokenKind::Const) {
+                cursor.advance_kind(); // consume 'const'
+
+                // Skip const generic name (N)
+                if cursor.peek_kind() == Some(TokenKind::Ident) {
+                    cursor.consume_ident();
+                }
+
+                // Skip type annotation (: usize) if present
+                if cursor.peek_kind() == Some(TokenKind::Colon) {
+                    cursor.advance_kind(); // consume ':'
+                    // Skip type annotation tokens
+                    while cursor.peek_kind() != Some(TokenKind::Comma)
+                        && cursor.peek_kind() != Some(TokenKind::Gt)
+                        && !cursor.at_end()
+                    {
+                        cursor.advance_kind();
+                    }
+                }
+
+                // Skip to comma or closing angle bracket
+                match cursor.peek_kind() {
+                    Some(TokenKind::Comma) => {
+                        cursor.advance_kind();
+                        continue;
+                    }
+                    Some(TokenKind::Gt) => break,
+                    _ => {
+                        // Try to recover
+                        while cursor.peek_kind() != Some(TokenKind::Comma)
+                            && cursor.peek_kind() != Some(TokenKind::Gt)
+                            && !cursor.at_end()
+                        {
+                            cursor.advance_kind();
+                        }
+                        continue;
+                    }
+                }
+            }
+
             let name = cursor.consume_ident()
                 .unwrap_or_else(|| panic!(
                     "Expected generic parameter name, found {:?}",
@@ -647,20 +689,15 @@ where
     ) -> Option<&'bump [Param<'a, 'bump>]> {
         let mut params: SmallVec<Param<'a, 'bump>, 8> = SmallVec::new();
 
-        loop {
+            loop {
             match cursor.peek_kind() {
                 Some(TokenKind::RParen) => {
                     cursor.advance_kind(); // consume ')'
                     break;
                 }
-                Some(TokenKind::Mut)
-                | Some(TokenKind::Ident)
-                | Some(TokenKind::I32)
-                | Some(TokenKind::I64)
-                | Some(TokenKind::Str)
-                | Some(TokenKind::Void)
-                | Some(TokenKind::This) => {
-                    // Check for mut modifier
+                Some(TokenKind::Mul) => {
+                    // Check for pointer types (*mut this, *this)
+                    cursor.advance_kind(); // consume '*'
                     let is_mut = if cursor.peek_kind() == Some(TokenKind::Mut) {
                         cursor.advance_kind(); // consume 'mut'
                         true
@@ -676,9 +713,32 @@ where
                             type_annotation: None,
                         });
                         params.push(Param::This(this_param));
-                        continue;
+                        // Handle comma after *this or *mut this
+                        if cursor.peek_kind() == Some(TokenKind::Comma) {
+                            cursor.advance_kind();
+                        }
                     }
-
+                    // Skip if we had * but not followed by this
+                    continue;
+                }
+                Some(TokenKind::Mut)
+                | Some(TokenKind::Ident)
+                | Some(TokenKind::I32)
+                | Some(TokenKind::I64)
+                | Some(TokenKind::Str)
+                | Some(TokenKind::Void)
+                | Some(TokenKind::I8)
+                | Some(TokenKind::I16)
+                | Some(TokenKind::I128)
+                | Some(TokenKind::U8)
+                | Some(TokenKind::U16)
+                | Some(TokenKind::U32)
+                | Some(TokenKind::U64)
+                | Some(TokenKind::U128)
+                | Some(TokenKind::F32)
+                | Some(TokenKind::F64)
+                | Some(TokenKind::Boolean)
+                | Some(TokenKind::Char) => {
                     // Try to parse in different formats
                     let (name, param_type, is_this) = if cursor.peek_kind()
                         == Some(TokenKind::Ident)
@@ -724,6 +784,16 @@ where
                                     (first_ident, Type::infer(), false)
                                 }
                             }
+                            Some(TokenKind::I8) => {
+                                cursor.advance_kind(); // consume type
+                                let name = cursor.consume_ident()?;
+                                (name, Type::i8(), false)
+                            }
+                            Some(TokenKind::I16) => {
+                                cursor.advance_kind(); // consume type
+                                let name = cursor.consume_ident()?;
+                                (name, Type::i16(), false)
+                            }
                             Some(TokenKind::I32) => {
                                 cursor.advance_kind(); // consume type
                                 let name = cursor.consume_ident()?;
@@ -734,10 +804,60 @@ where
                                 let name = cursor.consume_ident()?;
                                 (name, Type::i64(), false)
                             }
+                            Some(TokenKind::I128) => {
+                                cursor.advance_kind(); // consume type
+                                let name = cursor.consume_ident()?;
+                                (name, Type::i128(), false)
+                            }
+                            Some(TokenKind::U8) => {
+                                cursor.advance_kind(); // consume type
+                                let name = cursor.consume_ident()?;
+                                (name, Type::u8(), false)
+                            }
+                            Some(TokenKind::U16) => {
+                                cursor.advance_kind(); // consume type
+                                let name = cursor.consume_ident()?;
+                                (name, Type::u16(), false)
+                            }
+                            Some(TokenKind::U32) => {
+                                cursor.advance_kind(); // consume type
+                                let name = cursor.consume_ident()?;
+                                (name, Type::u32(), false)
+                            }
+                            Some(TokenKind::U64) => {
+                                cursor.advance_kind(); // consume type
+                                let name = cursor.consume_ident()?;
+                                (name, Type::u64(), false)
+                            }
+                            Some(TokenKind::U128) => {
+                                cursor.advance_kind(); // consume type
+                                let name = cursor.consume_ident()?;
+                                (name, Type::u128(), false)
+                            }
+                            Some(TokenKind::F32) => {
+                                cursor.advance_kind(); // consume type
+                                let name = cursor.consume_ident()?;
+                                (name, Type::f32(), false)
+                            }
+                            Some(TokenKind::F64) => {
+                                cursor.advance_kind(); // consume type
+                                let name = cursor.consume_ident()?;
+                                (name, Type::f64(), false)
+                            }
                             Some(TokenKind::Str) => {
                                 cursor.advance_kind(); // consume type
                                 let name = cursor.consume_ident()?;
                                 (name, Type::string(), false)
+                            }
+                            Some(TokenKind::Boolean) => {
+                                cursor.advance_kind(); // consume type
+                                let name = cursor.consume_ident()?;
+                                (name, Type::boolean(), false)
+                            }
+                            Some(TokenKind::Char) => {
+                                cursor.advance_kind(); // consume type
+                                let name = cursor.consume_ident()?;
+                                (name, Type::char(), false)
                             }
                             Some(TokenKind::Void) => {
                                 cursor.advance_kind(); // consume type
@@ -751,14 +871,14 @@ where
                     if is_this {
                         // Create a ThisParam instead of NormalParam
                         let this_param = self.bump.alloc_value(ThisParam {
-                            is_mut,
+                            is_mut: false,
                             is_move: false,
                             type_annotation: None,
                         });
                         params.push(Param::This(this_param));
                     } else {
                         let normal_param = self.bump.alloc_value(NormalParam {
-                            is_mut,
+                            is_mut: false,
                             is_move: false,
                             name,
                             type_annotation: param_type,
@@ -768,6 +888,7 @@ where
                         params.push(Param::Normal(normal_param));
                     }
 
+                    // Handle comma separator
                     if cursor.peek_kind() == Some(TokenKind::Comma) {
                         cursor.advance_kind();
                     }
