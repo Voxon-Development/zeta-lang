@@ -21,7 +21,26 @@ interface Printable {
 struct GuessGame {    
     target: i32,    
     attempts: i32,    
-}    
+} {
+    fn play_game(game: &mut GuessGame): GameError!void {    
+        for _ in 0..5 {    
+            try std.out.print("Enter your guess: ") as { e -> GameError.IO { e } }  
+            input := try std.io.read() as { e -> GameError.IO { e } }
+            guess := try input.parse<i32>() as { e -> GameError.ParseFailed { e } }   
+            match guess {    
+                g if g == game.target => {    
+                    try std.out.println("Correct! You win!") as { e -> GameError.IO { e } }  
+                    return    
+                }    
+                g if g < game.target => try std.out.println("Too low!") as { e -> GameError.IO { e } },  
+                g if g > game.target => try std.out.println("Too high!") as { e -> GameError.IO { e } },    
+            }    
+            game.attempts += 1    
+        }    
+        try std.out.println("Out of attempts! Game over.") as { e -> GameError.IO { e } }  
+        return GameError.Game("Out of attempts!");    
+    }
+} 
     
 impl Printable for GuessGame {    
     fn print(): IOError!void {    
@@ -30,32 +49,14 @@ impl Printable for GuessGame {
 }    
     
 fn random_number(min: i32, max: i32): RandomNumberError!i32 {    
-    return try min + (std.random.int() % (max - min + 1))    
+    return min + (try std.random.int() % (max - min + 1))    
 }    
     
-fn play_game(game: &mut GuessGame): GameError!void {    
-    for _ in 0..5 {    
-        try std.out.print("Enter your guess: ") as { e -> GameError.IO { e } }  
-        input := try std.io.read() as { e -> GameError.IO { e } }
-        guess := try input.parse<i32>() as { e -> GameError.ParseFailed { e } }   
-        match guess {    
-            g if g == game.target => {    
-                try std.out.println("Correct! You win!") as { e -> GameError.IO { e } }  
-                return    
-            }    
-            g if g < game.target => try std.out.println("Too low!") as { e -> GameError.IO { e } },  
-            g if g > game.target => try std.out.println("Too high!") as { e -> GameError.IO { e } },    
-        }    
-        game.attempts += 1    
-    }    
-    try std.out.println("Out of attempts! Game over.") as { e -> GameError.IO { e } }  
-    return GameError.Game("Out of attempts!");    
-}
 fn main(): GameError!void {    
-    let mut game: Box<GuessGame> = try Box.new(GuessGame { target: try random_number(1, 10) as { e -> GameError.RandomFailed { e } }, attempts: 0 }) as { e -> GameError.Alloc { e } }  
+    let mut game: Box<GuessGame> = Box.new(GuessGame { target: try random_number(1, 10) as { e -> GameError.RandomFailed { e } }, attempts: 0 });
     
     try game.print() as { e -> GameError.IO { e } }  
-    try play_game(&mut game)    
+    try play_game(&mut *game)    
     
     try std.out.println("Thanks for playing!") as { e -> GameError.IO { e } }  
     
