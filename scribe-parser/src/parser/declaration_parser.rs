@@ -654,18 +654,25 @@ where
                     break;
                 }
                 Some(TokenKind::Mut)
+                | Some(TokenKind::Mul)
                 | Some(TokenKind::Ident)
                 | Some(TokenKind::I32)
                 | Some(TokenKind::I64)
                 | Some(TokenKind::Str)
                 | Some(TokenKind::Void)
                 | Some(TokenKind::This) => {
-                    // Check for mut modifier
-                    let is_mut = if cursor.peek_kind() == Some(TokenKind::Mut) {
-                        cursor.advance_kind(); // consume 'mut'
-                        true
+                    // Check for pointer types (*mut this, *this)
+                    let (is_mut, is_pointer) = if cursor.peek_kind() == Some(TokenKind::Mul) {
+                        cursor.advance_kind(); // consume '*'
+                        let is_mut = if cursor.peek_kind() == Some(TokenKind::Mut) {
+                            cursor.advance_kind(); // consume 'mut'
+                            true
+                        } else {
+                            false
+                        };
+                        (is_mut, true)
                     } else {
-                        false
+                        (false, false)
                     };
 
                     if cursor.peek_kind() == Some(TokenKind::This) {
@@ -677,6 +684,11 @@ where
                         });
                         params.push(Param::This(this_param));
                         continue;
+                    }
+
+                    // Skip if we had * but not followed by this
+                    if is_pointer {
+                        break;
                     }
 
                     // Try to parse in different formats

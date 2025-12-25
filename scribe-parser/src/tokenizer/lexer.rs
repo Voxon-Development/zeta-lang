@@ -158,7 +158,17 @@ impl<'a, 'bump> Lexer<'a, 'bump> {
                     self.push_token(TokenKind::Semicolon);
                 }
                 ':' => {
-                    self.push_token(TokenKind::Colon);
+                    if let Some(character) = chars.peek() {
+                        if *character == '=' {
+                            self.pos += 1;
+                            self.column += 1;
+                            self.push_token(TokenKind::ColonAssign);
+                        } else {
+                            self.push_token(TokenKind::Colon);
+                        }
+                    } else {
+                        self.push_token(TokenKind::Colon);
+                    }
                 }
                 '~' => {
                     if let Some(character) = chars.peek() {
