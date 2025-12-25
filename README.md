@@ -10,7 +10,7 @@ enum GameError {
     IO { e: IOError },   
     Alloc { e: AllocError },  
     RandomFailed { e: RandomNumberError },  
-    ParseFailed { e: ParsingFailedError },  
+    ParseFailed { e: ParseFailedError },  
     Game { msg: String }  
 }    
     
@@ -22,22 +22,22 @@ struct GuessGame {
     target: i32,    
     attempts: i32,    
 } {
-    fn play_game(&mut this): GameError!void {    
+    fn play_game(&mut this): GameError!ParseFailedError!IOError!void {    
         for _ in 0..5 {    
-            try std.out.print("Enter your guess: ") as { e -> GameError.IO { e } }  
-            input := try std.io.read() as { e -> GameError.IO { e } }
-            guess := try input.parse<i32>() as { e -> GameError.ParseFailed { e } }   
+            try std.out.print("Enter your guess: ")
+            input := try std.io.read()
+            guess := try input.parse<i32>()
             match guess {    
                 g if g == this.target => {    
-                    try std.out.println("Correct! You win!") as { e -> GameError.IO { e } }  
+                    try std.out.println("Correct! You win!") 
                     return    
                 }    
-                g if g < this.target => try std.out.println("Too low!") as { e -> GameError.IO { e } },  
-                g if g > this.target => try std.out.println("Too high!") as { e -> GameError.IO { e } },    
+                g if g < this.target => try std.out.println("Too low!"),  
+                g if g > this.target => try std.out.println("Too high!"),
             }    
             this.attempts += 1    
         }    
-        try std.out.println("Out of attempts! Game over.") as { e -> GameError.IO { e } }  
+        try std.out.println("Out of attempts! Game over.")  
         return GameError.Game("Out of attempts!");    
     }
 } 
@@ -52,13 +52,13 @@ fn random_number(min: i32, max: i32): RandomNumberError!i32 {
     return min + (try std.random.int() % (max - min + 1))    
 }    
     
-fn main(): GameError!void {    
-    let mut game: Box<GuessGame> = Box.new(GuessGame { target: try random_number(1, 10) as { e -> GameError.RandomFailed { e } }, attempts: 0 });
+fn main(): GameError!RandomNumberError!IOError!ParseFailedError!void {    
+    let mut game: Box<GuessGame> = Box.new(GuessGame { target: try random_number(1, 10), attempts: 0 });
     
-    try game.print() as { e -> GameError.IO { e } }  
+    try game.print()
     try *game.play_game()   
     
-    try std.out.println("Thanks for playing!") as { e -> GameError.IO { e } }  
+    try std.out.println("Thanks for playing!")
     
     // auto drop game, no borrow checking, its CTRC for the main logic and separation logic theory    
 }
