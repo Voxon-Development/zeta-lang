@@ -55,7 +55,7 @@ fn random_number(min: i32, max: i32): RandomNumberError!i32 {
 fn main(): GameError!RandomNumberError!IOError!ParseFailedError!void {    
     let mut game: Box<GuessGame> = Box.new(GuessGame { target: try random_number(1, 10), attempts: 0 });
     
-    try game.print()
+    try *game.print()
     try *game.play_game()   
     
     try std.out.println("Thanks for playing!")
