@@ -22,20 +22,20 @@ struct GuessGame {
     target: i32,    
     attempts: i32,    
 } {
-    fn play_game(game: &mut GuessGame): GameError!void {    
+    fn play_game(&mut this): GameError!void {    
         for _ in 0..5 {    
             try std.out.print("Enter your guess: ") as { e -> GameError.IO { e } }  
             input := try std.io.read() as { e -> GameError.IO { e } }
             guess := try input.parse<i32>() as { e -> GameError.ParseFailed { e } }   
             match guess {    
-                g if g == game.target => {    
+                g if g == this.target => {    
                     try std.out.println("Correct! You win!") as { e -> GameError.IO { e } }  
                     return    
                 }    
-                g if g < game.target => try std.out.println("Too low!") as { e -> GameError.IO { e } },  
-                g if g > game.target => try std.out.println("Too high!") as { e -> GameError.IO { e } },    
+                g if g < this.target => try std.out.println("Too low!") as { e -> GameError.IO { e } },  
+                g if g > this.target => try std.out.println("Too high!") as { e -> GameError.IO { e } },    
             }    
-            game.attempts += 1    
+            this.attempts += 1    
         }    
         try std.out.println("Out of attempts! Game over.") as { e -> GameError.IO { e } }  
         return GameError.Game("Out of attempts!");    
