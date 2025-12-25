@@ -56,7 +56,7 @@ fn main(): GameError!void {
     let mut game: Box<GuessGame> = Box.new(GuessGame { target: try random_number(1, 10) as { e -> GameError.RandomFailed { e } }, attempts: 0 });
     
     try game.print() as { e -> GameError.IO { e } }  
-    try play_game(&mut *game)    
+    try *game.play_game()   
     
     try std.out.println("Thanks for playing!") as { e -> GameError.IO { e } }  
     
