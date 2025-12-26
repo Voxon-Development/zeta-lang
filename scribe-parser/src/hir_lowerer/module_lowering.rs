@@ -4,7 +4,7 @@ use ir::ast;
 use ir::hir::{HirParam, HirType};
 use ir::hir::HirFuncProto;
 use super::context::HirLowerer;
-use ir::ast::Path;
+use ir::ast::{FuncDecl, Path};
 use ir::ast::Stmt;
 use ir::hir::{Hir, HirModule, HirStmt, StrId};
 use zetaruntime::bump::GrowableBump;
@@ -70,8 +70,6 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         self.collect_prototypes(&stmts);
         let (imports, items): (Vec<Path>, Vec<Hir>) = self.lower_function_bodies(stmts);
 
-
-
         HirModule {
             name: StrId(self.ctx.context.intern("root")),
             imports: self.ctx.bump.alloc_slice(&imports),
@@ -85,20 +83,49 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     ) {
         for stmt in stmts {
             if let Stmt::FuncDecl(f) = stmt {
-                let proto: HirFuncProto = self.lower_func_proto(f);
-                self.ctx.functions.borrow_mut().insert(proto.name, HirFunc {
-                    name: proto.name,
-                    params: proto.params,
-                    return_type: Some(proto.return_type),
-                    body: None,
-                    inline: proto.inline,
-                    noinline: proto.noinline,
-                    is_unsafe: proto.is_unsafe,
-                    visibility: proto.visibility,
-                    generics: None,
-                });
+                println!("Lowering function {}", f.name);
+                self.lower_func_as_proto(f);
+            }
+            if let Stmt::StructDecl(struct_decl) = stmt {
+                for x in struct_decl.body {
+                    println!("Lowering struct function {}", x.name);
+                    self.lower_func_as_proto(x);
+                }
+            }
+            if let Stmt::InterfaceDecl(interface_decl) = stmt {
+                let Some(methods) = interface_decl.methods else {
+                    continue;
+                };
+                for x in methods {
+                    println!("Lowering interface {}", x.name);
+                    self.lower_func_as_proto(x);
+                }
+            }
+            if let Stmt::ImplDecl(impl_decl) = stmt {
+                let Some(methods) = impl_decl.methods else {
+                    continue;
+                };
+                for x in methods {
+                    println!("Lowering impl {}", x.name);
+                    self.lower_func_as_proto(x);
+                }
             }
         }
+    }
+
+    fn lower_func_as_proto(&mut self, f: &FuncDecl<'a, '_>) {
+        let proto: HirFuncProto = self.lower_func_proto(f);
+        self.ctx.functions.borrow_mut().insert(proto.name, HirFunc {
+            name: proto.name,
+            params: proto.params,
+            return_type: Some(proto.return_type),
+            body: None,
+            inline: proto.inline,
+            noinline: proto.noinline,
+            is_unsafe: proto.is_unsafe,
+            visibility: proto.visibility,
+            generics: None,
+        });
     }
 
     pub fn lower_function_bodies(

@@ -11,14 +11,14 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         &self,
         func: FuncDecl<'a, 'bump>,
     ) -> HirFunc<'a, 'bump> {
-        // 1. Fetch prototype (must exist)
-        let binding = self.ctx.func_protos
+        let binding = self.ctx.functions
             .borrow();
+
+        println!("{}", func.name);
         let proto = binding
             .get(&func.name)
             .expect("function prototype missing");
 
-        // 2. Lower generics (body-time, not proto-time)
         let generics_vec = self.lower_generics(func.generics.unwrap_or_default());
         let generics = if generics_vec.is_empty() {
             None
@@ -26,7 +26,6 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             Some(self.ctx.bump.alloc_slice_immutable(&generics_vec))
         };
 
-        // 3. Lower body ONLY
         let body = func.body.map(|b| {
             let stmts: Vec<HirStmt<'a, 'bump>> =
                 b.block.into_iter().map(|s| self.lower_stmt(*s)).collect();
@@ -44,7 +43,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             noinline: func.noinline,
 
             params: proto.params,
-            return_type: Some(proto.return_type),
+            return_type: proto.return_type,
 
             generics,
             body,
@@ -62,15 +61,12 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     }
 
     pub fn lower_params(&self, params: &[Param<'a, 'bump>]) -> Vec<HirParam<'a, 'bump>> {
-        params
-            .into_iter()
+        <&[Param]>::into_iter(params)
             .enumerate()
             .map(|(idx, p)| match p {
                 Param::Normal(p) => {
-                    // Check if this is the first parameter and it's named "this"
                     let param_name = self.ctx.context.resolve_string(&p.name);
                     if idx == 0 && param_name == "this" {
-                        // Convert to This parameter
                         hir::HirParam::This {
                             param_type: Some(self.lower_type(&p.type_annotation)),
                         }
