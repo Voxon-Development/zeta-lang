@@ -92,6 +92,18 @@ impl<'a> TokenCursor<'a> {
     }
 
     #[inline]
+    pub fn consume_any_number(&mut self) -> Option<StrId> {
+        match self.peek_kind()? {
+            TokenKind::Number | TokenKind::Decimal => {
+                let id = self.peek_text()?;
+                self.advance_kind();
+                Some(id)
+            }
+            _ => None,
+        }
+    }
+
+    #[inline]
     pub fn expect_kind(&mut self, expected: TokenKind) -> bool {
         match self.peek_kind() {
             Some(k) if k == expected => {

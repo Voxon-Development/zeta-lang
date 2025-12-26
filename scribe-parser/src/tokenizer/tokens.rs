@@ -38,6 +38,7 @@ pub enum TokenKind {
     String,         // string literals
     BooleanTrue,
     BooleanFalse,
+    Null,
 
     // ===== Keywords =====
     If,
@@ -76,6 +77,9 @@ pub enum TokenKind {
     Uses,
     Requires,
     Ensures,
+    Let,
+    Void,
+    Fn,
     
     // ======== Types ========
     U8,
@@ -90,13 +94,11 @@ pub enum TokenKind {
     I128,
     F32,
     F64,
+    Usize,
+    Isize,
     Char,
     Str,
     Boolean,
-    Let,
-    Void,
-    Fn,
-
 
     // ===== Punctuation =====
     LParen,   // (

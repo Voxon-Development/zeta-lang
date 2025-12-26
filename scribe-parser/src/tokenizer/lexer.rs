@@ -418,6 +418,7 @@ impl<'a, 'bump> Lexer<'a, 'bump> {
         match text {
             "true" => self.push_token(TokenKind::BooleanTrue),
             "false" => self.push_token(TokenKind::BooleanFalse),
+            "null" => self.push_token(TokenKind::Null),
 
             "if" => self.push_token(TokenKind::If),
             "else" => self.push_token(TokenKind::Else),
@@ -473,6 +474,8 @@ impl<'a, 'bump> Lexer<'a, 'bump> {
             "i128" => self.push_token(TokenKind::I128),
             "f32" => self.push_token(TokenKind::F32),
             "f64" => self.push_token(TokenKind::F64),
+            "usize" => self.push_token(TokenKind::Usize),
+            "isize" => self.push_token(TokenKind::Isize),
             "char" => self.push_token(TokenKind::Char),
             "str" => self.push_token(TokenKind::Str),
             "boolean" => self.push_token(TokenKind::Boolean),
@@ -485,34 +488,69 @@ impl<'a, 'bump> Lexer<'a, 'bump> {
         let mut kind = TokenKind::Number;
         let mut text: SmallVec<u8, 16> = SmallVec::from_buf([ch as u8]);
 
+        let mut seen_dot = ch == '.';
+        let mut seen_exp = false;
+
         while let Some(&next_ch) = chars.peek() {
-            if next_ch.is_numeric() {
-                let ch = chars.next().unwrap();
-                self.pos += ch.len_utf8();
-                text.push(ch as u8);
-            } else if next_ch == '.' {
-                let ch = chars.next().unwrap();
-                kind = TokenKind::Decimal;
-                self.pos += ch.len_utf8();
-                text.push(ch as u8);
-            } else if next_ch == 'x' || next_ch == 'X' {
-                let ch = chars.next().unwrap();
-                kind = TokenKind::Hexadecimal;
-                self.pos += ch.len_utf8();
-                text.push(ch as u8);
-            } else if next_ch == 'b' || next_ch == 'B' {
-                let ch = chars.next().unwrap();
-                kind = TokenKind::Binary;
-                self.pos += ch.len_utf8();
-                text.push(ch as u8);
-            } else {
-                break;
+            match next_ch {
+                '0'..='9' => {
+                    let ch = chars.next().unwrap();
+                    self.pos += ch.len_utf8();
+                    text.push(ch as u8);
+                }
+
+                '.' if !seen_dot && !seen_exp => {
+                    let ch = chars.next().unwrap();
+                    kind = TokenKind::Decimal;
+                    seen_dot = true;
+                    self.pos += ch.len_utf8();
+                    text.push(ch as u8);
+                }
+
+                'e' | 'E' if !seen_exp && kind != TokenKind::Hexadecimal && kind != TokenKind::Binary => {
+                    let ch = chars.next().unwrap();
+                    kind = TokenKind::Decimal;
+                    seen_exp = true;
+                    self.pos += ch.len_utf8();
+                    text.push(ch as u8);
+
+                    // optional + or -
+                    if let Some(&sign @ ('+' | '-')) = chars.peek() {
+                        let sign = chars.next().unwrap();
+                        self.pos += sign.len_utf8();
+                        text.push(sign as u8);
+                    }
+
+                    // require at least one digit in exponent
+                    match chars.peek() {
+                        Some('0'..='9') => {}
+                        _ => {
+                            // stop here or emit an error token if you support that
+                            break;
+                        }
+                    }
+                }
+
+                'x' | 'X' if text.len() == 1 && ch == '0' => {
+                    let ch = chars.next().unwrap();
+                    kind = TokenKind::Hexadecimal;
+                    self.pos += ch.len_utf8();
+                    text.push(ch as u8);
+                }
+
+                'b' | 'B' if text.len() == 1 && ch == '0' => {
+                    let ch = chars.next().unwrap();
+                    kind = TokenKind::Binary;
+                    self.pos += ch.len_utf8();
+                    text.push(ch as u8);
+                }
+
+                _ => break,
             }
         }
 
         let string = unsafe { str::from_utf8_unchecked(text.as_slice()) };
-        let text = self.context
-            .intern_bytes(string.as_bytes());
+        let text = self.context.intern_bytes(string.as_bytes());
         self.push(kind, StrId(text));
     }
 

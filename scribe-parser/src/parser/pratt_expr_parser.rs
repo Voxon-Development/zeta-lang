@@ -162,24 +162,37 @@ where
                     span,
                 })
             }
-            
-            // Literals
-            Some(TokenKind::Number) => {
+
+            Some(TokenKind::Number | TokenKind::Decimal) => {
                 let span = cursor.current_span();
-                let text_id = cursor.consume_number().unwrap();
+                let text_id = cursor.consume_any_number()
+                    .expect("peek_kind said number, but consume failed");
+
                 let text = self.context.resolve_string(&text_id);
-                let value = text.parse::<i64>().unwrap_or(0);
-                self.bump.alloc_value(Expr::Number { value, span })
+
+                if text.contains(['.', 'e', 'E']) {
+                    let value = text.parse::<f64>()
+                        .unwrap_or_else(|_| {
+                            panic!("Invalid float literal: {}", text)
+                        });
+
+                    self.bump.alloc_value(Expr::Decimal { value, span })
+                } else {
+                    let value = text.parse::<i64>()
+                        .unwrap_or_else(|_| {
+                            panic!("Invalid integer literal: {}", text)
+                        });
+
+                    self.bump.alloc_value(Expr::Number { value, span })
+                }
             }
-            
-            Some(TokenKind::Decimal) => {
+
+            Some(TokenKind::Null) => {
                 let span = cursor.current_span();
-                let text_id = cursor.consume_decimal().unwrap();
-                let text = self.context.resolve_string(&text_id);
-                let value = text.parse::<f64>().unwrap_or(0.0);
-                self.bump.alloc_value(Expr::Decimal { value, span })
+                cursor.advance_kind();
+                self.bump.alloc_value(Expr::Null { span })
             }
-            
+
             Some(TokenKind::String) => {
                 let span = cursor.current_span();
                 let value = cursor.consume_string().unwrap();
