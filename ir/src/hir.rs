@@ -1,4 +1,4 @@
-use crate::ast::Path;
+use crate::ast::{Generic, Param, Path, Type};
 use std::fmt::{Display, Formatter, Write};
 use std::ops::Deref;
 use zetaruntime::string_pool::VmString;
@@ -315,6 +315,22 @@ pub enum HirPattern<'bump> {
     },
     Wildcard,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HirFuncProto<'a, 'bump> {
+    pub name: StrId,
+    pub params: Option<&'bump [HirParam<'a, 'bump>]>,
+    pub return_type: HirType<'a, 'bump>,
+    pub inline: bool,
+
+    pub visibility: Visibility,
+    pub is_unsafe: bool,
+    pub is_extern: bool,
+    pub noinline: bool,
+    pub extern_string: Option<StrId>,
+    pub generics: Option<&'bump [HirGeneric<'a, 'bump>]>,
+}
+
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum HirExpr<'a, 'bump>

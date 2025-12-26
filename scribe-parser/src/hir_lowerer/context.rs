@@ -1,3 +1,4 @@
+use ir::hir::HirFuncProto;
 use crate::hir_lowerer::monomorphization::Monomorphizer;
 use ir::errors::reporter::ErrorReporter;
 use ir::hir::{HirFunc, HirInterface, HirStruct, HirType, StrId};
@@ -15,18 +16,17 @@ pub type FxHashSet<T> = HashSet<T, FxHashBuilder>;
 // ===============================
 // Lowering Context
 // ===============================
-
-// Thread-safe lowering context with interior mutability
 pub struct LoweringCtx<'a, 'bump> {
-    // Wrap HashMaps in RefCell for interior mutability
     pub classes: RefCell<FxHashMap<StrId, HirStruct<'a, 'bump>>>,
     pub interfaces: RefCell<FxHashMap<StrId, HirInterface<'a, 'bump>>>,
+
     pub functions: Rc<RefCell<FxHashMap<StrId, HirFunc<'a, 'bump>>>>,
+    pub func_protos: RefCell<FxHashMap<StrId, HirFuncProto<'a, 'bump>>>,
+
     pub type_bindings: RefCell<FxHashMap<StrId, HirType<'a, 'bump>>>,
     pub variable_types: RefCell<FxHashMap<StrId, HirType<'a, 'bump>>>,
     pub generic_params: RefCell<HashSet<StrId>>,
 
-    // These are already thread-safe via Arc
     pub context: Arc<StringPool>,
     pub bump: Arc<GrowableAtomicBump<'bump>>,
 }
@@ -45,6 +45,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             ctx: LoweringCtx {
                 classes: RefCell::new(FxHashMap::default()),
                 functions: functions.clone(),
+                func_protos: RefCell::new(FxHashMap::default()),
                 interfaces: RefCell::new(FxHashMap::default()),
                 type_bindings: RefCell::new(FxHashMap::default()),
                 variable_types: RefCell::new(FxHashMap::default()),

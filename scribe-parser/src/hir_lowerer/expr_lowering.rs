@@ -40,7 +40,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 }
             }
 
-            Expr::StructInit { callee, arguments, positional: _, span } => {
+            Expr::StructInit { callee, arguments, span } => {
                 let name = self.lower_expr(callee);
                 let args_vec: Vec<HirExpr<'a, 'bump>> = arguments.iter().map(|a| self.lower_expr(a)).collect();
                 let args = self.ctx.bump.alloc_slice(&args_vec);
@@ -125,7 +125,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             Expr::Unary { op, operand, span } => {
                 let operand_expr = self.lower_expr(operand);
                 let hir_op = Self::lower_op(*op);
-                
+
                 // Unary operations are represented as binary operations with a placeholder left operand
                 HirExpr::Binary {
                     left: self.ctx.bump.alloc_value(HirExpr::Number(0)),
@@ -138,15 +138,16 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             Expr::ArrayIndex { expr, index, span } => {
                 let array_expr = self.lower_expr(expr);
                 let index_expr = self.lower_expr(index);
-                
+
                 // Array indexing is represented as a Get operation
                 // This is a simplification - proper array support would need HIR changes
                 HirExpr::Get {
                     object: self.ctx.bump.alloc_value(array_expr),
-                    field: StrId(self.ctx.context.intern("index")),
+                    field: StrId(self.ctx.context.intern("get")),
                     span: *span,
                 }
             }
+
             Expr::ElseExpr { expr, pattern, span } => {
                 // TODO: Implement error/nullable pattern matching lowering
                 // For now, just lower the expression and ignore the pattern
@@ -173,7 +174,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
 
         let args_vec: Vec<HirExpr<'a, 'bump>> = arguments.iter().map(|a| self.lower_expr(a)).collect();
         let args = self.ctx.bump.alloc_slice(&args_vec);
-        
+
         HirExpr::Call {
             callee: self.ctx.bump.alloc_value(lowered_callee),
             args,
@@ -287,25 +288,92 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     // ===============================
     // Type Inference
     // ===============================
-    pub fn infer_type(&self, value: &HirExpr<'a, 'bump>) -> HirType<'a, 'bump> {
-        match value {
-            HirExpr::String(_) => HirType::String,
+    pub fn infer_type(&self, expr: &HirExpr<'a, 'bump>) -> HirType<'a, 'bump> {
+        match expr {
             HirExpr::Number(_) => HirType::I32,
-            HirExpr::Boolean(_) => HirType::Boolean,
             HirExpr::Decimal(_) => HirType::F64,
-            HirExpr::StructInit { name, .. } => match **name {
-                HirExpr::Ident(n) => HirType::Struct(n, &[]),
-                _ => todo!(),
-            },
-            HirExpr::Binary { left, op: _, right, .. } => {
+            HirExpr::Boolean(_) => HirType::Boolean,
+            HirExpr::String(_) => HirType::String,
+
+            HirExpr::Ident(name) => {
+                self.ctx.variable_types.borrow()
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| panic!("unknown identifier {:?}", name))
+            }
+
+            HirExpr::Binary { left, op, right, .. } => {
                 let lt = self.infer_type(left);
                 let rt = self.infer_type(right);
-                if lt == rt { lt } else { panic!("lt != rt") }
+
+                if lt != rt {
+                    panic!("type mismatch: {:?} vs {:?}", lt, rt);
+                }
+
+                match op {
+                    Operator::Equals | Operator::NotEquals |
+                    Operator::GreaterThan | Operator::LessThan |
+                    Operator::GreaterThanOrEqual | Operator::LessThanOrEqual =>
+                        HirType::Boolean,
+
+                    _ => lt,
+                }
             }
-            HirExpr::FieldAccess { object, field, span: _ } => self.infer_field_access_type(object, *field),
-            _ => todo!(),
+
+            HirExpr::Call { callee, .. } => {
+                match **callee {
+                    HirExpr::Ident(name) => {
+                        let f = self.ctx.functions.borrow();
+                        f.get(&name)
+                            .expect("unknown function")
+                            .return_type
+                            .unwrap()
+                    }
+                    _ => panic!("invalid call target"),
+                }
+            }
+
+            HirExpr::InterfaceCall { interface, callee, .. } => {
+                let iface = self.ctx.interfaces.borrow();
+                let iface = iface.get(interface).unwrap();
+
+                let method = match **callee {
+                    HirExpr::FieldAccess { field, .. } => field,
+                    _ => unreachable!(),
+                };
+
+                iface.methods
+                    .unwrap()
+                    .iter()
+                    .find(|m| m.name == method)
+                    .unwrap()
+                    .return_type
+                    .unwrap()
+            }
+
+            HirExpr::StructInit { name, .. } => {
+                if let HirExpr::Ident(n) = **name {
+                    HirType::Struct(n, &[])
+                } else {
+                    unreachable!()
+                }
+            }
+
+            HirExpr::FieldAccess { object, field, .. } =>
+                self.infer_field_access_type(object, *field),
+
+            HirExpr::Assignment { value, .. } =>
+                self.infer_type(value),
+
+            HirExpr::ExprList { list, .. } =>
+                list.last().map(|e| self.infer_type(e)).unwrap_or(HirType::Void),
+
+            HirExpr::Comparison { .. } => HirType::Boolean,
+
+            _ => panic!("infer_type not implemented for {:?}", expr),
         }
     }
+
 
     fn infer_field_access_type(&self, object: &HirExpr<'a, 'bump>, field: StrId) -> HirType<'a, 'bump> {
         let obj_ty = self.infer_type(object);
@@ -327,14 +395,14 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
 
     fn try_inline_function(&self, func: &HirFunc<'a, 'bump>, arguments: &'bump [Expr]) -> Option<HirExpr<'a, 'bump>> {
         let body = func.body?;
-        
+
         let mut param_map: HashMap<StrId, HirExpr<'a, 'bump>, FxHashBuilder> = HashMap::with_hasher(FxHashBuilder);
-        
+
         if let Some(params) = func.params {
             if params.len() != arguments.len() {
                 return None;
             }
-            
+
             for (param, arg) in params.iter().zip(arguments.iter()) {
                 match param {
                     ir::hir::HirParam::Normal { name, .. } => {
@@ -348,11 +416,11 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 }
             }
         }
-        
+
         let inlined_body = self.inline_stmt_as_expr(&body, &param_map)?;
         Some(inlined_body)
     }
-    
+
     fn inline_stmt_as_expr(&self, stmt: &HirStmt<'a, 'bump>, param_map: &HashMap<StrId, HirExpr<'a, 'bump>, FxHashBuilder>) -> Option<HirExpr<'a, 'bump>> {
         match stmt {
             HirStmt::Return(Some(expr)) => {
@@ -372,7 +440,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             _ => None, // Cannot inline complex control flow yet
         }
     }
-    
+
     /// Substitute parameter references in an expression using heap-based stack
     fn substitute_expr(&self, expr: &'a HirExpr<'a, 'bump>, param_map: &HashMap<StrId, HirExpr<'a, 'bump>, FxHashBuilder>) -> HirExpr<'a, 'bump> {
         // For simple cases, handle directly
