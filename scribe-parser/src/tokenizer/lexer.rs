@@ -111,30 +111,32 @@ impl<'a, 'bump> Lexer<'a, 'bump> {
                     self.detect_assign_or_append(&mut chars, TokenKind::MulAssign, TokenKind::Mul);
                 }
                 '/' => {
-                    if let Some(next_ch) = chars.peek() {
-                        if *next_ch == '/' {
+                    match chars.peek() {
+                        Some('/') => {
                             chars.next(); // consume second '/'
                             self.pos += 1;
-                            
-                            if chars.peek() == Some(&'/') {
-                                // Doc comment: ///
-                                chars.next();
+
+                            let is_doc = matches!(chars.peek(), Some('/'));
+                            if is_doc {
+                                chars.next(); // consume third '/'
                                 self.pos += 1;
-                                self.tokenize_line_comment(&mut chars, true);
-                            } else {
-                                // Regular line comment: //
-                                self.tokenize_line_comment(&mut chars, false);
                             }
-                            continue;
-                        } else if *next_ch == '*' {
-                            // Block comment: /* */
-                            chars.next(); // consume '*'
-                            self.pos += 1;
-                            self.tokenize_block_comment(&mut chars);
+
+                            self.tokenize_line_comment(&mut chars, is_doc);
                             continue;
                         }
+
+                        Some('*') => {
+                            chars.next(); // consume '*'
+                            self.pos += 1;
+                            panic!("Block comments are not supported");
+                            //continue;
+                        }
+
+                        _ => {
+                            self.detect_assign_or_append(&mut chars, TokenKind::DivAssign, TokenKind::Div);
+                        }
                     }
-                    self.detect_assign_or_append(&mut chars, TokenKind::DivAssign, TokenKind::Div);
                 }
                 '%' => {
                     self.detect_assign_or_append(&mut chars, TokenKind::ModAssign, TokenKind::Mod);
@@ -277,12 +279,16 @@ impl<'a, 'bump> Lexer<'a, 'bump> {
 
     fn process_or(&mut self, chars: &mut Peekable<Chars>) {
         match chars.peek() {
-            Some(character) if *character == '|' => {
-                chars.next().unwrap();
+            Some('|') => {
+                let ch = chars.next().unwrap();
+                self.pos += ch.len_utf8();
+                self.column += 1;
                 self.push_token(TokenKind::OrOr);
             }
-            Some(character) if *character == '=' => {
-                chars.next().unwrap();
+            Some('=') => {
+                let ch = chars.next().unwrap();
+                self.pos += ch.len_utf8();
+                self.column += 1;
                 self.push_token(TokenKind::OrAssign);
             }
             _ => {
@@ -293,12 +299,16 @@ impl<'a, 'bump> Lexer<'a, 'bump> {
 
     fn process_and(&mut self, chars: &mut Peekable<Chars>) {
         match chars.peek() {
-            Some(character) if *character == '&' => {
-                chars.next().unwrap();
+            Some('&') => {
+                let ch = chars.next().unwrap();
+                self.pos += ch.len_utf8();
+                self.column += 1;
                 self.push_token(TokenKind::AndAnd);
             }
-            Some(character) if *character == '=' => {
-                chars.next().unwrap();
+            Some('=') => {
+                let ch = chars.next().unwrap();
+                self.pos += ch.len_utf8();
+                self.column += 1;
                 self.push_token(TokenKind::AndAssign);
             }
             _ => {
@@ -484,74 +494,146 @@ impl<'a, 'bump> Lexer<'a, 'bump> {
         }
     }
 
-    fn tokenize_number(&mut self, ch: char, chars: &mut Peekable<Chars>) {
+    fn tokenize_number(&mut self, first: char, chars: &mut Peekable<Chars>) {
         let mut kind = TokenKind::Number;
-        let mut text: SmallVec<u8, 16> = SmallVec::from_buf([ch as u8]);
+        let mut text: SmallVec<u8, 16> = SmallVec::from_buf([first as u8]);
 
-        let mut seen_dot = ch == '.';
+        let mut seen_dot = false;
         let mut seen_exp = false;
+        let mut last_was_underscore = false;
 
-        while let Some(&next_ch) = chars.peek() {
-            match next_ch {
+        // --- base prefixes (0x / 0b) ---
+        if first == '0' {
+            if let Some(&('x' | 'X')) = chars.peek() {
+                let ch = chars.next().unwrap();
+                self.pos += 1;
+                text.push(ch as u8);
+                kind = TokenKind::Hexadecimal;
+
+                self.consume_digits(chars, &mut text, |c| c.is_ascii_hexdigit());
+                self.consume_suffix(chars, &mut text);
+                self.finish_number(kind, text);
+                return;
+            }
+
+            if let Some(&('b' | 'B')) = chars.peek() {
+                let ch = chars.next().unwrap();
+                self.pos += 1;
+                text.push(ch as u8);
+                kind = TokenKind::Binary;
+
+                self.consume_digits(chars, &mut text, |c| matches!(c, '0' | '1'));
+                self.consume_suffix(chars, &mut text);
+                self.finish_number(kind, text);
+                return;
+            }
+        }
+
+        // --- decimal / float / scientific ---
+        while let Some(&c) = chars.peek() {
+            match c {
                 '0'..='9' => {
-                    let ch = chars.next().unwrap();
-                    self.pos += ch.len_utf8();
-                    text.push(ch as u8);
+                    let c = chars.next().unwrap();
+                    self.pos += 1;
+                    text.push(c as u8);
+                    last_was_underscore = false;
+                }
+
+                '_' if !last_was_underscore => {
+                    let c = chars.next().unwrap();
+                    self.pos += 1;
+                    text.push(c as u8);
+                    last_was_underscore = true;
                 }
 
                 '.' if !seen_dot && !seen_exp => {
-                    let ch = chars.next().unwrap();
-                    kind = TokenKind::Decimal;
+                    let c = chars.next().unwrap();
+                    self.pos += 1;
+                    text.push(c as u8);
                     seen_dot = true;
-                    self.pos += ch.len_utf8();
-                    text.push(ch as u8);
+                    kind = TokenKind::Decimal;
+                    last_was_underscore = false;
                 }
 
-                'e' | 'E' if !seen_exp && kind != TokenKind::Hexadecimal && kind != TokenKind::Binary => {
-                    let ch = chars.next().unwrap();
-                    kind = TokenKind::Decimal;
+                'e' | 'E' if !seen_exp => {
+                    let c = chars.next().unwrap();
+                    self.pos += 1;
+                    text.push(c as u8);
                     seen_exp = true;
-                    self.pos += ch.len_utf8();
-                    text.push(ch as u8);
+                    kind = TokenKind::Decimal;
+                    last_was_underscore = false;
 
-                    // optional + or -
-                    if let Some(&sign @ ('+' | '-')) = chars.peek() {
+                    if let Some(&('+' | '-')) = chars.peek() {
                         let sign = chars.next().unwrap();
-                        self.pos += sign.len_utf8();
+                        self.pos += 1;
                         text.push(sign as u8);
                     }
-
-                    // require at least one digit in exponent
-                    match chars.peek() {
-                        Some('0'..='9') => {}
-                        _ => {
-                            // stop here or emit an error token if you support that
-                            break;
-                        }
-                    }
-                }
-
-                'x' | 'X' if text.len() == 1 && ch == '0' => {
-                    let ch = chars.next().unwrap();
-                    kind = TokenKind::Hexadecimal;
-                    self.pos += ch.len_utf8();
-                    text.push(ch as u8);
-                }
-
-                'b' | 'B' if text.len() == 1 && ch == '0' => {
-                    let ch = chars.next().unwrap();
-                    kind = TokenKind::Binary;
-                    self.pos += ch.len_utf8();
-                    text.push(ch as u8);
                 }
 
                 _ => break,
             }
         }
 
-        let string = unsafe { str::from_utf8_unchecked(text.as_slice()) };
-        let text = self.context.intern_bytes(string.as_bytes());
-        self.push(kind, StrId(text));
+        // trailing underscore is illegal → stop number before it
+        if last_was_underscore {
+            text.pop();
+        }
+
+        // --- numeric suffix ---
+        self.consume_suffix(chars, &mut text);
+        self.finish_number(kind, text);
+    }
+
+    #[inline]
+    fn consume_digits<F>(&mut self, chars: &mut Peekable<Chars>, text: &mut SmallVec<u8, 16>, mut valid: F)
+    where
+        F: FnMut(char) -> bool,
+    {
+        let mut last_was_underscore = false;
+
+        while let Some(&c) = chars.peek() {
+            if valid(c) {
+                let c = chars.next().unwrap();
+                self.pos += 1;
+                text.push(c as u8);
+                last_was_underscore = false;
+            } else if c == '_' && !last_was_underscore {
+                let c = chars.next().unwrap();
+                self.pos += 1;
+                text.push(c as u8);
+                last_was_underscore = true;
+            } else {
+                break;
+            }
+        }
+
+        if last_was_underscore {
+            text.pop();
+        }
+    }
+
+    #[inline]
+    fn consume_suffix(&mut self, chars: &mut Peekable<Chars>, text: &mut SmallVec<u8, 16>) {
+        if let Some(&c) = chars.peek() {
+            if c.is_ascii_alphabetic() {
+                while let Some(&c) = chars.peek() {
+                    if c.is_ascii_alphanumeric() {
+                        let c = chars.next().unwrap();
+                        self.pos += 1;
+                        text.push(c as u8);
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    #[inline]
+    fn finish_number(&mut self, kind: TokenKind, text: SmallVec<u8, 16>) {
+        let string = unsafe { std::str::from_utf8_unchecked(text.as_slice()) };
+        let id = self.context.intern_bytes(string.as_bytes());
+        self.push(kind, StrId(id));
     }
 
     fn tokenize_string(&mut self, chars: &mut Peekable<Chars>) {
@@ -588,74 +670,27 @@ impl<'a, 'bump> Lexer<'a, 'bump> {
 
     fn tokenize_line_comment(&mut self, chars: &mut Peekable<Chars>, is_doc: bool) {
         let mut text: SmallVec<u8, 128> = SmallVec::new();
-        
+
         while let Some(&ch) = chars.peek() {
             if ch == '\n' {
                 break;
             }
             chars.next();
             self.pos += ch.len_utf8();
+            self.column += 1;
             text.push(ch as u8);
         }
-        
+
         let string = unsafe { str::from_utf8_unchecked(text.as_slice()) };
-        let text_id = self.context
-            .intern_bytes(string.as_bytes());
-        
+        let text_id = self.context.intern_bytes(string.as_bytes());
+
         let kind = if is_doc {
             TokenKind::DocComment
         } else {
             TokenKind::LineComment
         };
-        
+
         self.push(kind, StrId(text_id));
-    }
-    
-    fn tokenize_block_comment(&mut self, chars: &mut Peekable<Chars>) {
-        let mut text: SmallVec<u8, 256> = SmallVec::new();
-        let mut depth = 1; // Track nesting depth for /* /* */ */
-        
-        while let Some(ch) = chars.next() {
-            self.pos += ch.len_utf8();
-            
-            if ch == '*' {
-                if let Some(&next_ch) = chars.peek() {
-                    if next_ch == '/' {
-                        chars.next();
-                        self.pos += 1;
-                        depth -= 1;
-                        if depth == 0 {
-                            break;
-                        }
-                        text.push(ch as u8);
-                        text.push(next_ch as u8);
-                        continue;
-                    }
-                }
-            } else if ch == '/' {
-                if let Some(&next_ch) = chars.peek() {
-                    if next_ch == '*' {
-                        chars.next();
-                        self.pos += 1;
-                        depth += 1;
-                        text.push(ch as u8);
-                        text.push(next_ch as u8);
-                        continue;
-                    }
-                }
-            } else if ch == '\n' {
-                self.line += 1;
-                self.column = 1;
-            }
-            
-            text.push(ch as u8);
-        }
-        
-        let string = unsafe { str::from_utf8_unchecked(text.as_slice()) };
-        let text_id = self.context
-            .intern_bytes(string.as_bytes());
-        
-        self.push(TokenKind::BlockComment, StrId(text_id));
     }
 
     fn push(&mut self, kind: TokenKind, text: StrId) {

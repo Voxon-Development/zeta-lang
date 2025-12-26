@@ -163,7 +163,6 @@ pub enum TokenKind {
     
     // ===== Comments =====
     LineComment,    // // ...
-    BlockComment,   // /* ... */
     DocComment,     // /// ...
     
     EOF,

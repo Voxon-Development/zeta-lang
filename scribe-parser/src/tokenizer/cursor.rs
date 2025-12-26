@@ -75,7 +75,7 @@ impl<'a> TokenCursor<'a> {
     pub fn skip_comments(&mut self) {
         while let Some(kind) = self.peek_kind() {
             match kind {
-                TokenKind::LineComment | TokenKind::BlockComment | TokenKind::DocComment => {
+                TokenKind::LineComment | TokenKind::DocComment => {
                     self.advance_kind();
                 }
                 _ => break,
