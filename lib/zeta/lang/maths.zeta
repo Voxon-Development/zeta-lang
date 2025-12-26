@@ -1,9 +1,7 @@
 package zeta.lang
 
-// Constants
-const f64 PI = 3.14159265358979323846264338327950288419716939937510
+const PI: f64 = 3.14159265358979323846264338327950288419716939937510
 
-// Min/max for integer types
 const U8_MAX: u8 = 255
 const U8_MIN: u8 = 0
 const I8_MAX: i8 = 127
@@ -29,7 +27,6 @@ const U128_MIN: u128 = 0
 const I128_MAX: i128 = 170141183460469231731687303715884105727
 const I128_MIN: i128 = -170141183460469231731687303715884105728
 
-// Float min/max
 const F32_MAX: f32 = 3.4028235e38
 const F32_MIN: f32 = -3.4028235e38
 const F64_MAX: f64 = 1.7976931348623157e308
@@ -37,7 +34,6 @@ const F64_MIN: f64 = -1.7976931348623157e308
 
 const F64_NAN: f64 = 0.0 / 0.0
 
-// Functions
 inline fn floor(x: f64): f64 {
     xi := x as i64
     if (x < xi as f64) { return (xi - 1) as f64 } else { xi as f64 }
@@ -52,16 +48,13 @@ inline fn abs(x: f64): f64 {
     if (x < 0.0) { -x } else { x }
 }
 
-// Inlined to `fsqrt` instruction in the CPU by the compiler.
 extern "intrinsic" fn fsqrt(x: f64): f64;
 
 inline fn pow(x: f64, y: f64): f64 {
-    // naive implementation using exp and ln
     exp(y * ln(x))
 }
 
 fn ln(x: f64): f64 {
-    // simple iterative approximation for natural log
     if (x <= 0.0) { return F64_NAN }
 
     mut n := 0
@@ -84,7 +77,6 @@ fn ln(x: f64): f64 {
 }
 
 fn exp(x: f64): f64 {
-    // naive Taylor series
     mut sum := 1.0
     mut term := 1.0
     for i in 1..50 {
