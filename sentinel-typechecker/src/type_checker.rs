@@ -23,15 +23,15 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             match item {
                 Hir::Struct(s) => {
                     let name = self.str_id_to_string(s.name);
-                    self.context.add_struct(name, **s);
+                    self.context.add_struct(name, (*s).clone());
                 }
                 Hir::Interface(i) => {
                     let name = self.str_id_to_string(i.name);
-                    self.context.add_interface(name, **i);
+                    self.context.add_interface(name, (*i).clone());
                 }
                 Hir::Func(f) => {
                     let name = self.str_id_to_string(f.name);
-                    self.context.add_function(name, **f);
+                    self.context.add_function(name, (*f).clone());
                 }
                 _ => {}
             }
