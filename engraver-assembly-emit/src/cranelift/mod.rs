@@ -30,5 +30,6 @@ fn clif_type(ty: &SsaType) -> Type {
         SsaType::Pointer(_) => types::I64, // Pointers are 64-bit
         SsaType::Dyn => types::I64,    // Trait object (fat pointer)
         SsaType::Slice => types::I64,  // Slice (fat pointer)
+        SsaType::Null => types::I64,
     }
 }

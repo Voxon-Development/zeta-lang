@@ -17,6 +17,7 @@ pub fn pass_hir_lowering<'a, 'bump>(
     bump: Arc<GrowableAtomicBump<'bump>>,
 ) -> Result<HirModule<'a, 'bump>, CompilerError> {
     let mut lowerer = HirLowerer::new(context, bump);
+    println!("Lowering module");
     let module = lowerer.lower_module(statements);
     Ok(module)
 }

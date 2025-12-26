@@ -92,6 +92,7 @@ pub fn layout_of_ssa(ty: &SsaType, target: TargetInfo) -> Result<Layout, LayoutE
         SsaType::String => Ok(Layout { size: 16, align: 16 }),
         SsaType::U128 => Ok(Layout { size: 16, align: 16 }),
         SsaType::Pointer(inner) => layout_of_ssa(inner, target),
+        SsaType::Null => Ok(Layout { size: 0, align: 1 }),
     }
 }
 

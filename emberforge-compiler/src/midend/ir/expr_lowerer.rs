@@ -98,6 +98,7 @@ impl<'a> MirExprLowerer<'a> {
 
     pub fn lower_expr(&mut self, expr: &HirExpr) -> Value {
         match expr {
+            HirExpr::Null => self.lower_expr_null(),
             HirExpr::Number(n) => self.lower_expr_number(*n),
 
             HirExpr::Binary { left, op, right, span: _ } => self.lower_expr_binary(left, op, right),
@@ -258,6 +259,12 @@ impl<'a> MirExprLowerer<'a> {
 
             _ => unimplemented!("Assignment target {:?} not yet supported", target),
         }
+    }
+
+    fn lower_expr_null(&mut self) -> Value {
+        let v = self.current_block_data.fresh_value();
+        self.current_block_data.value_types.insert(v, SsaType::Null);
+        v
     }
 
     fn handle_ident(&mut self, op: AssignmentOperator, rhs: Value, name: StrId) -> Value {

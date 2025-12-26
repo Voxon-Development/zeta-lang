@@ -417,6 +417,7 @@ pub enum Expr<'a, 'bump>
 where
     'bump: 'a,
 {
+    Null { span: SourceSpan<'a> },
     Number { value: i64, span: SourceSpan<'a> },
     Decimal { value: f64, span: SourceSpan<'a> },
     String { value: StrId, span: SourceSpan<'a> },

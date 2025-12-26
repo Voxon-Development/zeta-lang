@@ -337,6 +337,7 @@ pub enum HirExpr<'a, 'bump>
 where
     'bump: 'a,
 {
+    Null,
     Number(i64),
     String(StrId),
     Boolean(bool),

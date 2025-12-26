@@ -933,6 +933,7 @@ impl IrPrettyPrinter {
             SsaType::Dyn => "dyn".to_string(),
             SsaType::Slice => "slice".to_string(),
             &SsaType::U128 | &SsaType::Pointer(_) => todo!(),
+            SsaType::Null => "null".to_string(),
         }
     }
 
@@ -985,6 +986,7 @@ impl IrPrettyPrinter {
             SsaType::Dyn => write!(output, "dyn"),
             SsaType::Slice => write!(output, "slice"),
             &SsaType::U128 | &SsaType::Pointer(_) => todo!(),
+            SsaType::Null => write!(output, "null"),
         }
     }
 

@@ -12,6 +12,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     // ===============================
     pub(super) fn lower_expr(&self, expr: &Expr<'a, 'bump>) -> HirExpr<'a, 'bump> {
         match expr {
+            Expr::Null { .. } => HirExpr::Null,
             Expr::Call { callee, arguments, .. } => self.lower_expr_call(callee, arguments),
             Expr::FieldAccess { object, field, span } => {
                 let obj = self.lower_expr(object);

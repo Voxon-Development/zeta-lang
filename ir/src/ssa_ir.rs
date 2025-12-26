@@ -59,6 +59,7 @@ pub enum SsaType {
     F64,
     ISize,  // Signed pointer-sized integer
     USize,  // Unsigned pointer-sized integer
+    Null,
 
     // Special types
     Bool,
