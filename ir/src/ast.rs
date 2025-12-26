@@ -431,7 +431,6 @@ where
     StructInit {
         callee: &'bump Expr<'a, 'bump>,
         arguments: &'bump [Expr<'a, 'bump>],
-        positional: bool,
         span: SourceSpan<'a>,
     },
     FieldAccess {

@@ -233,7 +233,6 @@ where
                         self.bump.alloc_value(Expr::StructInit {
                             callee: self.bump.alloc_value_immutable(Expr::Ident { name, span }),
                             arguments: self.bump.alloc_slice_copy(&args),
-                            positional: true,
                             span,
                         })
                     } else {
@@ -316,7 +315,6 @@ where
                         self.bump.alloc_value(Expr::StructInit {
                             callee: expr,
                             arguments: args_slice,
-                            positional: false,
                             span,
                         })
                     } else {
