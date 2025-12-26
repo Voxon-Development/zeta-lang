@@ -265,8 +265,13 @@ where
         Stmt::FuncDecl(func_decl_ref)
     }
 
-    pub(crate) fn parse_function_decl(&self, cursor: &mut TokenCursor<'a>) -> FuncDecl<'a, 'bump> {
+    pub(crate) fn parse_function_decl(
+        &self,
+        cursor: &mut TokenCursor<'a>,
+    ) -> FuncDecl<'a, 'bump> {
+        cursor.skip_comments();
         let visibility = Self::fetch_visibility(cursor);
+        cursor.skip_comments();
 
         let mut is_unsafe = false;
         let mut is_extern = false;
@@ -274,105 +279,79 @@ where
         let mut inline = false;
         let mut noinline = false;
 
-        // Skip any whitespace or comments before function declaration
-        cursor.skip_comments();
-
         loop {
             match cursor.peek_kind() {
-                Some(TokenKind::Unsafe) => {
+                Some(TokenKind::Unsafe) if !is_unsafe => {
                     is_unsafe = true;
                     cursor.advance_kind();
                 }
-                Some(TokenKind::Inline) => {
+                Some(TokenKind::Inline) if !inline && !noinline => {
                     inline = true;
                     cursor.advance_kind();
                 }
-                Some(TokenKind::Noinline) => {
+                Some(TokenKind::Noinline) if !noinline && !inline => {
                     noinline = true;
                     cursor.advance_kind();
                 }
-                Some(TokenKind::Extern) => {
+                Some(TokenKind::Extern) if !is_extern => {
                     is_extern = true;
                     cursor.advance_kind();
-                    extern_string = cursor.consume_string();
+                    extern_string = cursor.consume_string().or_else(|| {
+                        // default ABI
+                        Some(StrId(self.context.intern("C")))
+                    });
                 }
                 _ => break,
             }
         }
 
-        // Require 'func' keyword for function declarations
+        // illegal modifier combinations
+        if inline && noinline {
+            // emit diagnostic here
+        }
+
         cursor.expect_kind(TokenKind::Fn);
 
-        // Parse function name
-        let name = match cursor.consume_ident() {
-            Some(name) => name,
-            None => {
-                eprintln!(
-                    "Warning: Expected function name after 'fn', got: {:?}",
-                    cursor.peek_kind()
-                );
-                // Return a minimal function with a placeholder name
-                return FuncDecl {
-                    name: StrId(self.context.intern("_error_function")),
-                    generics: None,
-                    params: None,
-                    return_type: None,
-                    body: None,
-                    extern_string: None,
-                    visibility,
-                    is_unsafe,
-                    is_extern,
-                    inline,
-                    noinline,
-                };
-            }
-        };
+        let name = cursor.consume_ident().unwrap_or_else(|| {
+            // emit diagnostic
+            StrId(self.context.intern("_error_function"))
+        });
 
-        let generics: Option<&[Generic<'a, 'bump>]> = if cursor.peek_kind() == Some(TokenKind::Lt) {
+        // generics only immediately after name
+        let generics = if cursor.peek_kind() == Some(TokenKind::Lt) {
             self.parse_generics(cursor)
         } else {
             None
         };
 
-        let params: Option<&[Param<'a, 'bump>]> = if cursor.peek_kind() == Some(TokenKind::LParen) {
-            cursor.advance_kind(); // consume '('
+        let params = if cursor.expect_kind(TokenKind::LParen) {
             self.parse_function_params(cursor)
         } else {
             None
         };
 
-        // Parse return type (after parameters)
-        let return_type: Option<Type<'a, 'bump>> = if cursor.peek_kind() == Some(TokenKind::Colon) {
-            cursor.advance_kind(); // consume ':'
+        let return_type = if cursor.peek_kind() == Some(TokenKind::Colon) {
+            cursor.advance_kind();
             Some(self.parse_type(cursor))
         } else {
-            None // No return type specified, defaults to void
+            None
         };
 
-        // Parse function body
-        let body: Option<&Block> = match cursor.peek_kind() {
-            // Block body: { ... }
-            Some(TokenKind::LBrace) => self.parse_block(cursor),
-            // Expression body: = expr;
-            Some(TokenKind::Assign) => {
-                cursor.advance_kind(); // consume '='
-                let expr = self.statement_parser.parse_expr_placeholder(cursor);
-
-                // Create a return statement with the expression
-                let return_stmt = self.bump.alloc_value(ReturnStmt { value: Some(expr) });
-
-                // Create a block with the single return statement
-                let stmts = self.bump.alloc_slice_copy(&[Stmt::Return(return_stmt)]);
-                Some(self.bump.alloc_value(Block { block: stmts }))
+        let body = match cursor.peek_kind() {
+            Some(TokenKind::LBrace) => {
+                self.parse_block(cursor)
             }
-            // No body (e.g., extern functions)
+            Some(TokenKind::Assign) => {
+                cursor.advance_kind();
+                let expr = self.statement_parser.parse_expr_placeholder(cursor);
+                let ret = self.bump.alloc_value(ReturnStmt { value: Some(expr) });
+                let stmts = self.bump.alloc_slice_copy(&[Stmt::Return(ret)]);
+                let block = self.bump.alloc_value_immutable(Block { block: stmts });
+                cursor.expect_kind(TokenKind::Semicolon);
+                Some(block)
+            }
             _ => None,
         };
-
-        // Ensure we consume the semicolon for expression-bodied functions
-        if body.is_some() && cursor.peek_kind() == Some(TokenKind::Semicolon) {
-            cursor.advance_kind();
-        }
 
         FuncDecl {
             visibility,
@@ -393,54 +372,59 @@ where
         &self,
         cursor: &mut TokenCursor<'a>,
     ) -> Option<&'bump Block<'a, 'bump>> {
-        // Skip any whitespace before the opening brace
         cursor.skip_comments();
 
-        // Expect opening brace
         if !cursor.expect_kind(TokenKind::LBrace) {
             return None;
         }
 
-        // Skip any whitespace after opening brace
         cursor.skip_comments();
 
-        let mut stmts = Vec::new();
+        let mut stmts: Vec<(Stmt<'a, 'bump>, bool)> = Vec::new();
 
-        // Parse until we hit the closing brace or end of input
         while cursor.peek_kind() != Some(TokenKind::RBrace) && !cursor.at_end() {
-            // Skip any whitespace before the statement
             cursor.skip_comments();
 
-            // Check for empty block or extra semicolons
             if cursor.peek_kind() == Some(TokenKind::Semicolon) {
-                cursor.advance_kind(); // skip empty statement
+                cursor.advance_kind();
                 continue;
             }
 
-            // Parse the actual statement
             let stmt = self.statement_parser.parse_stmt(cursor);
-            stmts.push(stmt);
 
-            // Skip any whitespace after the statement
-            cursor.skip_comments();
-
-            // Check for semicolon after statement (except for block statements)
-            if matches!(cursor.peek_kind(), Some(TokenKind::Semicolon)) {
+            let had_semicolon = matches!(cursor.peek_kind(), Some(TokenKind::Semicolon));
+            if had_semicolon {
                 cursor.advance_kind();
             }
+
+            stmts.push((stmt, had_semicolon));
         }
 
-        // Expect and consume the closing brace
         if !cursor.expect_kind(TokenKind::RBrace) {
-            // TODO: Add proper error handling for missing closing brace
             return None;
         }
 
-        // Allocate block in bump allocator
-        let stmts_slice = if stmts.is_empty() {
+        // Rewrite last expression stmt into return
+        let mut final_stmts: Vec<Stmt<'a, 'bump>> = Vec::with_capacity(stmts.len());
+
+        for (i, (stmt, had_semicolon)) in stmts.iter().enumerate() {
+            let is_last = i + 1 == stmts.len();
+
+            if is_last && !had_semicolon {
+                if let Stmt::ExprStmt(expr) = stmt {
+                    let ret = self.bump.alloc_value(ReturnStmt { value: Some(expr.expr) });
+                    final_stmts.push(Stmt::Return(ret));
+                    continue;
+                }
+            }
+
+            final_stmts.push(*stmt);
+        }
+
+        let stmts_slice = if final_stmts.is_empty() {
             &[]
         } else {
-            self.bump.alloc_slice_copy(stmts.as_slice())
+            self.bump.alloc_slice_copy(final_stmts.as_slice())
         };
 
         Some(self.bump.alloc_value(Block { block: stmts_slice }))
