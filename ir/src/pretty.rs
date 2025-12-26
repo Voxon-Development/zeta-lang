@@ -932,7 +932,8 @@ impl IrPrettyPrinter {
             }
             SsaType::Dyn => "dyn".to_string(),
             SsaType::Slice => "slice".to_string(),
-            &SsaType::U128 | &SsaType::Pointer(_) => todo!(),
+            SsaType::U128 => "u128".to_string(),
+            SsaType::Pointer(ty) => format!("*{}", self.format_ssa_type_inline(ty)),
             SsaType::Null => "null".to_string(),
         }
     }
@@ -985,7 +986,8 @@ impl IrPrettyPrinter {
             }
             SsaType::Dyn => write!(output, "dyn"),
             SsaType::Slice => write!(output, "slice"),
-            &SsaType::U128 | &SsaType::Pointer(_) => todo!(),
+            SsaType::U128 => write!(output, "u128"),
+            SsaType::Pointer(ty) => write!(output, "*{}", self.format_ssa_type_inline(ty)),
             SsaType::Null => write!(output, "null"),
         }
     }
