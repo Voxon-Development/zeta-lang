@@ -94,9 +94,7 @@ A memory-safe, systems programming languages, to be made in a new generation of 
 - Session types
   - Optional language-level support for protocol-safe concurrency
   - Library-first approach, with language-level support evaluated later
-
-  Absolutely! Here’s a solid draft for your `# Contributing` and `# License` sections, tailored for your Zeta-Lang project:
-
+    
 ---
 
 ### # Contributing
