@@ -6,11 +6,7 @@ A language made to **touch the realms of cutting-edge possibility** in safety, c
 Example:
 
 ```rs
-enum GameError {    
-    IO { e: IOError },   
-    Alloc { e: AllocError },  
-    RandomFailed { e: RandomNumberError },  
-    ParseFailed { e: ParseFailedError },  
+enum GameError {
     Game { msg: String }  
 }    
     
