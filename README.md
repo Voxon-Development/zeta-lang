@@ -55,8 +55,6 @@ fn main(): GameError!RandomNumberError!IOError!ParseFailedError!void {
     try *game.play_game()   
     
     try std.out.println("Thanks for playing!")
-    
-    // auto drop game, no borrow checking, its CTRC for the main logic and separation logic theory    
 }
 ```
 
