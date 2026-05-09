@@ -6,16 +6,18 @@ use ir::ir_hasher::FxHashBuilder;
 use ir::ssa_ir::{Function, Instruction, Operand, SsaType, Value};
 use smallvec::SmallVec;
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::sync::Arc;
 use zetaruntime::string_pool::StringPool;
 
 /// MIR Expr Lowerer, which converts HIR expressions to MIR expressions.
 /// MIR is similar to a higher level representation of assembly which can be optimized in Zeta specific ways.
 /// If we are here this means we passed all type safety, memory safety and semantic checks, and we can safely discard of stuff and all debug like span's
-pub struct MirExprLowerer<'a> {
-    pub current_block_data: &'a mut CurrentBlockData,
-    pub var_map: &'a mut HashMap<StrId, Value, FxHashBuilder>,
+pub struct MirExprLowerer<'el, 'a, 'cx, 'bump> {
+    pub current_block_data: &'el mut CurrentBlockData,
+    pub var_map: &'el mut HashMap<StrId, Value, FxHashBuilder>,
     pub context: Arc<StringPool>,
+    phantom_data: PhantomData<&'bump ()>,
 
     pub funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
     pub class_field_offsets:
@@ -29,14 +31,17 @@ pub struct MirExprLowerer<'a> {
     pub interface_method_slots:
         &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
     pub classes: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
+
+    pub cx_phantom: PhantomData<&'cx ()>,
 }
 
-impl<'a> MirExprLowerer<'a> {
+impl<'el, 'a, 'cx, 'bump> MirExprLowerer<'el, 'a, 'cx, 'bump>
+where 'bump: 'a {
     #[inline(always)]
     pub fn new(
-        current_block_data: &'a mut CurrentBlockData,
+        current_block_data: &'el mut CurrentBlockData,
         funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
-        var_map: &'a mut HashMap<StrId, Value, FxHashBuilder>,
+        var_map: &'el mut HashMap<StrId, Value, FxHashBuilder>,
         context: Arc<StringPool>,
         class_field_offsets: &'a HashMap<
             StrId,
@@ -66,6 +71,8 @@ impl<'a> MirExprLowerer<'a> {
             interface_id_map,
             interface_method_slots,
             classes,
+            phantom_data: PhantomData,
+            cx_phantom: PhantomData,
         }
     }
 
@@ -76,8 +83,8 @@ impl<'a> MirExprLowerer<'a> {
     /// rely on lookups without panicking.
     pub fn seed_locals_and_params_from_hir(
         &mut self,
-        params: &[(StrId, HirType<'a, 'a>)],
-        locals: &[(StrId, HirType<'a, 'a>)],
+        params: &[(StrId, HirType<'a, 'bump>)],
+        locals: &[(StrId, HirType<'a, 'bump>)],
     ) {
         for (name, ty) in params.iter().copied() {
             let v = self.current_block_data.fresh_value();
@@ -96,7 +103,7 @@ impl<'a> MirExprLowerer<'a> {
         }
     }
 
-    pub fn lower_expr(&mut self, expr: &HirExpr) -> Value {
+    pub fn lower_expr(&mut self, expr: &HirExpr<'a, '_>) -> Value {
         match expr {
             HirExpr::Null => self.lower_expr_null(),
             HirExpr::Number(n) => self.lower_expr_number(*n),
@@ -126,7 +133,6 @@ impl<'a> MirExprLowerer<'a> {
             }
 
             HirExpr::String(s) => {
-                // Strings are represented as constants
                 let v = self.current_block_data.fresh_value();
                 self.emit(Instruction::Const {
                     dest: v,
@@ -138,7 +144,6 @@ impl<'a> MirExprLowerer<'a> {
             }
 
             HirExpr::Boolean(b) => {
-                // Booleans are represented as i64 (0 or 1)
                 let v = self.current_block_data.fresh_value();
                 self.emit(Instruction::Const {
                     dest: v,
@@ -150,7 +155,6 @@ impl<'a> MirExprLowerer<'a> {
             }
 
             HirExpr::Decimal(d) => {
-                // Decimals are represented as f64 constants
                 let v = self.current_block_data.fresh_value();
                 self.emit(Instruction::Const {
                     dest: v,
@@ -162,9 +166,6 @@ impl<'a> MirExprLowerer<'a> {
             }
 
             HirExpr::Tuple(elements) => {
-                // Tuples are represented as a sequence of values
-                // For now, we'll just lower the first element as a placeholder
-                // Proper tuple support would need HIR/SSA changes
                 if elements.is_empty() {
                     let v = self.current_block_data.fresh_value();
                     self.current_block_data.value_types.insert(v, SsaType::I64);
@@ -175,8 +176,6 @@ impl<'a> MirExprLowerer<'a> {
             }
 
             HirExpr::InterpolatedString(_parts) => {
-                // Interpolated strings need special handling
-                // For now, return a placeholder string value
                 let v = self.current_block_data.fresh_value();
                 let empty_str = self.context.intern("");
                 self.emit(Instruction::Const {
@@ -189,16 +188,13 @@ impl<'a> MirExprLowerer<'a> {
             }
 
             HirExpr::EnumInit { enum_name, variant, args } => {
-                // Enum initialization - create a tagged value
                 let v = self.current_block_data.fresh_value();
 
-                // Lower all arguments
                 let mut arg_values: Vec<Value> = Vec::with_capacity(args.len());
                 for arg in *args {
                     arg_values.push(self.lower_expr(arg));
                 }
 
-                // Allocate enum variant as a user type
                 self.emit(Instruction::Alloc {
                     dest: v,
                     ty: SsaType::User(*enum_name, vec![]),
@@ -210,13 +206,11 @@ impl<'a> MirExprLowerer<'a> {
             }
 
             HirExpr::ExprList { list, span: _ } => {
-                // Expression lists evaluate all expressions and return the last one
                 if list.is_empty() {
                     let v = self.current_block_data.fresh_value();
                     self.current_block_data.value_types.insert(v, SsaType::I64);
                     v
                 } else {
-                    // Evaluate all expressions, return the last one
                     let mut result = self.lower_expr(&list[0]);
                     for expr in &list[1..] {
                         result = self.lower_expr(expr);
@@ -226,7 +220,6 @@ impl<'a> MirExprLowerer<'a> {
             }
 
             HirExpr::Comparison { left, op, right, span: _ } => {
-                // Comparisons are similar to binary operations
                 let l = self.lower_expr(left);
                 let r = self.lower_expr(right);
                 let v = self.current_block_data.fresh_value();
@@ -238,15 +231,16 @@ impl<'a> MirExprLowerer<'a> {
                 });
                 self.current_block_data.value_types.insert(v, SsaType::I64);
                 v
-            }
+            },
+            &HirExpr::Deref { .. } => todo!()
         }
     }
 
     fn lower_expr_assignment(
         &mut self,
-        target: &HirExpr,
+        target: &HirExpr<'a, '_>,
         op: AssignmentOperator,
-        value: &HirExpr,
+        value: &HirExpr<'_, 'a>,
     ) -> Value {
         let rhs = self.lower_expr(value);
 
@@ -294,7 +288,6 @@ impl<'a> MirExprLowerer<'a> {
                     right: Operand::Value(rhs),
                 });
 
-                // Try to infer result type from lhs or rhs, fall back to I64
                 let result_ty = self.current_block_data.value_types.get(&var_val)
                     .cloned()
                     .or_else(|| self.current_block_data.value_types.get(&rhs).cloned())
@@ -314,7 +307,7 @@ impl<'a> MirExprLowerer<'a> {
         &mut self,
         op: AssignmentOperator,
         rhs: Value,
-        object: &HirExpr,
+        object: &HirExpr<'a, '_>,
         field: StrId,
     ) -> Value {
         let obj_val = self.lower_expr(object);
@@ -330,7 +323,6 @@ impl<'a> MirExprLowerer<'a> {
                     offset: field_offset,
                 });
 
-                // ensure current has a type recorded
                 let _ = self
                     .current_block_data
                     .value_types
@@ -347,10 +339,9 @@ impl<'a> MirExprLowerer<'a> {
                     right: Operand::Value(rhs),
                 });
 
-                // infer dest type conservatively
                 let res_ty = self.current_block_data.value_types.get(&current)
                     .cloned()
-                    .unwrap_or(SsaType::I64); // left side
+                    .unwrap_or(SsaType::I64);
 
                 self.current_block_data.value_types.insert(dest, res_ty);
 
@@ -379,7 +370,7 @@ impl<'a> MirExprLowerer<'a> {
         v
     }
 
-    fn lower_expr_binary(&mut self, left: &HirExpr, op: &Operator, right: &HirExpr) -> Value {
+    fn lower_expr_binary(&mut self, left: &HirExpr<'_, 'a>, op: &Operator, right: &HirExpr<'a, '_>) -> Value {
         let l = self.lower_expr(left);
         let r = self.lower_expr(right);
         let v = self.current_block_data.fresh_value();
@@ -393,7 +384,7 @@ impl<'a> MirExprLowerer<'a> {
         v
     }
 
-    fn lower_class_init(&mut self, name: &HirExpr, args: &[HirExpr]) -> Value {
+    fn lower_class_init(&mut self, name: &HirExpr, args: &[HirExpr<'a, '_>]) -> Value {
         let class_name = match name {
             HirExpr::Ident(n) => n.clone(),
             other => panic!("ClassInit name must be identifier; got {:?}", other),
@@ -401,7 +392,6 @@ impl<'a> MirExprLowerer<'a> {
 
         let obj = self.new_value();
 
-        // Lower args and record their values and types safely
         let mut arg_values: Vec<Value> = Vec::with_capacity(args.len());
         let mut types: Vec<SsaType> = Vec::with_capacity(args.len());
         for arg in args {
@@ -479,7 +469,7 @@ impl<'a> MirExprLowerer<'a> {
         });
     }
 
-    fn lower_field_access(&mut self, object: &HirExpr, field: StrId) -> Value {
+    fn lower_field_access(&mut self, object: &HirExpr<'a, '_>, field: StrId) -> Value {
         let obj_val = self.lower_expr(object);
 
         let cls_name = match self.current_block_data.value_types.get(&obj_val) {
@@ -527,7 +517,7 @@ impl<'a> MirExprLowerer<'a> {
         dest
     }
 
-    fn lower_call(&mut self, callee: &HirExpr, args: &[HirExpr]) -> Value {
+    fn lower_call(&mut self, callee: &HirExpr<'_, 'a>, args: &[HirExpr<'a, '_>]) -> Value {
         match callee {
             HirExpr::Ident(fname) => {
                 let arg_ops: SmallVec<Operand, 8> = args
@@ -542,10 +532,7 @@ impl<'a> MirExprLowerer<'a> {
                     args: arg_ops,
                 });
 
-                // Try to get function return type from `funcs` map, otherwise default
                 if let Some(f) = self.funcs.get(fname) {
-                    // adapt this according to your Function struct
-                    // Placeholder: assume `f.return_type: Option<SsaType>` exists
                     #[allow(unused_variables)]
                     let ret_ty = None::<SsaType>;
                     if let Some(rt) = ret_ty {
@@ -571,9 +558,7 @@ impl<'a> MirExprLowerer<'a> {
         }
     }
 
-    fn lower_method_call(&mut self, object: &HirExpr, field: StrId, args: &[HirExpr]) -> Value {
-        // If the object is an identifier that is NOT a local variable, treat this as a
-        // namespaced/static function call like Namespace.func(...), not a method call.
+    fn lower_method_call(&mut self, object: &HirExpr<'a, '_>, field: StrId, args: &[HirExpr<'_, 'a>]) -> Value {
         if let HirExpr::Ident(scope_name) = object {
             if !self.var_map.contains_key(scope_name) {
                 let mut operands: SmallVec<Operand, 8> = SmallVec::new();
@@ -598,24 +583,19 @@ impl<'a> MirExprLowerer<'a> {
                     args: operands,
                 });
 
-                // conservative default return type
                 self.current_block_data.value_types.insert(dest, SsaType::I64);
                 return dest;
             }
         }
 
-        // Regular instance method call path
         let obj_val: Value = self.lower_expr(object);
         let mut operands: SmallVec<Operand, 8> = SmallVec::new();
 
-        // Get the class name BEFORE we change the type
         let maybe_cls_name: Option<SsaType> = self.current_block_data.value_types.get(&obj_val).cloned();
-        
+
         let maybe_cls_name: Option<&str> = match maybe_cls_name {
             Some(SsaType::User(ref name, _args)) => {
                 let resolved = self.context.resolve_string(name);
-                // The name might be in format "ClassName" or "module_ClassName"
-                // Try to extract the class name by taking the last part after underscore
                 if let Some(last) = resolved.split("_").last() {
                     if !last.is_empty() {
                         Some(last)
@@ -629,12 +609,10 @@ impl<'a> MirExprLowerer<'a> {
             _ => None,
         };
 
-        // Ensure the object (this) is treated as i64 (pointer type) for the call
-        // But only if it's actually a User type (not already i64 or other type)
         if maybe_cls_name.is_some() {
             self.current_block_data.value_types.insert(obj_val, SsaType::I64);
         }
-        
+
         operands.push(Operand::Value(obj_val));
         for a in args {
             let av = self.lower_expr(a);
@@ -693,7 +671,6 @@ impl<'a> MirExprLowerer<'a> {
                 args: operands.clone(),
             });
 
-            // conservative default return type
             self.current_block_data.value_types.insert(dest, SsaType::I64);
             return Some(dest);
         }
@@ -719,8 +696,8 @@ impl<'a> MirExprLowerer<'a> {
 
     fn lower_interface_call(
         &mut self,
-        callee: &HirExpr,
-        args: &[HirExpr],
+        callee: &HirExpr<'_, 'a>,
+        args: &[HirExpr<'_, 'a>],
         interface: StrId,
     ) -> Value {
         let HirExpr::FieldAccess { object, field, span: _ } = callee else {
@@ -766,15 +743,6 @@ impl<'a> MirExprLowerer<'a> {
 
         let interface_val = match self.current_block_data.value_types.get(&obj_val).cloned() {
             Some(SsaType::User(ref _name, args)) => {
-                /*let Some(inner_value_name) = self
-                    .context
-                    .resolve_string(&*name)
-                    .split("_")
-                    .last()
-                else {
-                    panic!()
-                };*/
-
                 let upcast_dest = self.current_block_data.fresh_value();
                 self.emit(Instruction::UpcastToInterface {
                     dest: upcast_dest,

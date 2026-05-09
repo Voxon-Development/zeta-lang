@@ -29,6 +29,7 @@ use std::error::Error;
 use std::{fmt, io};
 use std::sync::Arc;
 use cranelift_codegen::settings::Configurable;
+use ir::ast::InlineModifier;
 use ir::ir_hasher::FxHashBuilder;
 use ir::layout::sizeof_ssa;
 use zetaruntime::string_pool::{StringPool, VmString};
@@ -661,7 +662,7 @@ impl Backend for CraneliftBackend {
             sig,
         );
 
-        if func.noinline {
+        if let InlineModifier::Noinline = func.function_metadata.inline_modifier {
             // Cranelift hint for noinline
         }
 

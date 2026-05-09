@@ -3,10 +3,13 @@ use ir::hir::{Hir, HirStruct, HirFunc, HirInterface, HirModule, HirParam, HirTyp
 use ir::ir_hasher::FxHashBuilder;
 use ir::ssa_ir::{Function, Module, SsaType};
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::sync::Arc;
 use zetaruntime::string_pool::StringPool;
+use crate::midend::ir::lowerer::FunctionLowerer;
 
-pub struct MirModuleLowerer<'a, 'bump> {
+pub struct MirModuleLowerer<'a, 'cx, 'bump>
+where 'bump: 'a, 'bump: 'cx, 'cx: 'a {
     pub module: Module<'a, 'bump>,
 
     // HIR -> SSA metadata for interfaces / classes
@@ -19,10 +22,13 @@ pub struct MirModuleLowerer<'a, 'bump> {
     class_method_slots: HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
     class_field_offsets: HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
 
+    phantom_data: PhantomData<&'cx ()>,
+
     context: Arc<StringPool>,
 }
 
-impl<'a, 'bump> MirModuleLowerer<'a, 'bump> {
+impl<'a, 'cx, 'bump> MirModuleLowerer<'a, 'cx, 'bump>
+where 'bump: 'a, 'bump: 'cx, 'cx: 'a {
     pub fn new(context: Arc<StringPool>) -> Self {
         Self {
             module: Module::new(),
@@ -33,6 +39,7 @@ impl<'a, 'bump> MirModuleLowerer<'a, 'bump> {
             class_vtable_slots: HashMap::with_hasher(FxHashBuilder),
             class_method_slots: HashMap::with_hasher(FxHashBuilder),
             class_field_offsets: HashMap::with_hasher(FxHashBuilder),
+            phantom_data: PhantomData,
             context,
         }
     }
@@ -68,8 +75,8 @@ impl<'a, 'bump> MirModuleLowerer<'a, 'bump> {
                         name: _,
                         param_type,
                     } => lower_type_hir(&param_type),
-                    HirParam::This { param_type } => {
-                        lower_type_hir(param_type.as_ref().unwrap_or(&HirType::This))
+                    HirParam::This => {
+                        lower_type_hir(&HirType::This)
                     }
                 })
                 .collect::<Vec<_>>();
@@ -163,8 +170,9 @@ impl<'a, 'bump> MirModuleLowerer<'a, 'bump> {
         self.module.functions.insert(func.name.clone(), func);
     }
 
-    fn lower_function_inner(&self, hir_fn: &HirFunc<'a, 'bump>) -> Function {
-        let mut fl = crate::midend::ir::lowerer::FunctionLowerer::new(
+    fn lower_function_inner<'s>(&'s self, hir_fn: &HirFunc<'a, 'bump>) -> Function
+    where 's: 'cx {
+        let mut fl: FunctionLowerer<'s, 'bump> = FunctionLowerer::new(
             hir_fn,
             &self.module.functions,
             &self.class_field_offsets,
@@ -176,19 +184,20 @@ impl<'a, 'bump> MirModuleLowerer<'a, 'bump> {
             &self.module.classes,
             self.context.clone(),
         )
-        .unwrap();
+            .unwrap();
         fl.lower_body(hir_fn.body);
-        fl.finish()
+        FunctionLowerer::finish(fl)
     }
 
     fn lower_class_method(&mut self, hir_method: &HirFunc<'a, 'bump>, class_name: StrId) {
         // For class methods, lower with class context
         let func = self.lower_class_method_inner(hir_method, class_name);
-        self.module.functions.insert(func.name.clone(), func);
+        self.module.functions.insert(func.name, func);
     }
 
-    fn lower_class_method_inner(&self, hir_fn: &HirFunc<'a, 'bump>, class_name: StrId) -> Function {
-        let mut fl = crate::midend::ir::lowerer::FunctionLowerer::new_with_class(
+    fn lower_class_method_inner<'s>(&'s self, hir_fn: &HirFunc<'a, 'bump>, class_name: StrId) -> Function
+    where 's: 'cx {
+        let mut fl: FunctionLowerer<'s, 'bump> = FunctionLowerer::new_with_class(
             hir_fn,
             class_name,
             &self.module.functions,
@@ -199,10 +208,10 @@ impl<'a, 'bump> MirModuleLowerer<'a, 'bump> {
             &self.interface_id_map,
             &self.interface_method_slots,
             &self.module.classes,
-            self.context.clone(),
+            Arc::clone(&self.context),
         )
         .unwrap();
         fl.lower_body(hir_fn.body);
-        fl.finish()
+        FunctionLowerer::finish(fl)
     }
 }
