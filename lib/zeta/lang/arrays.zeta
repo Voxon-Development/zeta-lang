@@ -4,7 +4,11 @@ enum ArrayError {
     IndexOutOfBounds
 }
 
-struct Array<T, const N: usize> { ptr: *mut T } {
+struct Array<T, const N: usize> {
+    ptr: *mut T
+}
+
+impl<T, const N: usize> Array<T, N> {
     inline fn new(): Array<T, N> {
         p := intrinsics::stack_alloc<T, N>()
         Array { ptr: p }
@@ -15,14 +19,14 @@ struct Array<T, const N: usize> { ptr: *mut T } {
         Array { ptr: p }
     }
     
-    inline fn get(*this, index: usize): !T {
+    inline fn get(*this, index: usize): ArrayError!T {
         if (index >= length) {
             return ArrayError.IndexOutOfBounds;
         }
         get_unchecked(index)
     }
     
-    inline fn set(*mut this, index: usize, value: T) {
+    inline fn set(*mut this, index: usize, value: T): ArrayError!void {
         if (index >= this.length) {
             return ArrayError.IndexOutOfBound;
         }

@@ -21,7 +21,7 @@ struct Range<T> { start: T, end: T } {
 struct RangeIter { current: i64, end: i64 } {
     fn next(*mut this): i64? {
         if iter.current >= iter.end { return null }
-        let val: current = iter.current
+        let val: i32 = iter.current
         iter.current += 1
         val
     }
