@@ -31,12 +31,12 @@ where
 
         let (params, body, constants, destructor) = if self.cursor.consume(TokenKind::Semicolon) {
             // Unit struct: `struct Foo;`
-            (None, &[] as &[FuncDecl<'a, 'bump>], &[] as &[ConstStmt<'a, 'bump>], None)
+            (None, &[], &[], None)
         } else if self.cursor.peek() == TokenKind::LParen {
             // Tuple struct: `struct Foo(i32, i32);`
             let tuple_fields = self.parse_tuple_struct_fields()?;
             self.cursor.expect(TokenKind::Semicolon)?;
-            (Some(tuple_fields), &[] as &[FuncDecl<'a, 'bump>], &[] as &[ConstStmt<'a, 'bump>], None)
+            (Some(tuple_fields), &[], &[], None)
         } else {
             // Regular struct with braces
             self.cursor.expect(TokenKind::LBrace)?;
@@ -108,7 +108,7 @@ where
 
             (
                 if fields_as_params.is_empty() { None } else { Some(self.bump.alloc_slice_copy(&fields_as_params)) },
-                &[] as &[FuncDecl<'a, 'bump>],
+                &[],
                 self.bump.alloc_slice_copy(&consts),
                 dtor,
             )

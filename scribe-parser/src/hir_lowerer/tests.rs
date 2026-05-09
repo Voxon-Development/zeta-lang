@@ -5,7 +5,6 @@ mod hir_lowerer_tests {
     use crate::parser::descent_parser::DescentParser;
     use crate::tokenizer::lexer::Lexer;
     use ir::hir::{Hir, HirExpr, HirFunc, HirModule, HirStmt, HirType, StrId};
-    use ir::ir_hasher::FxHashBuilder;
     use ir::ir_hasher::HashMap;
     use std::mem::transmute;
     use std::sync::Arc;
@@ -15,7 +14,6 @@ mod hir_lowerer_tests {
 
     fn create_test_context() -> (Arc<StringPool>, GrowableBump<'static>) {
         let context = Arc::new(StringPool::new().expect("Failed to create StringPool"));
-        std::env::args()
         let bump = GrowableBump::new(4096, 8);
         (context, bump)
     }
