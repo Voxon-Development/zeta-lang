@@ -1,8 +1,7 @@
 use crate::type_context::TypeContext;
-use crate::type_error::{TypeError, TypeCheckResult};
+use crate::type_error::{TypeCheckResult, TypeError};
 use ir::hir::{
-    HirModule, HirFunc, HirInterface, HirExpr, HirStmt, HirType, HirParam, Hir,
-    Operator, StrId,
+    Hir, HirExpr, HirFunc, HirInterface, HirModule, HirParam, HirStmt, HirType, Operator, StrId,
 };
 
 pub struct TypeChecker<'a, 'bump> {
@@ -58,11 +57,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                         let param_name = self.str_id_to_string(*name);
                         func_context.add_variable(param_name, *param_type);
                     }
-                    HirParam::This { param_type } => {
-                        if let Some(ty) = param_type {
-                            func_context.add_variable("this".to_string(), *ty);
-                        }
-                    }
+                    _ => {}
                 }
             }
         }
@@ -80,9 +75,14 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         Ok(())
     }
 
-    fn check_stmt(&mut self, stmt: &HirStmt<'a, 'bump>) -> TypeCheckResult<Option<HirType<'a, 'bump>>> {
+    fn check_stmt(
+        &mut self,
+        stmt: &HirStmt<'a, 'bump>,
+    ) -> TypeCheckResult<Option<HirType<'a, 'bump>>> {
         match stmt {
-            HirStmt::Let { name, ty, value } => {
+            HirStmt::Let {
+                name, ty, value, ..
+            } => {
                 let value_type = self.check_expr(value)?;
                 self.types_compatible(ty, &value_type)?;
                 let var_name = self.str_id_to_string(*name);
@@ -109,7 +109,11 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 self.check_expr(e)?;
                 Ok(None)
             }
-            HirStmt::If { cond, then_block, else_block } => {
+            HirStmt::If {
+                cond,
+                then_block,
+                else_block,
+            } => {
                 let cond_type = self.check_expr(cond)?;
                 if cond_type != HirType::Boolean {
                     return Err(TypeError::TypeMismatch {
@@ -151,7 +155,12 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
 
                 Ok(None)
             }
-            HirStmt::For { init, condition, increment, body } => {
+            HirStmt::For {
+                init,
+                condition,
+                increment,
+                body,
+            } => {
                 if let Some(init_stmt) = init {
                     self.check_stmt(init_stmt)?;
                 }
@@ -222,7 +231,9 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 // For now, return the first type as a simplification
                 Ok(types.first().copied().unwrap_or(HirType::Void))
             }
-            HirExpr::Binary { left, op, right, .. } => {
+            HirExpr::Binary {
+                left, op, right, ..
+            } => {
                 let left_type = self.check_expr(left)?;
                 let right_type = self.check_expr(right)?;
                 self.check_binary_op(&left_type, op, &right_type)
@@ -230,7 +241,8 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             HirExpr::Call { callee, args } => {
                 if let HirExpr::Ident(func_name) = **callee {
                     let name = self.str_id_to_string(func_name);
-                    let func = self.context
+                    let func = self
+                        .context
                         .get_function(&name)
                         .ok_or_else(|| TypeError::UndefinedFunction(name))?;
 
@@ -259,12 +271,17 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     Ok(HirType::Void)
                 }
             }
-            HirExpr::FieldAccess { object, field, span: _ } => {
+            HirExpr::FieldAccess {
+                object,
+                field,
+                span: _,
+            } => {
                 let obj_type = self.check_expr(object)?;
                 match obj_type {
                     HirType::Struct(struct_name, _) => {
                         let struct_name_str = self.str_id_to_string(struct_name);
-                        let struct_def = self.context
+                        let struct_def = self
+                            .context
                             .get_struct(&struct_name_str)
                             .ok_or_else(|| TypeError::UndefinedType(struct_name_str.clone()))?;
 
@@ -321,7 +338,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     })
                 }
             }
-            
+
             LogicalAnd | LogicalOr => {
                 if *left == HirType::Boolean && *right == HirType::Boolean {
                     Ok(HirType::Boolean)
@@ -482,7 +499,8 @@ mod tests {
     #[test]
     fn test_binary_op_logical() {
         let checker = TypeChecker::new();
-        let result = checker.check_binary_op(&HirType::Boolean, &Operator::LogicalAnd, &HirType::Boolean);
+        let result =
+            checker.check_binary_op(&HirType::Boolean, &Operator::LogicalAnd, &HirType::Boolean);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), HirType::Boolean);
     }

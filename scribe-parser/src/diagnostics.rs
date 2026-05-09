@@ -43,7 +43,7 @@ impl<'a> ParserDiagnostics<'a> {
                     Some(span),
                 );
             }
-            ParserError::UnexpectedToken { expected, found } => {
+            ParserError::UnexpectedToken { expected, found, span } => {
                 let span = SourceSpan::new(self.file_name, 1, 1); // TODO: Get actual position
                 reporter.add_parser_error(
                     StrId::from(self.string_pool.intern(format!("Expected '{}', but found '{}'", expected, found).as_str())),
@@ -60,7 +60,8 @@ impl<'a> ParserDiagnostics<'a> {
                     StrId::from(self.string_pool.intern("Unexpected end of file")),
                     Some(span),
                 );
-            }
+            },
+            &ir::errors::error::ParserError::InvalidFunctionName { .. } | &ir::errors::error::ParserError::EmptyIdent { .. } => todo!()
         }
     }
     

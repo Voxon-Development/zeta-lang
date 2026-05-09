@@ -8,3 +8,4 @@ pub mod ir_hasher;
 pub mod span;
 pub mod pretty;
 pub mod layout;
+pub mod tokens;

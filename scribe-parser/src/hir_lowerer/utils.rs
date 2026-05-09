@@ -9,7 +9,7 @@ pub const fn lower_visibility(visibility: &ast::Visibility) -> hir::Visibility {
         ast::Visibility::Public => hir::Visibility::Public,
         ast::Visibility::Private => hir::Visibility::Private,
         ast::Visibility::Module => hir::Visibility::Module,
-        ast::Visibility::Package => hir::Visibility::Package,
+        ast::Visibility::Internal => hir::Visibility::Internal,
     }
 }
 

@@ -1,202 +1,187 @@
-use ir::ast::Stmt;
+use ir::ast::{Expr, Generic, Stmt, Visibility};
+pub(crate) use ir::errors::error::ParserError;
+use ir::hir::StrId;
 use ir::span::SourceSpan;
+use ir::ssa_ir::BinOp;
 use std::error::Error;
 use std::fmt;
+use std::marker::PhantomData;
 use std::sync::Arc;
-
 use zetaruntime::arena::GrowableAtomicBump;
 use zetaruntime::bump::GrowableBump;
 use zetaruntime::string_pool::StringPool;
 
-use crate::parser::declaration_parser::DeclarationParser;
-use crate::parser::statement_parser::StatementParser;
-use crate::tokenizer::tokens::Tokens;
-use crate::tokenizer::cursor::TokenCursor;
-use crate::tokenizer::tokens::TokenKind;
 use crate::tokenizer::lexer::Lexer;
+use ir::tokens::{Cursor, TokenKind, Tokens};
 
 pub struct DescentParser<'a, 'bump>
 where
     'bump: 'a,
 {
-    bump: &'bump GrowableBump<'bump>,
-    statement_parser: StatementParser<'a, 'bump>,
-    declaration_parser: DeclarationParser<'a, 'bump>,
+    pub(crate) cursor: Cursor<'a>,
+    pub(crate) bump: &'bump GrowableBump<'bump>,
+    pub(crate) string_pool: Arc<StringPool>,
 }
 
 impl<'a, 'bump> DescentParser<'a, 'bump>
 where
     'bump: 'a,
 {
-    pub fn new(context: Arc<StringPool>, bump: &'bump GrowableBump<'bump>) -> Self {
-        Self {
+    pub fn parse(
+        string_pool: Arc<StringPool>,
+        bump: &'bump GrowableBump<'bump>,
+        tokens: &'a Tokens<'a>,
+    ) -> Result<Vec<Stmt<'a, 'bump>, &'bump GrowableBump<'bump>>, ParserError<'a>> {
+        let mut parser = DescentParser {
+            cursor: Cursor::new(tokens, 0),
+            string_pool,
             bump,
-            statement_parser: StatementParser::new(context.clone(), bump),
-            declaration_parser: DeclarationParser::new(context.clone(), bump),
+        };
+
+        parser.parse_toplevel()
+    }
+
+    fn parse_toplevel(
+        &mut self,
+    ) -> Result<Vec<Stmt<'a, 'bump>, &'bump GrowableBump<'bump>>, ParserError<'a>> {
+        let mut stmts = Vec::new_in(self.bump);
+
+        while self.cursor.peek() != TokenKind::EOF {
+            stmts.push(self.parse_stmt(Visibility::Public)?);
         }
+
+        Ok(stmts)
     }
-    
-    /// Get a reference to the bump allocator
-    pub fn bump(&self) -> &'bump GrowableBump<'bump> {
-        self.bump
-    }
-    
-    /// Parse a program using iterative descent
-    pub fn parse(&self, tokens: &'a Tokens<'a>) -> Vec<Stmt<'a, 'bump>, &'bump GrowableBump<'bump>> {
-        let mut cursor = TokenCursor::from_tokens(tokens);
-        let mut stmts: Vec<Stmt, &GrowableBump> = Vec::new_in(self.bump);
-        
-        while !cursor.at_end() {
-            match cursor.peek_kind() {
-                Some(crate::tokenizer::tokens::TokenKind::EOF) => break,
-                Some(_) => {
-                    if let Some(stmt) = self.parse_top_level(&mut cursor) {
-                        stmts.push(stmt);
-                    }
-                }
-                None => break,
-            }
-        }
-        
-        stmts
-    }
-    
-    fn parse_top_level(&self, cursor: &mut TokenCursor<'a>) -> Option<ir::ast::Stmt<'a, 'bump>> {
-        let kind: TokenKind = cursor.peek_kind()?;
+
+    pub(crate) fn parse_stmt(
+        &mut self,
+        visibility: Visibility,
+    ) -> Result<Stmt<'a, 'bump>, ParserError<'a>> {
+        let kind = self.cursor.peek();
         match kind {
-            TokenKind::Import => Some(self.declaration_parser.parse_import(cursor)),
-            TokenKind::Package => {
-                // Disambiguate: package statement vs package visibility modifier
-                if cursor.peek_kind_n(1) == Some(TokenKind::Ident) {
-                    // package "name"; - this is a package statement
-                    Some(self.declaration_parser.parse_package(cursor))
+            TokenKind::Let => self.parse_let_stmt(),
+            TokenKind::Import => self.parse_import(),
+            TokenKind::Package => self.parse_package(),
+            TokenKind::Match => self.parse_match_stmt(),
+            TokenKind::Defer => self.parse_defer_stmt(),
+            TokenKind::Static => {
+                self.cursor.advance(); // consume 'static'
+                self.parse_static_let_stmt()
+            }
+            TokenKind::Fn => self.parse_function_with_visibility(visibility),
+            TokenKind::If => self.parse_if_stmt(),
+            TokenKind::While => self.parse_while_stmt(),
+            TokenKind::For => self.parse_for_stmt(),
+            TokenKind::Return => self.parse_return_stmt(),
+            TokenKind::Break => {
+                self.cursor.advance();
+                self.cursor.consume(TokenKind::Semicolon);
+                Ok(Stmt::Break)
+            }
+            TokenKind::Continue => {
+                self.cursor.advance();
+                self.cursor.consume(TokenKind::Semicolon);
+                Ok(Stmt::Continue)
+            }
+
+            TokenKind::Private => {
+                self.cursor.advance();
+                self.parse_stmt(Visibility::Private)
+            }
+
+            TokenKind::Module => {
+                self.cursor.advance();
+                // `module Name { ... }` is a module *declaration*.
+                // `module fn foo()` / `module struct Bar {}` is a visibility modifier.
+                if self.cursor.peek() == TokenKind::Ident
+                    && self.cursor.peek_n(1) == TokenKind::LBrace
+                {
+                    self.parse_module_decl(Visibility::Module)
                 } else {
-                    // package <something else> - this is a visibility modifier, determine what follows
-                    self.parse_declaration_with_visibility(cursor)
+                    self.parse_stmt(Visibility::Module)
                 }
             }
-            
-            // Visibility modifiers - check what declaration follows
-            TokenKind::Private | TokenKind::Module => {
-                self.parse_declaration_with_visibility(cursor)
+
+            TokenKind::Internal => {
+                self.cursor.advance();
+                self.parse_stmt(Visibility::Internal)
             }
-            
-            // Direct declarations (no visibility specified, defaults to public)
-            TokenKind::Enum => Some(self.declaration_parser.parse_enum(cursor)),
-            TokenKind::Interface => Some(self.declaration_parser.parse_interface(cursor)),
-            TokenKind::Impl => Some(self.declaration_parser.parse_impl_decl(cursor)),
-            TokenKind::Struct => Some(self.declaration_parser.parse_struct_decl(cursor)),
-            TokenKind::Statem => Some(self.declaration_parser.parse_state_machine(cursor)),
-            TokenKind::Effect => Some(self.declaration_parser.parse_effect(cursor)),
-            
-            TokenKind::Unsafe | TokenKind::Extern | TokenKind::Inline | TokenKind::Noinline | TokenKind::Fn => {
-                Some(self.declaration_parser.parse_function(cursor))
+
+            TokenKind::Inline | TokenKind::Noinline | TokenKind::Unsafe | TokenKind::Extern => {
+                self.parse_function_with_visibility(visibility)
             }
-            
-            _ => Some(self.statement_parser.parse_stmt(cursor)),
+
+            TokenKind::Struct => self.parse_struct_decl(visibility),
+            TokenKind::Impl => self.parse_impl_decl(visibility),
+            TokenKind::Interface => self.parse_interface_decl(visibility, false),
+            TokenKind::Sealed => {
+                // sealed interface Name permits X, Y, Z { ... }
+                self.cursor.advance();
+                self.cursor.expect(TokenKind::Interface)?;
+                self.parse_interface_decl(visibility, true)
+            }
+
+            TokenKind::Ident => {
+                // Check for shorthand let (ident := expr)
+                if self.cursor.peek_n(1) == TokenKind::ColonAssign {
+                    self.parse_shorthand_let_stmt()
+                } else {
+                    self.parse_expr_stmt()
+                }
+            }
+
+            _ => self.parse_expr_stmt(),
         }
     }
-    
-    fn parse_declaration_with_visibility(&self, cursor: &mut TokenCursor<'a>) -> Option<ir::ast::Stmt<'a, 'bump>> {
-        use crate::tokenizer::tokens::TokenKind;
-        
-        // Look ahead to see what declaration follows the visibility modifier
-        let mut lookahead_pos = 0;
-        
-        // Skip visibility modifiers
-        while let Some(kind) = cursor.peek_kind_n(lookahead_pos) {
-            match kind {
-                TokenKind::Private | TokenKind::Module | TokenKind::Package => {
-                    lookahead_pos += 1;
-                }
-                _ => break,
-            }
-        }
-        
-        // Check what declaration type follows the visibility
-        match cursor.peek_kind_n(lookahead_pos) {
-            Some(TokenKind::Enum) => Some(self.declaration_parser.parse_enum(cursor)),
-            Some(TokenKind::Interface) => Some(self.declaration_parser.parse_interface(cursor)),
-            Some(TokenKind::Impl) => Some(self.declaration_parser.parse_impl_decl(cursor)),
-            Some(TokenKind::Struct) => Some(self.declaration_parser.parse_struct_decl(cursor)),
-            Some(TokenKind::Statem) => Some(self.declaration_parser.parse_state_machine(cursor)),
-            Some(TokenKind::Effect) => Some(self.declaration_parser.parse_effect(cursor)),
-            
-            // Function-related tokens (including modifiers and function declarations)
-            Some(TokenKind::Unsafe) | Some(TokenKind::Extern) | Some(TokenKind::Inline) | 
-            Some(TokenKind::Noinline) | Some(TokenKind::Fn) | Some(TokenKind::Ident) => {
-                Some(self.declaration_parser.parse_function(cursor))
-            }
-            
-            // If we can't determine the declaration type, default to function parsing
-            _ => Some(self.statement_parser.parse_stmt(cursor)),
-        }
+}
+
+pub fn token_to_visibility(token_kind: TokenKind) -> Visibility {
+    match token_kind {
+        TokenKind::Private => Visibility::Private,
+        TokenKind::Module => Visibility::Module,
+        TokenKind::Package => Visibility::Internal,
+        _ => Visibility::Public,
     }
 }
 
 pub struct ParseResult<'a, 'bump> {
     pub statements: Vec<Stmt<'a, 'bump>, &'bump GrowableBump<'bump>>,
-    pub diagnostics: ParserDiagnostics,
+    pub diagnostics: ParserDiagnostics<'a>,
 }
 
 pub fn parse_program<'a, 'bump>(
     src: &'bump str,
     file_name: &'bump str,
     context: Arc<StringPool>,
-    bump: Arc<GrowableAtomicBump<'bump>>
+    bump: Arc<GrowableAtomicBump<'bump>>,
 ) -> ParseResult<'a, 'bump> {
     let mut diagnostics = ParserDiagnostics::new();
-    
-    let lexer: Lexer<'a, 'bump> = Lexer::from_str(src, file_name, context.clone());
-    let tokens: Tokens<'a> = lexer.tokenize();
 
-    //println!("{:?}", tokens);
-    
-    let tokenized_source = bump.alloc_value(tokens);
-    
-    // Create a safe GrowableBump that lives long enough
-    // We'll use a Box to ensure it has a stable address
     let parser_bump = Box::new(GrowableBump::new(4096, 8));
     let parser_bump_ref: &'bump GrowableBump<'bump> = Box::leak(parser_bump);
-    
-    let parser: DescentParser<'a, 'bump> = DescentParser::new(context, parser_bump_ref);
-    let stmts: Vec<Stmt, &'bump GrowableBump<'bump>> = parser.parse(tokenized_source);
-    
+
+    let lexer: Lexer = Lexer::new(context.clone());
+    let tokens: Tokens<'a> = lexer.tokenize(src, file_name, parser_bump_ref);
+
+    let tokenized_source = bump.alloc_value(tokens);
+
+    let stmts: Vec<Stmt, &'bump GrowableBump<'bump>> =
+        DescentParser::parse(context, parser_bump_ref, tokenized_source).unwrap();
+
     ParseResult {
         statements: stmts,
         diagnostics,
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum ParserError {
-    LexerError(String),
-    UnexpectedToken { expected: String, found: String },
-    UnexpectedEof,
-}
-
-impl Error for ParserError {}
-
-impl fmt::Display for ParserError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ParserError::LexerError(msg) => write!(f, "Lexer error: {}", msg),
-            ParserError::UnexpectedToken { expected, found } => {
-                write!(f, "Expected {}, found {}", expected, found)
-            }
-            ParserError::UnexpectedEof => write!(f, "Unexpected end of file"),
-        }
-    }
-}
-
 /// Collects parser diagnostics (errors, warnings, notes) instead of panicking
 #[derive(Debug, Clone)]
-pub struct ParserDiagnostics {
-    pub errors: Vec<ParserError>,
+pub struct ParserDiagnostics<'a> {
+    pub errors: Vec<ParserError<'a>>,
     pub warnings: Vec<String>,
 }
 
-impl ParserDiagnostics {
+impl<'a> ParserDiagnostics<'a> {
     pub fn new() -> Self {
         ParserDiagnostics {
             errors: Vec::new(),
@@ -204,7 +189,7 @@ impl ParserDiagnostics {
         }
     }
 
-    pub fn add_error(&mut self, error: ParserError) {
+    pub fn add_error(&mut self, error: ParserError<'a>) {
         self.errors.push(error);
     }
 

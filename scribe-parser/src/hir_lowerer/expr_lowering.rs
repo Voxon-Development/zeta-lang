@@ -1,7 +1,9 @@
 use super::context::HirLowerer;
 use super::utils::lower_cmp_operator;
-use ir::ast::{Expr, Op, Pattern, Type};
-use ir::hir::{AssignmentOperator, HirExpr, HirFunc, HirPattern, HirStmt, HirType, Operator, StrId};
+use ir::ast::{Expr, InlineModifier, Op, Pattern, Type};
+use ir::hir::{
+    AssignmentOperator, HirExpr, HirFunc, HirPattern, HirStmt, HirType, Operator, StrId,
+};
 use ir::ir_hasher::FxHashBuilder;
 use ir::span::SourceSpan;
 use std::collections::HashMap;
@@ -13,8 +15,14 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     pub(super) fn lower_expr(&self, expr: &Expr<'a, 'bump>) -> HirExpr<'a, 'bump> {
         match expr {
             Expr::Null { .. } => HirExpr::Null,
-            Expr::Call { callee, arguments, .. } => self.lower_expr_call(callee, arguments),
-            Expr::FieldAccess { object, field, span } => {
+            Expr::Call {
+                callee, arguments, ..
+            } => self.lower_expr_call(callee, arguments),
+            Expr::FieldAccess {
+                object,
+                field,
+                span,
+            } => {
                 let obj = self.lower_expr(object);
                 HirExpr::FieldAccess {
                     object: self.ctx.bump.alloc_value(obj),
@@ -41,9 +49,14 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 }
             }
 
-            Expr::StructInit { callee, arguments, span } => {
+            Expr::StructInit {
+                callee,
+                arguments,
+                span,
+            } => {
                 let name = self.lower_expr(callee);
-                let args_vec: Vec<HirExpr<'a, 'bump>> = arguments.iter().map(|a| self.lower_expr(a)).collect();
+                let args_vec: Vec<HirExpr<'a, 'bump>> =
+                    arguments.iter().map(|a| self.lower_expr(a)).collect();
                 let args = self.ctx.bump.alloc_slice(&args_vec);
                 HirExpr::StructInit {
                     name: self.ctx.bump.alloc_value(name),
@@ -52,7 +65,20 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 }
             }
 
-            Expr::Binary { left, op, right, span } => {
+            Expr::Deref { expr, span } => {
+                let inner = self.lower_expr(expr);
+                HirExpr::Deref {
+                    expr: self.ctx.bump.alloc_value(inner),
+                    span: *span,
+                }
+            }
+
+            Expr::Binary {
+                left,
+                op,
+                right,
+                span,
+            } => {
                 let left_expr = self.lower_expr(left);
                 let right_expr = self.lower_expr(right);
                 HirExpr::Binary {
@@ -63,7 +89,11 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 }
             }
 
-            Expr::Get { object, field, span } => {
+            Expr::Get {
+                object,
+                field,
+                span,
+            } => {
                 let obj = self.lower_expr(object);
                 HirExpr::Get {
                     object: self.ctx.bump.alloc_value(obj),
@@ -83,8 +113,12 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 }
             }
 
-            Expr::ExprList { expressions: exprs, span } => {
-                let list_vec: Vec<HirExpr<'a, 'bump>> = exprs.iter().map(|e| self.lower_expr(e)).collect();
+            Expr::ExprList {
+                expressions: exprs,
+                span,
+            } => {
+                let list_vec: Vec<HirExpr<'a, 'bump>> =
+                    exprs.iter().map(|e| self.lower_expr(e)).collect();
                 let list = self.ctx.bump.alloc_slice(&list_vec);
                 HirExpr::ExprList { list, span: *span }
             }
@@ -149,7 +183,11 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 }
             }
 
-            Expr::ElseExpr { expr, pattern, span } => {
+            Expr::ElseExpr {
+                expr,
+                pattern,
+                span,
+            } => {
                 // TODO: Implement error/nullable pattern matching lowering
                 // For now, just lower the expression and ignore the pattern
                 self.lower_expr(expr)
@@ -157,7 +195,11 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         }
     }
 
-    pub(super) fn lower_expr_call(&self, callee: &Expr<'a, 'bump>, arguments: &'bump [Expr<'a, 'bump>]) -> HirExpr<'a, 'bump> {
+    pub(super) fn lower_expr_call(
+        &self,
+        callee: &Expr<'a, 'bump>,
+        arguments: &'bump [Expr<'a, 'bump>],
+    ) -> HirExpr<'a, 'bump> {
         let lowered_callee = self.lower_expr(&*callee);
         if let Some(value) = self.detect_interface_call(arguments, &lowered_callee) {
             return value;
@@ -165,7 +207,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
 
         if let HirExpr::Ident(func_name) = &lowered_callee {
             if let Some(func) = self.ctx.functions.borrow().get(func_name) {
-                if func.inline {
+                if let InlineModifier::Inline = func.function_metadata.inline_modifier {
                     if let Some(inlined) = self.try_inline_function(func, arguments) {
                         return inlined;
                     }
@@ -173,7 +215,8 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             }
         }
 
-        let args_vec: Vec<HirExpr<'a, 'bump>> = arguments.iter().map(|a| self.lower_expr(a)).collect();
+        let args_vec: Vec<HirExpr<'a, 'bump>> =
+            arguments.iter().map(|a| self.lower_expr(a)).collect();
         let args = self.ctx.bump.alloc_slice(&args_vec);
 
         HirExpr::Call {
@@ -187,12 +230,18 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         arguments: &'bump [Expr],
         lowered_callee: &HirExpr<'a, 'bump>,
     ) -> Option<HirExpr<'a, 'bump>> {
-        let HirExpr::FieldAccess { object, field, span: _span } = lowered_callee else {
+        let HirExpr::FieldAccess {
+            object,
+            field,
+            span: _span,
+        } = lowered_callee
+        else {
             return None;
         };
         let interface = self.find_interface_method(object, *field)?;
 
-        let args_vec: Vec<HirExpr<'a, 'bump>> = arguments.iter().map(|a| self.lower_expr(a)).collect();
+        let args_vec: Vec<HirExpr<'a, 'bump>> =
+            arguments.iter().map(|a| self.lower_expr(a)).collect();
         let args = self.ctx.bump.alloc_slice(&args_vec);
 
         Some(HirExpr::InterfaceCall {
@@ -214,18 +263,22 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                         None
                     }
                 }
-            },
+            }
             _ => None,
         }?;
 
         let binding = self.ctx.classes.borrow();
         let class = binding.get(&class_name)?;
-        let Some(interfaces) = class.interfaces else { return None; };
+        let Some(interfaces) = class.interfaces else {
+            return None;
+        };
 
         for iface_name in interfaces {
             let if_binding = self.ctx.interfaces.borrow();
             let iface = if_binding.get(iface_name)?;
-            let Some(methods) = iface.methods else { return None; };
+            let Some(methods) = iface.methods else {
+                return None;
+            };
             if methods.iter().any(|m| m.name == method) {
                 return Some(iface_name.clone());
             }
@@ -281,8 +334,8 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             Op::Lte => Operator::LessThanOrEqual,
             Op::BitNot => Operator::BitNot,
             Op::LogicalNot => Operator::LogicalNot,
-            Op::Range => Operator::Add,  // Placeholder: Range will be handled specially
-            Op::RangeExcl => Operator::Add,  // Placeholder: RangeExcl will be handled specially
+            Op::Range => Operator::Add, // Placeholder: Range will be handled specially
+            Op::RangeExcl => Operator::Add, // Placeholder: RangeExcl will be handled specially
         }
     }
 
@@ -296,14 +349,17 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             HirExpr::Boolean(_) => HirType::Boolean,
             HirExpr::String(_) => HirType::String,
 
-            HirExpr::Ident(name) => {
-                self.ctx.variable_types.borrow()
-                    .get(name)
-                    .cloned()
-                    .unwrap_or_else(|| panic!("unknown identifier {:?}", name))
-            }
+            HirExpr::Ident(name) => self
+                .ctx
+                .variable_types
+                .borrow()
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| panic!("unknown identifier {:?}", name)),
 
-            HirExpr::Binary { left, op, right, .. } => {
+            HirExpr::Binary {
+                left, op, right, ..
+            } => {
                 let lt = self.infer_type(left);
                 let rt = self.infer_type(right);
 
@@ -312,29 +368,28 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 }
 
                 match op {
-                    Operator::Equals | Operator::NotEquals |
-                    Operator::GreaterThan | Operator::LessThan |
-                    Operator::GreaterThanOrEqual | Operator::LessThanOrEqual =>
-                        HirType::Boolean,
+                    Operator::Equals
+                    | Operator::NotEquals
+                    | Operator::GreaterThan
+                    | Operator::LessThan
+                    | Operator::GreaterThanOrEqual
+                    | Operator::LessThanOrEqual => HirType::Boolean,
 
                     _ => lt,
                 }
             }
 
-            HirExpr::Call { callee, .. } => {
-                match **callee {
-                    HirExpr::Ident(name) => {
-                        let f = self.ctx.functions.borrow();
-                        f.get(&name)
-                            .expect("unknown function")
-                            .return_type
-                            .unwrap()
-                    }
-                    _ => panic!("invalid call target"),
+            HirExpr::Call { callee, .. } => match **callee {
+                HirExpr::Ident(name) => {
+                    let f = self.ctx.functions.borrow();
+                    f.get(&name).expect("unknown function").return_type.unwrap()
                 }
-            }
+                _ => panic!("invalid call target"),
+            },
 
-            HirExpr::InterfaceCall { interface, callee, .. } => {
+            HirExpr::InterfaceCall {
+                interface, callee, ..
+            } => {
                 let iface = self.ctx.interfaces.borrow();
                 let iface = iface.get(interface).unwrap();
 
@@ -343,7 +398,8 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                     _ => unreachable!(),
                 };
 
-                iface.methods
+                iface
+                    .methods
                     .unwrap()
                     .iter()
                     .find(|m| m.name == method)
@@ -360,14 +416,16 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 }
             }
 
-            HirExpr::FieldAccess { object, field, .. } =>
-                self.infer_field_access_type(object, *field),
+            HirExpr::FieldAccess { object, field, .. } => {
+                self.infer_field_access_type(object, *field)
+            }
 
-            HirExpr::Assignment { value, .. } =>
-                self.infer_type(value),
+            HirExpr::Assignment { value, .. } => self.infer_type(value),
 
-            HirExpr::ExprList { list, .. } =>
-                list.last().map(|e| self.infer_type(e)).unwrap_or(HirType::Void),
+            HirExpr::ExprList { list, .. } => list
+                .last()
+                .map(|e| self.infer_type(e))
+                .unwrap_or(HirType::Void),
 
             HirExpr::Comparison { .. } => HirType::Boolean,
 
@@ -375,8 +433,11 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         }
     }
 
-
-    fn infer_field_access_type(&self, object: &HirExpr<'a, 'bump>, field: StrId) -> HirType<'a, 'bump> {
+    fn infer_field_access_type(
+        &self,
+        object: &HirExpr<'a, 'bump>,
+        field: StrId,
+    ) -> HirType<'a, 'bump> {
         let obj_ty = self.infer_type(object);
         match obj_ty {
             HirType::Struct(name, _) => {
@@ -389,15 +450,22 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                     .map(|f| f.field_type)
                     .unwrap()
             }
-            HirType::Interface(_, _) | HirType::Enum(_, _) => panic!("field access on interface/enum"),
+            HirType::Interface(_, _) | HirType::Enum(_, _) => {
+                panic!("field access on interface/enum")
+            }
             _ => panic!("todo"),
         }
     }
 
-    fn try_inline_function(&self, func: &HirFunc<'a, 'bump>, arguments: &'bump [Expr]) -> Option<HirExpr<'a, 'bump>> {
+    fn try_inline_function(
+        &self,
+        func: &HirFunc<'a, 'bump>,
+        arguments: &'bump [Expr],
+    ) -> Option<HirExpr<'a, 'bump>> {
         let body = func.body?;
 
-        let mut param_map: HashMap<StrId, HirExpr<'a, 'bump>, FxHashBuilder> = HashMap::with_hasher(FxHashBuilder);
+        let mut param_map: HashMap<StrId, HirExpr<'a, 'bump>, FxHashBuilder> =
+            HashMap::with_hasher(FxHashBuilder);
 
         if let Some(params) = func.params {
             if params.len() != arguments.len() {
@@ -422,14 +490,14 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         Some(inlined_body)
     }
 
-    fn inline_stmt_as_expr(&self, stmt: &HirStmt<'a, 'bump>, param_map: &HashMap<StrId, HirExpr<'a, 'bump>, FxHashBuilder>) -> Option<HirExpr<'a, 'bump>> {
+    fn inline_stmt_as_expr(
+        &self,
+        stmt: &HirStmt<'a, 'bump>,
+        param_map: &HashMap<StrId, HirExpr<'a, 'bump>, FxHashBuilder>,
+    ) -> Option<HirExpr<'a, 'bump>> {
         match stmt {
-            HirStmt::Return(Some(expr)) => {
-                Some(self.substitute_expr(expr, param_map))
-            }
-            HirStmt::Expr(expr) => {
-                Some(self.substitute_expr(expr, param_map))
-            }
+            HirStmt::Return(Some(expr)) => Some(self.substitute_expr(expr, param_map)),
+            HirStmt::Expr(expr) => Some(self.substitute_expr(expr, param_map)),
             HirStmt::Block { body } => {
                 // For blocks, try to find the last expression or return statement
                 if let Some(last_stmt) = body.last() {
@@ -443,7 +511,11 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     }
 
     /// Substitute parameter references in an expression using heap-based stack
-    fn substitute_expr(&self, expr: &'a HirExpr<'a, 'bump>, param_map: &HashMap<StrId, HirExpr<'a, 'bump>, FxHashBuilder>) -> HirExpr<'a, 'bump> {
+    fn substitute_expr(
+        &self,
+        expr: &'a HirExpr<'a, 'bump>,
+        param_map: &HashMap<StrId, HirExpr<'a, 'bump>, FxHashBuilder>,
+    ) -> HirExpr<'a, 'bump> {
         // For simple cases, handle directly
         match expr {
             HirExpr::Ident(name) => {
@@ -458,9 +530,23 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         // For complex expressions, use a work stack
         enum WorkItem<'a, 'bump> {
             Process(&'a HirExpr<'a, 'bump>),
-            BuildBinary { left: HirExpr<'a, 'bump>, op: Operator, right_expr: &'a HirExpr<'a, 'bump>, span: SourceSpan<'a> },
-            BuildCall { callee: HirExpr<'a, 'bump>, args: &'bump [HirExpr<'a, 'bump>], arg_idx: usize },
-            BuildComparison { left: HirExpr<'a, 'bump>, op: Operator, right_expr: &'a HirExpr<'a, 'bump>, span: SourceSpan<'a> },
+            BuildBinary {
+                left: HirExpr<'a, 'bump>,
+                op: Operator,
+                right_expr: &'a HirExpr<'a, 'bump>,
+                span: SourceSpan<'a>,
+            },
+            BuildCall {
+                callee: HirExpr<'a, 'bump>,
+                args: &'bump [HirExpr<'a, 'bump>],
+                arg_idx: usize,
+            },
+            BuildComparison {
+                left: HirExpr<'a, 'bump>,
+                op: Operator,
+                right_expr: &'a HirExpr<'a, 'bump>,
+                span: SourceSpan<'a>,
+            },
         }
 
         let mut work_stack: Vec<WorkItem<'a, 'bump>> = vec![WorkItem::Process(expr)];
@@ -468,46 +554,82 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
 
         while let Some(item) = work_stack.pop() {
             match item {
-                WorkItem::Process(e) => {
-                    match e {
-                        HirExpr::Ident(name) => {
-                            result_stack.push(param_map.get(name).copied().unwrap_or(*e));
-                        }
-                        HirExpr::Binary { left, op, right, span } => {
-                            work_stack.push(WorkItem::BuildBinary { left: HirExpr::Number(0), op: *op, right_expr: right, span: *span });
-                            work_stack.push(WorkItem::Process(left));
-                        }
-                        HirExpr::Comparison { left, op, right, span } => {
-                            work_stack.push(WorkItem::BuildComparison { left: HirExpr::Number(0), op: *op, right_expr: right, span: *span });
-                            work_stack.push(WorkItem::Process(left));
-                        }
-                        HirExpr::Call { callee, args } => {
-                            work_stack.push(WorkItem::BuildCall { callee: HirExpr::Number(0), args, arg_idx: 0 });
-                            work_stack.push(WorkItem::Process(callee));
-                        }
-                        HirExpr::FieldAccess { object, field, span } => {
-                            work_stack.push(WorkItem::Process(object));
-                            let obj_result = result_stack.pop().unwrap_or(*e);
-                            result_stack.push(HirExpr::FieldAccess {
-                                object: self.ctx.bump.alloc_value(obj_result),
-                                field: *field,
-                                span: *span,
-                            });
-                        }
-                        HirExpr::Assignment { target, op, value, span } => {
-                            let new_target = self.substitute_expr(target, param_map);
-                            let new_value = self.substitute_expr(value, param_map);
-                            result_stack.push(HirExpr::Assignment {
-                                target: self.ctx.bump.alloc_value(new_target),
-                                op: *op,
-                                value: self.ctx.bump.alloc_value(new_value),
-                                span: *span,
-                            });
-                        }
-                        _ => result_stack.push(*e),
+                WorkItem::Process(e) => match e {
+                    HirExpr::Ident(name) => {
+                        result_stack.push(param_map.get(name).copied().unwrap_or(*e));
                     }
-                }
-                WorkItem::BuildBinary { left: _, op, right_expr, span } => {
+                    HirExpr::Binary {
+                        left,
+                        op,
+                        right,
+                        span,
+                    } => {
+                        work_stack.push(WorkItem::BuildBinary {
+                            left: HirExpr::Number(0),
+                            op: *op,
+                            right_expr: right,
+                            span: *span,
+                        });
+                        work_stack.push(WorkItem::Process(left));
+                    }
+                    HirExpr::Comparison {
+                        left,
+                        op,
+                        right,
+                        span,
+                    } => {
+                        work_stack.push(WorkItem::BuildComparison {
+                            left: HirExpr::Number(0),
+                            op: *op,
+                            right_expr: right,
+                            span: *span,
+                        });
+                        work_stack.push(WorkItem::Process(left));
+                    }
+                    HirExpr::Call { callee, args } => {
+                        work_stack.push(WorkItem::BuildCall {
+                            callee: HirExpr::Number(0),
+                            args,
+                            arg_idx: 0,
+                        });
+                        work_stack.push(WorkItem::Process(callee));
+                    }
+                    HirExpr::FieldAccess {
+                        object,
+                        field,
+                        span,
+                    } => {
+                        work_stack.push(WorkItem::Process(object));
+                        let obj_result = result_stack.pop().unwrap_or(*e);
+                        result_stack.push(HirExpr::FieldAccess {
+                            object: self.ctx.bump.alloc_value(obj_result),
+                            field: *field,
+                            span: *span,
+                        });
+                    }
+                    HirExpr::Assignment {
+                        target,
+                        op,
+                        value,
+                        span,
+                    } => {
+                        let new_target = self.substitute_expr(target, param_map);
+                        let new_value = self.substitute_expr(value, param_map);
+                        result_stack.push(HirExpr::Assignment {
+                            target: self.ctx.bump.alloc_value(new_target),
+                            op: *op,
+                            value: self.ctx.bump.alloc_value(new_value),
+                            span: *span,
+                        });
+                    }
+                    _ => result_stack.push(*e),
+                },
+                WorkItem::BuildBinary {
+                    left: _,
+                    op,
+                    right_expr,
+                    span,
+                } => {
                     let left_result = result_stack.pop().unwrap();
                     let right_result = self.substitute_expr(right_expr, param_map);
                     result_stack.push(HirExpr::Binary {
@@ -517,7 +639,12 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                         span,
                     });
                 }
-                WorkItem::BuildComparison { left: _, op, right_expr, span } => {
+                WorkItem::BuildComparison {
+                    left: _,
+                    op,
+                    right_expr,
+                    span,
+                } => {
                     let left_result = result_stack.pop().unwrap();
                     let right_result = self.substitute_expr(right_expr, param_map);
                     result_stack.push(HirExpr::Comparison {
@@ -527,9 +654,14 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                         span,
                     });
                 }
-                WorkItem::BuildCall { callee: _, args, arg_idx: _arg_idx } => {
+                WorkItem::BuildCall {
+                    callee: _,
+                    args,
+                    arg_idx: _arg_idx,
+                } => {
                     let callee_result = result_stack.pop().unwrap();
-                    let new_args_vec: Vec<HirExpr<'a, 'bump>> = args.iter()
+                    let new_args_vec: Vec<HirExpr<'a, 'bump>> = args
+                        .iter()
                         .map(|a| self.substitute_expr(a, param_map))
                         .collect();
                     let new_args = self.ctx.bump.alloc_slice(&new_args_vec);
@@ -550,7 +682,8 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             Pattern::Number(n) => HirPattern::Number(*n),
             Pattern::String(s) => HirPattern::String(*s),
             Pattern::Tuple(inner) => {
-                let tuple_vec: Vec<HirPattern<'bump>> = inner.iter().map(|p| self.lower_pattern(p)).collect();
+                let tuple_vec: Vec<HirPattern<'bump>> =
+                    inner.iter().map(|p| self.lower_pattern(p)).collect();
                 let tuple_slice = self.ctx.bump.alloc_slice(&tuple_vec);
                 HirPattern::Tuple(tuple_slice)
             }
@@ -558,7 +691,26 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             Pattern::Boolean(_) => todo!(),
             Pattern::Array(_) => todo!(),
             Pattern::Struct { .. } => todo!(),
-            Pattern::Or(_) => todo!()
+            Pattern::Or(_) => todo!(),
+            Pattern::EnumVariant { name, bindings } => {
+                // Extract identifier bindings from sub-patterns
+                let binding_ids: Vec<ir::hir::StrId> = bindings
+                    .iter()
+                    .filter_map(|p| {
+                        if let Pattern::Ident(id) = p {
+                            Some(*id)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let bindings_slice = self.ctx.bump.alloc_slice(&binding_ids);
+                HirPattern::EnumVariant {
+                    enum_name: *name,
+                    variant: *name,
+                    bindings: bindings_slice,
+                }
+            }
         }
     }
 
@@ -573,7 +725,8 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             ir::ast::TypeKind::String => HirType::String,
             ir::ast::TypeKind::Boolean => HirType::Boolean,
             ir::ast::TypeKind::Struct { name, generics } => {
-                let generics_vec: Vec<HirType<'a, 'bump>> = generics.iter().map(|g| self.lower_type(g)).collect();
+                let generics_vec: Vec<HirType<'a, 'bump>> =
+                    generics.iter().map(|g| self.lower_type(g)).collect();
                 let generics_slice = self.ctx.bump.alloc_slice(&generics_vec);
                 HirType::Struct(*name, generics_slice)
             }

@@ -1,9 +1,12 @@
-use std::sync::Arc;
+use crate::ast::{Expr, FuncSafety, InlineModifier, Stmt, Type, Visibility};
+use crate::hir::{
+    CTRCAnalysisResult, DestructorCallType, Hir, HirEnum, HirExpr, HirFunc, HirInterface,
+    HirModule, HirModuleWithCTRC, HirParam, HirStmt, HirStruct, HirType, Operator, StrId,
+};
+use crate::ssa_ir::{BinOp, Function, Instruction, Module, Operand, SsaType, UnOp};
 use std::fmt::{self, Write};
+use std::sync::Arc;
 use zetaruntime::string_pool::StringPool;
-use crate::hir::{StrId, HirModule, HirFunc, HirStruct, HirEnum, HirInterface, HirStmt, HirExpr, HirType, Hir, Visibility, HirParam, Operator, HirModuleWithCTRC, CTRCAnalysisResult, DestructorCallType};
-use crate::ast::{Stmt, Expr, Type};
-use crate::ssa_ir::{Module, Function, Instruction, SsaType, Operand, BinOp, UnOp};
 
 /// Pretty printer for Zeta IR with string pool resolution
 pub struct IrPrettyPrinter {
@@ -53,7 +56,7 @@ impl IrPrettyPrinter {
     /// Format HIR module as readable text
     pub fn format_hir_module(&mut self, module: &HirModule<'_, '_>) -> Result<String, fmt::Error> {
         let mut output = String::new();
-        
+
         writeln!(output, "// HIR Module: {}", self.resolve_str(module.name))?;
         writeln!(output)?;
 
@@ -75,20 +78,43 @@ impl IrPrettyPrinter {
     }
 
     /// Format HIR module with CTRC analysis results
-    pub fn format_hir_module_with_ctrc(&mut self, module_with_ctrc: &HirModuleWithCTRC<'_, '_>) -> Result<String, fmt::Error> {
+    pub fn format_hir_module_with_ctrc(
+        &mut self,
+        module_with_ctrc: &HirModuleWithCTRC<'_, '_>,
+    ) -> Result<String, fmt::Error> {
         let mut output = String::new();
         let module = &module_with_ctrc.module;
-        
+
         // Module header
-        writeln!(output, "// HIR Module: {} (with CTRC Analysis)", self.resolve_str(module.name))?;
-        
+        writeln!(
+            output,
+            "// HIR Module: {} (with CTRC Analysis)",
+            self.resolve_str(module.name)
+        )?;
+
         // CTRC Analysis Summary
         if let Some(ctrc) = &module_with_ctrc.ctrc_analysis {
             writeln!(output, "// CTRC Analysis Results:")?;
-            writeln!(output, "//   Structs with destructors: {}", ctrc.structs_with_destructors.len())?;
-            writeln!(output, "//   Drop insertions: {}", ctrc.drop_insertions.len())?;
-            writeln!(output, "//   Destructor calls: {}", ctrc.destructor_calls.len())?;
-            writeln!(output, "//   Potential leaks: {}", ctrc.potential_leaks.len())?;
+            writeln!(
+                output,
+                "//   Structs with destructors: {}",
+                ctrc.structs_with_destructors.len()
+            )?;
+            writeln!(
+                output,
+                "//   Drop insertions: {}",
+                ctrc.drop_insertions.len()
+            )?;
+            writeln!(
+                output,
+                "//   Destructor calls: {}",
+                ctrc.destructor_calls.len()
+            )?;
+            writeln!(
+                output,
+                "//   Potential leaks: {}",
+                ctrc.potential_leaks.len()
+            )?;
             if ctrc.has_memory_safety_issues() {
                 writeln!(output, "//    MEMORY SAFETY ISSUES DETECTED")?;
             } else {
@@ -100,14 +126,18 @@ impl IrPrettyPrinter {
         // Format imports
         if !module.imports.is_empty() {
             for import in module.imports {
-                writeln!(output, "{}import;", self.indent())?;
+                writeln!(output, "{}import {};", self.indent(), import)?;
             }
             writeln!(output)?;
         }
 
         // Format items with CTRC annotations
         for item in module.items {
-            self.format_hir_item_with_ctrc(&mut output, item, module_with_ctrc.ctrc_analysis.as_ref())?;
+            self.format_hir_item_with_ctrc(
+                &mut output,
+                item,
+                module_with_ctrc.ctrc_analysis.as_ref(),
+            )?;
             writeln!(output)?;
         }
 
@@ -119,7 +149,11 @@ impl IrPrettyPrinter {
         Ok(output)
     }
 
-    fn format_hir_item(&mut self, output: &mut String, item: &Hir<'_, '_>) -> Result<(), fmt::Error> {
+    fn format_hir_item(
+        &mut self,
+        output: &mut String,
+        item: &Hir<'_, '_>,
+    ) -> Result<(), fmt::Error> {
         match item {
             Hir::Func(func) => self.format_hir_function(output, func),
             Hir::Struct(struct_def) => self.format_hir_struct(output, struct_def),
@@ -132,7 +166,12 @@ impl IrPrettyPrinter {
         }
     }
 
-    fn format_hir_item_with_ctrc(&mut self, output: &mut String, item: &Hir<'_, '_>, ctrc: Option<&CTRCAnalysisResult>) -> Result<(), fmt::Error> {
+    fn format_hir_item_with_ctrc(
+        &mut self,
+        output: &mut String,
+        item: &Hir<'_, '_>,
+        ctrc: Option<&CTRCAnalysisResult>,
+    ) -> Result<(), fmt::Error> {
         match item {
             Hir::Func(func) => self.format_hir_function_with_ctrc(output, func, ctrc),
             Hir::Struct(struct_def) => self.format_hir_struct_with_ctrc(output, struct_def, ctrc),
@@ -147,26 +186,48 @@ impl IrPrettyPrinter {
         }
     }
 
-    fn format_hir_function(&mut self, output: &mut String, func: &HirFunc<'_, '_>) -> Result<(), fmt::Error> {
-        let visibility = match func.visibility {
+    fn format_hir_function(
+        &mut self,
+        output: &mut String,
+        func: &HirFunc<'_, '_>,
+    ) -> Result<(), fmt::Error> {
+        let modifiers = func.function_metadata;
+
+        let visibility = match modifiers.visibility {
             Visibility::Public => "public ",
             Visibility::Private => "private ",
             Visibility::Module => "module ",
-            Visibility::Package => "package "
+            Visibility::Internal => "package ",
         };
 
-        let unsafe_kw = if func.is_unsafe { "unsafe " } else { "" };
-        let inline_attr = if func.inline { "#[inline] " } else { "" };
-        let noinline_attr = if func.noinline { "#[noinline] " } else { "" };
+        let unsafe_kw = match modifiers.func_safety {
+            FuncSafety::Safe => "",
+            FuncSafety::Unsafe => "unsafe ",
+        };
 
-        write!(output, "{}{}{}", self.indent(), inline_attr, noinline_attr)?;
-        write!(output, "{}{}fn {}", visibility, unsafe_kw, self.resolve_str(func.name))?;
+        let inline_attr = match modifiers.inline_modifier {
+            InlineModifier::Inline => "inline ",
+            InlineModifier::Noinline => "noinline ",
+            InlineModifier::None => "",
+        };
+
+        write!(
+            output,
+            "{}{}{}{}fn {}",
+            self.indent(),
+            visibility,
+            unsafe_kw,
+            inline_attr,
+            self.resolve_str(func.name)
+        )?;
 
         // Generics
         if let Some(generics) = func.generics {
             write!(output, "<")?;
             for (i, generic) in generics.iter().enumerate() {
-                if i > 0 { write!(output, ", ")?; }
+                if i > 0 {
+                    write!(output, ", ")?;
+                }
                 write!(output, "{}", self.resolve_str(generic.name))?;
             }
             write!(output, ">")?;
@@ -176,18 +237,16 @@ impl IrPrettyPrinter {
         write!(output, "(")?;
         if let Some(params) = func.params {
             for (i, param) in params.iter().enumerate() {
-                if i > 0 { write!(output, ", ")?; }
+                if i > 0 {
+                    write!(output, ", ")?;
+                }
                 match param {
                     HirParam::Normal { name, param_type } => {
                         write!(output, "{}: ", self.resolve_str(*name))?;
                         self.format_hir_type(output, param_type)?;
                     }
-                    HirParam::This { param_type } => {
+                    HirParam::This => {
                         write!(output, "this")?;
-                        if let Some(ty) = param_type {
-                            write!(output, ": ")?;
-                            self.format_hir_type(output, ty)?;
-                        }
                     }
                 }
             }
@@ -225,60 +284,102 @@ impl IrPrettyPrinter {
         Ok(())
     }
 
-    fn format_hir_function_with_ctrc(&mut self, output: &mut String, func: &HirFunc<'_, '_>, ctrc: Option<&CTRCAnalysisResult>) -> Result<(), fmt::Error> {
+    fn format_hir_function_with_ctrc(
+        &mut self,
+        output: &mut String,
+        func: &HirFunc<'_, '_>,
+        ctrc: Option<&CTRCAnalysisResult>,
+    ) -> Result<(), fmt::Error> {
         // First format the function normally
         self.format_hir_function(output, func)?;
-        
+
         // Add CTRC annotations if available
         if let Some(ctrc_result) = ctrc {
             // Check if this function has any CTRC-related information
             let has_drops = !ctrc_result.drop_insertions.is_empty();
             let has_destructor_calls = !ctrc_result.destructor_calls.is_empty();
-            
+
             if has_drops || has_destructor_calls {
-                writeln!(output, "{}// CTRC Analysis for function '{}':", self.indent(), self.resolve_str(func.name))?;
-                
+                writeln!(
+                    output,
+                    "{}// CTRC Analysis for function '{}':",
+                    self.indent(),
+                    self.resolve_str(func.name)
+                )?;
+
                 if has_drops {
-                    writeln!(output, "{}//   Drop insertions: {}", self.indent(), ctrc_result.drop_insertions.len())?;
+                    writeln!(
+                        output,
+                        "{}//   Drop insertions: {}",
+                        self.indent(),
+                        ctrc_result.drop_insertions.len()
+                    )?;
                     for drop in &ctrc_result.drop_insertions {
-                        writeln!(output, "{}//     - {} at program point {}", 
-                                self.indent(), self.resolve_str(drop.variable_name), drop.program_point)?;
+                        writeln!(
+                            output,
+                            "{}//     - {} at program point {}",
+                            self.indent(),
+                            self.resolve_str(drop.variable_name),
+                            drop.program_point
+                        )?;
                     }
                 }
-                
+
                 if has_destructor_calls {
-                    writeln!(output, "{}//   Destructor calls: {}", self.indent(), ctrc_result.destructor_calls.len())?;
+                    writeln!(
+                        output,
+                        "{}//   Destructor calls: {}",
+                        self.indent(),
+                        ctrc_result.destructor_calls.len()
+                    )?;
                     for call in &ctrc_result.destructor_calls {
                         let call_type = match call.call_type {
                             DestructorCallType::AutoDrop => "auto-drop",
-                            DestructorCallType::ExplicitDrop => "explicit-drop", 
+                            DestructorCallType::ExplicitDrop => "explicit-drop",
                             DestructorCallType::ScopeDrop => "scope-drop",
                         };
-                        writeln!(output, "{}//     - {} at program point {}", 
-                                self.indent(), call_type, call.program_point)?;
+                        writeln!(
+                            output,
+                            "{}//     - {} at program point {}",
+                            self.indent(),
+                            call_type,
+                            call.program_point
+                        )?;
                     }
                 }
             }
         }
-        
+
         Ok(())
     }
 
-    fn format_hir_struct(&mut self, output: &mut String, struct_def: &HirStruct<'_, '_>) -> Result<(), fmt::Error> {
+    fn format_hir_struct(
+        &mut self,
+        output: &mut String,
+        struct_def: &HirStruct<'_, '_>,
+    ) -> Result<(), fmt::Error> {
         let visibility = match struct_def.visibility {
             Visibility::Public => "public ",
             Visibility::Private => "private ",
             Visibility::Module => "module ",
-            Visibility::Package => "package "
+            Visibility::Internal => "package ",
         };
 
-        write!(output, "{}{}struct {}", self.indent(), visibility, self.resolve_str(struct_def.name))?;
+        write!(
+            output,
+            "{}{}struct {}",
+            self.indent(),
+            visibility,
+            self.resolve_str(struct_def.name)
+        )?;
 
         // Generics
         if let Some(generics) = struct_def.generics {
             write!(output, "<")?;
             for (i, generic) in generics.iter().enumerate() {
-                if i > 0 { write!(output, ", ")?; }
+                if i > 0 {
+                    write!(output, ", ")?;
+                }
                 write!(output, "{}", self.resolve_str(generic.name))?;
             }
             write!(output, ">")?;
@@ -293,9 +394,15 @@ impl IrPrettyPrinter {
                 Visibility::Public => "public ",
                 Visibility::Private => "private ",
                 Visibility::Module => "module ",
-                Visibility::Package => "package "
+                Visibility::Internal => "package ",
             };
-            write!(output, "{}{}{}: ", self.indent(), field_visibility, self.resolve_str(field.name))?;
+            write!(
+                output,
+                "{}{}{}: ",
+                self.indent(),
+                field_visibility,
+                self.resolve_str(field.name)
+            )?;
             self.format_hir_type(output, &field.field_type)?;
             writeln!(output, ",")?;
         }
@@ -306,7 +413,12 @@ impl IrPrettyPrinter {
         // Destructor
         if let Some(destructor) = struct_def.destructor {
             writeln!(output)?;
-            writeln!(output, "{}impl Drop for {} {{", self.indent(), self.resolve_str(struct_def.name))?;
+            writeln!(
+                output,
+                "{}impl Drop for {} {{",
+                self.indent(),
+                self.resolve_str(struct_def.name)
+            )?;
             self.push_indent();
             writeln!(output, "{}fn drop(&mut self) {{", self.indent())?;
             self.push_indent();
@@ -320,53 +432,83 @@ impl IrPrettyPrinter {
         Ok(())
     }
 
-    fn format_hir_struct_with_ctrc(&mut self, output: &mut String, struct_def: &HirStruct<'_, '_>, ctrc: Option<&CTRCAnalysisResult>) -> Result<(), fmt::Error> {
+    fn format_hir_struct_with_ctrc(
+        &mut self,
+        output: &mut String,
+        struct_def: &HirStruct<'_, '_>,
+        ctrc: Option<&CTRCAnalysisResult>,
+    ) -> Result<(), fmt::Error> {
         // First format the struct normally
         self.format_hir_struct(output, struct_def)?;
-        
+
         // Add CTRC annotations if available
         if let Some(ctrc_result) = ctrc {
             // Check if this struct has destructor or droppable fields
-            let has_destructor = ctrc_result.structs_with_destructors.contains(&struct_def.name);
-            let droppable_fields: Vec<_> = ctrc_result.droppable_fields
+            let has_destructor = ctrc_result
+                .structs_with_destructors
+                .contains(&struct_def.name);
+            let droppable_fields: Vec<_> = ctrc_result
+                .droppable_fields
                 .iter()
                 .filter(|(struct_name, _)| *struct_name == struct_def.name)
                 .collect();
-            
+
             if has_destructor || !droppable_fields.is_empty() {
-                writeln!(output, "{}// CTRC Analysis for struct '{}':", self.indent(), self.resolve_str(struct_def.name))?;
-                
+                writeln!(
+                    output,
+                    "{}// CTRC Analysis for struct '{}':",
+                    self.indent(),
+                    self.resolve_str(struct_def.name)
+                )?;
+
                 if has_destructor {
-                    writeln!(output, "{}//   ✅ Has destructor", self.indent())?;
+                    writeln!(output, "{}//   Has destructor", self.indent())?;
                 }
-                
+
                 if !droppable_fields.is_empty() {
                     writeln!(output, "{}//   Droppable fields:", self.indent())?;
                     for (_, field_name) in &droppable_fields {
-                        writeln!(output, "{}//     - {}", self.indent(), self.resolve_str(*field_name))?;
+                        writeln!(
+                            output,
+                            "{}//     - {}",
+                            self.indent(),
+                            self.resolve_str(*field_name)
+                        )?;
                     }
                 }
             }
         }
-        
+
         Ok(())
     }
 
-    fn format_hir_enum(&mut self, output: &mut String, enum_def: &HirEnum<'_, '_>) -> Result<(), fmt::Error> {
+    fn format_hir_enum(
+        &mut self,
+        output: &mut String,
+        enum_def: &HirEnum<'_, '_>,
+    ) -> Result<(), fmt::Error> {
         let visibility = match enum_def.visibility {
             Visibility::Public => "public ",
             Visibility::Private => "private ",
             Visibility::Module => "module ",
-            Visibility::Package => "package ",
+            Visibility::Internal => "package ",
         };
 
-        write!(output, "{}{}enum {}", self.indent(), visibility, self.resolve_str(enum_def.name))?;
+        write!(
+            output,
+            "{}{}enum {}",
+            self.indent(),
+            visibility,
+            self.resolve_str(enum_def.name)
+        )?;
 
         // Generics
         if let Some(generics) = enum_def.generics {
             write!(output, "<")?;
             for (i, generic) in generics.iter().enumerate() {
-                if i > 0 { write!(output, ", ")?; }
+                if i > 0 {
+                    write!(output, ", ")?;
+                }
                 write!(output, "{}", self.resolve_str(generic.name))?;
             }
             write!(output, ">")?;
@@ -377,12 +519,19 @@ impl IrPrettyPrinter {
 
         // Variants
         for variant in enum_def.variants {
-            write!(output, "{}{}", self.indent(), self.resolve_str(variant.name))?;
+            write!(
+                output,
+                "{}{}",
+                self.indent(),
+                self.resolve_str(variant.name)
+            )?;
             let fields = variant.fields;
             if !fields.is_empty() {
                 write!(output, "(")?;
                 for (i, field) in fields.iter().enumerate() {
-                    if i > 0 { write!(output, ", ")?; }
+                    if i > 0 {
+                        write!(output, ", ")?;
+                    }
                     self.format_hir_type(output, &field.field_type)?;
                 }
                 write!(output, ")")?;
@@ -396,21 +545,33 @@ impl IrPrettyPrinter {
         Ok(())
     }
 
-    fn format_hir_interface(&mut self, output: &mut String, interface_def: &HirInterface<'_, '_>) -> Result<(), fmt::Error> {
+    fn format_hir_interface(
+        &mut self,
+        output: &mut String,
+        interface_def: &HirInterface<'_, '_>,
+    ) -> Result<(), fmt::Error> {
         let visibility = match interface_def.visibility {
             Visibility::Public => "public ",
             Visibility::Private => "private ",
             Visibility::Module => "module ",
-            Visibility::Package => "package ",
+            Visibility::Internal => "package ",
         };
 
-        write!(output, "{}{}trait {}", self.indent(), visibility, self.resolve_str(interface_def.name))?;
+        write!(
+            output,
+            "{}{}trait {}",
+            self.indent(),
+            visibility,
+            self.resolve_str(interface_def.name)
+        )?;
 
         // Generics
         if let Some(generics) = interface_def.generics {
             write!(output, "<")?;
             for (i, generic) in generics.iter().enumerate() {
-                if i > 0 { write!(output, ", ")?; }
+                if i > 0 {
+                    write!(output, ", ")?;
+                }
                 write!(output, "{}", self.resolve_str(generic.name))?;
             }
             write!(output, ">")?;
@@ -433,9 +594,15 @@ impl IrPrettyPrinter {
         Ok(())
     }
 
-    fn format_hir_statement(&mut self, output: &mut String, stmt: &HirStmt<'_, '_>) -> Result<(), fmt::Error> {
+    fn format_hir_statement(
+        &mut self,
+        output: &mut String,
+        stmt: &HirStmt<'_, '_>,
+    ) -> Result<(), fmt::Error> {
         match stmt {
-            HirStmt::Let { name, ty, value } => {
+            HirStmt::Let {
+                name, ty, value, ..
+            } => {
                 write!(output, "{}let {}: ", self.indent(), self.resolve_str(*name))?;
                 self.format_hir_type(output, ty)?;
                 write!(output, " = ")?;
@@ -464,7 +631,11 @@ impl IrPrettyPrinter {
                 self.pop_indent();
                 writeln!(output, "{}}}", self.indent())?;
             }
-            HirStmt::If { cond, then_block, else_block } => {
+            HirStmt::If {
+                cond,
+                then_block,
+                else_block,
+            } => {
                 write!(output, "{}if ", self.indent())?;
                 self.format_hir_expression(output, cond)?;
                 writeln!(output, " {{")?;
@@ -474,7 +645,7 @@ impl IrPrettyPrinter {
                 }
                 self.pop_indent();
                 write!(output, "{}}}", self.indent())?;
-                
+
                 if let Some(else_stmt) = else_block {
                     writeln!(output, " else {{")?;
                     self.push_indent();
@@ -501,7 +672,11 @@ impl IrPrettyPrinter {
         Ok(())
     }
 
-    fn format_hir_expression(&mut self, output: &mut String, expr: &HirExpr<'_, '_>) -> Result<(), fmt::Error> {
+    fn format_hir_expression(
+        &mut self,
+        output: &mut String,
+        expr: &HirExpr<'_, '_>,
+    ) -> Result<(), fmt::Error> {
         match expr {
             HirExpr::Ident(name) => {
                 write!(output, "{}", self.resolve_str(*name))?;
@@ -519,7 +694,9 @@ impl IrPrettyPrinter {
                 self.format_hir_expression(output, name)?;
                 write!(output, " {{")?;
                 for (i, arg) in args.iter().enumerate() {
-                    if i > 0 { write!(output, ", ")?; }
+                    if i > 0 {
+                        write!(output, ", ")?;
+                    }
                     self.format_hir_expression(output, arg)?;
                 }
                 write!(output, "}}")?;
@@ -529,7 +706,9 @@ impl IrPrettyPrinter {
                 self.format_hir_expression(output, callee)?;
                 write!(output, "(")?;
                 for (i, arg) in args.iter().enumerate() {
-                    if i > 0 { write!(output, ", ")?; }
+                    if i > 0 {
+                        write!(output, ", ")?;
+                    }
                     self.format_hir_expression(output, arg)?;
                 }
                 write!(output, ")")?;
@@ -538,7 +717,9 @@ impl IrPrettyPrinter {
                 self.format_hir_expression(output, object)?;
                 write!(output, ".{}", self.resolve_str(*field))?;
             }
-            HirExpr::Binary { left, op, right, .. } => {
+            HirExpr::Binary {
+                left, op, right, ..
+            } => {
                 self.format_hir_expression(output, left)?;
                 write!(output, " {} ", self.format_operator(*op))?;
                 self.format_hir_expression(output, right)?;
@@ -559,7 +740,11 @@ impl IrPrettyPrinter {
         Ok(())
     }
 
-    fn format_hir_type(&mut self, output: &mut String, ty: &HirType<'_, '_>) -> Result<(), fmt::Error> {
+    fn format_hir_type(
+        &mut self,
+        output: &mut String,
+        ty: &HirType<'_, '_>,
+    ) -> Result<(), fmt::Error> {
         match ty {
             HirType::I8 => write!(output, "i8"),
             HirType::I16 => write!(output, "i16"),
@@ -579,7 +764,9 @@ impl IrPrettyPrinter {
                 if !generics.is_empty() {
                     write!(output, "<")?;
                     for (i, generic) in generics.iter().enumerate() {
-                        if i > 0 { write!(output, ", ")?; }
+                        if i > 0 {
+                            write!(output, ", ")?;
+                        }
                         self.format_hir_type(output, generic)?;
                     }
                     write!(output, ">")?;
@@ -591,7 +778,9 @@ impl IrPrettyPrinter {
                 if !generics.is_empty() {
                     write!(output, "<")?;
                     for (i, generic) in generics.iter().enumerate() {
-                        if i > 0 { write!(output, ", ")?; }
+                        if i > 0 {
+                            write!(output, ", ")?;
+                        }
                         self.format_hir_type(output, generic)?;
                     }
                     write!(output, ">")?;
@@ -601,10 +790,16 @@ impl IrPrettyPrinter {
             HirType::Generic(name) => {
                 write!(output, "{}", self.resolve_str(*name))
             }
-            HirType::Lambda { params, return_type, concurrent: _ } => {
+            HirType::Lambda {
+                params,
+                return_type,
+                concurrent: _,
+            } => {
                 write!(output, "fn(")?;
                 for (i, param) in params.iter().enumerate() {
-                    if i > 0 { write!(output, ", ")?; }
+                    if i > 0 {
+                        write!(output, ", ")?;
+                    }
                     self.format_hir_type(output, param)?;
                 }
                 write!(output, ")")?;
@@ -619,7 +814,7 @@ impl IrPrettyPrinter {
     /// Format SSA IR module as readable text
     pub fn format_ssa_module(&mut self, module: &Module<'_, '_>) -> Result<String, fmt::Error> {
         let mut output = String::new();
-        
+
         writeln!(output, "// SSA IR Module")?;
         writeln!(output)?;
 
@@ -633,13 +828,24 @@ impl IrPrettyPrinter {
         Ok(output)
     }
 
-    fn format_ssa_function(&mut self, output: &mut String, func: &Function) -> Result<(), fmt::Error> {
-        writeln!(output, "{}fn {}(", self.indent(), self.resolve_str(func.name))?;
+    fn format_ssa_function(
+        &mut self,
+        output: &mut String,
+        func: &Function,
+    ) -> Result<(), fmt::Error> {
+        writeln!(
+            output,
+            "{}fn {}(",
+            self.indent(),
+            self.resolve_str(func.name)
+        )?;
         self.push_indent();
 
         // Parameters
         for (i, param) in func.params.iter().enumerate() {
-            if i > 0 { writeln!(output, ",")?; }
+            if i > 0 {
+                writeln!(output, ",")?;
+            }
             write!(output, "{}{}: ", self.indent(), param.0.0)?;
             self.format_ssa_type(output, &param.1)?;
         }
@@ -669,27 +875,47 @@ impl IrPrettyPrinter {
         Ok(())
     }
 
-    fn format_ssa_instruction(&mut self, output: &mut String, instr: &Instruction) -> Result<(), fmt::Error> {
+    fn format_ssa_instruction(
+        &mut self,
+        output: &mut String,
+        instr: &Instruction,
+    ) -> Result<(), fmt::Error> {
         match instr {
-            Instruction::Binary { dest, op, left, right } => {
-                writeln!(output, "{}{} = {} {} {}", 
-                    self.indent(), 
-                    dest.0, 
+            Instruction::Binary {
+                dest,
+                op,
+                left,
+                right,
+            } => {
+                writeln!(
+                    output,
+                    "{}{} = {} {} {}",
+                    self.indent(),
+                    dest.0,
                     self.format_operand(left),
                     self.format_binop(*op),
-                    self.format_operand(right))?;
+                    self.format_operand(right)
+                )?;
             }
             Instruction::Unary { dest, op, operand } => {
-                writeln!(output, "{}{} = {} {}", 
-                    self.indent(), 
-                    dest.0, 
+                writeln!(
+                    output,
+                    "{}{} = {} {}",
+                    self.indent(),
+                    dest.0,
                     self.format_unop(*op),
-                    self.format_operand(operand))?;
+                    self.format_operand(operand)
+                )?;
             }
-            Instruction::Phi { dest, incoming: incomings } => {
+            Instruction::Phi {
+                dest,
+                incoming: incomings,
+            } => {
                 write!(output, "{}{} = phi [", self.indent(), dest.0)?;
                 for (i, (block_id, value)) in incomings.iter().enumerate() {
-                    if i > 0 { write!(output, ", ")?; }
+                    if i > 0 {
+                        write!(output, ", ")?;
+                    }
                     write!(output, "bb{}: {}", block_id.0, value.0)?;
                 }
                 writeln!(output, "]")?;
@@ -702,12 +928,19 @@ impl IrPrettyPrinter {
                 }
                 write!(output, "call {}(", self.format_operand(func))?;
                 for (i, arg) in args.iter().enumerate() {
-                    if i > 0 { write!(output, ", ")?; }
+                    if i > 0 {
+                        write!(output, ", ")?;
+                    }
                     write!(output, "{}", self.format_operand(arg))?;
                 }
                 writeln!(output, ")")?;
             }
-            Instruction::ClassCall { dest, object, method_id, args } => {
+            Instruction::ClassCall {
+                dest,
+                object,
+                method_id,
+                args,
+            } => {
                 if let Some(target) = dest {
                     write!(output, "{}{} = ", self.indent(), target.0)?;
                 } else {
@@ -715,44 +948,91 @@ impl IrPrettyPrinter {
                 }
                 write!(output, "call_method {}.method{}(", object.0, method_id)?;
                 for (i, arg) in args.iter().enumerate() {
-                    if i > 0 { write!(output, ", ")?; }
+                    if i > 0 {
+                        write!(output, ", ")?;
+                    }
                     write!(output, "{}", self.format_operand(arg))?;
                 }
                 writeln!(output, ")")?;
             }
-            Instruction::InterfaceDispatch { dest, object, method_slot, args } => {
+            Instruction::InterfaceDispatch {
+                dest,
+                object,
+                method_slot,
+                args,
+            } => {
                 if let Some(target) = dest {
                     write!(output, "{}{} = ", self.indent(), target.0)?;
                 } else {
                     write!(output, "{}", self.indent())?;
                 }
-                write!(output, "call_interface {}.vtable[{}](", object.0, method_slot)?;
+                write!(
+                    output,
+                    "call_interface {}.vtable[{}](",
+                    object.0, method_slot
+                )?;
                 for (i, arg) in args.iter().enumerate() {
-                    if i > 0 { write!(output, ", ")?; }
+                    if i > 0 {
+                        write!(output, ", ")?;
+                    }
                     write!(output, "{}", self.format_operand(arg))?;
                 }
                 writeln!(output, ")")?;
             }
-            Instruction::UpcastToInterface { dest, object, interface_id } => {
-                writeln!(output, "{}{} = upcast {} to interface#{}", 
-                    self.indent(), dest.0, object.0, interface_id)?;
+            Instruction::UpcastToInterface {
+                dest,
+                object,
+                interface_id,
+            } => {
+                writeln!(
+                    output,
+                    "{}{} = upcast {} to interface#{}",
+                    self.indent(),
+                    dest.0,
+                    object.0,
+                    interface_id
+                )?;
             }
             Instruction::Alloc { dest, ty, count } => {
-                writeln!(output, "{}{} = alloc {} [{}]", 
-                    self.indent(), dest.0, self.format_ssa_type_inline(ty), count)?;
+                writeln!(
+                    output,
+                    "{}{} = alloc {} [{}]",
+                    self.indent(),
+                    dest.0,
+                    self.format_ssa_type_inline(ty),
+                    count
+                )?;
             }
-            Instruction::StoreField { base, offset, value } => {
-                writeln!(output, "{}store {}.field[{}] = {}", 
-                    self.indent(), self.format_operand(base), offset, self.format_operand(value))?;
+            Instruction::StoreField {
+                base,
+                offset,
+                value,
+            } => {
+                writeln!(
+                    output,
+                    "{}store {}.field[{}] = {}",
+                    self.indent(),
+                    self.format_operand(base),
+                    offset,
+                    self.format_operand(value)
+                )?;
             }
             Instruction::LoadField { dest, base, offset } => {
-                writeln!(output, "{}{} = load {}.field[{}]", 
-                    self.indent(), dest.0, self.format_operand(base), offset)?;
+                writeln!(
+                    output,
+                    "{}{} = load {}.field[{}]",
+                    self.indent(),
+                    dest.0,
+                    self.format_operand(base),
+                    offset
+                )?;
             }
             Instruction::Interpolate { dest, parts } => {
                 write!(output, "{}{} = interpolate [", self.indent(), dest.0)?;
                 for (i, part) in parts.iter().enumerate() {
-                    if i > 0 { write!(output, ", ")?; }
+                    if i > 0 {
+                        write!(output, ", ")?;
+                    }
                     match part {
                         crate::ssa_ir::InterpolationOperand::Literal(s) => {
                             write!(output, "\"{}\"", self.resolve_str(*s))?;
@@ -764,11 +1044,24 @@ impl IrPrettyPrinter {
                 }
                 writeln!(output, "]")?;
             }
-            Instruction::EnumConstruct { dest, enum_name, variant, args } => {
-                write!(output, "{}{} = enum {}::{} {{", 
-                    self.indent(), dest.0, self.resolve_str(*enum_name), self.resolve_str(*variant))?;
+            Instruction::EnumConstruct {
+                dest,
+                enum_name,
+                variant,
+                args,
+            } => {
+                write!(
+                    output,
+                    "{}{} = enum {}::{} {{",
+                    self.indent(),
+                    dest.0,
+                    self.resolve_str(*enum_name),
+                    self.resolve_str(*variant)
+                )?;
                 for (i, arg) in args.iter().enumerate() {
-                    if i > 0 { write!(output, ", ")?; }
+                    if i > 0 {
+                        write!(output, ", ")?;
+                    }
                     write!(output, "{}", self.format_operand(arg))?;
                 }
                 writeln!(output, "}}")?;
@@ -777,7 +1070,13 @@ impl IrPrettyPrinter {
                 writeln!(output, "{}match {} {{", self.indent(), value.0)?;
                 self.push_indent();
                 for (variant, block_id) in arms.iter() {
-                    writeln!(output, "{}{} => bb{},", self.indent(), self.resolve_str(*variant), block_id.0)?;
+                    writeln!(
+                        output,
+                        "{}{} => bb{},",
+                        self.indent(),
+                        self.resolve_str(*variant),
+                        block_id.0
+                    )?;
                 }
                 self.pop_indent();
                 writeln!(output, "{}}}", self.indent())?;
@@ -785,12 +1084,19 @@ impl IrPrettyPrinter {
             Instruction::Jump { target } => {
                 writeln!(output, "{}jmp bb{}", self.indent(), target.0)?;
             }
-            Instruction::Branch { cond, then_bb, else_bb } => {
-                writeln!(output, "{}br {} ? bb{} : bb{}", 
+            Instruction::Branch {
+                cond,
+                then_bb,
+                else_bb,
+            } => {
+                writeln!(
+                    output,
+                    "{}br {} ? bb{} : bb{}",
                     self.indent(),
                     self.format_operand(cond),
                     then_bb.0,
-                    else_bb.0)?;
+                    else_bb.0
+                )?;
             }
             Instruction::Ret { value } => {
                 write!(output, "{}ret", self.indent())?;
@@ -800,8 +1106,14 @@ impl IrPrettyPrinter {
                 writeln!(output)?;
             }
             Instruction::Const { dest, ty, value } => {
-                writeln!(output, "{}{} = const {} {}", 
-                    self.indent(), dest.0, self.format_ssa_type_inline(ty), self.format_operand(value))?;
+                writeln!(
+                    output,
+                    "{}{} = const {} {}",
+                    self.indent(),
+                    dest.0,
+                    self.format_ssa_type_inline(ty),
+                    self.format_operand(value)
+                )?;
             }
         }
         Ok(())
@@ -905,7 +1217,9 @@ impl IrPrettyPrinter {
                 if !generics.is_empty() {
                     result.push('<');
                     for (i, generic) in generics.iter().enumerate() {
-                        if i > 0 { result.push_str(", "); }
+                        if i > 0 {
+                            result.push_str(", ");
+                        }
                         result.push_str(&self.format_ssa_type_inline(generic));
                     }
                     result.push('>');
@@ -915,7 +1229,9 @@ impl IrPrettyPrinter {
             SsaType::Enum(variants) => {
                 let mut result = "enum(".to_string();
                 for (i, variant) in variants.iter().enumerate() {
-                    if i > 0 { result.push_str(" | "); }
+                    if i > 0 {
+                        result.push_str(" | ");
+                    }
                     result.push_str(&self.format_ssa_type_inline(variant));
                 }
                 result.push(')');
@@ -924,7 +1240,9 @@ impl IrPrettyPrinter {
             SsaType::Tuple(types) => {
                 let mut result = "(".to_string();
                 for (i, ty) in types.iter().enumerate() {
-                    if i > 0 { result.push_str(", "); }
+                    if i > 0 {
+                        result.push_str(", ");
+                    }
                     result.push_str(&self.format_ssa_type_inline(ty));
                 }
                 result.push(')');
@@ -961,7 +1279,9 @@ impl IrPrettyPrinter {
                 if !generics.is_empty() {
                     write!(output, "<")?;
                     for (i, generic) in generics.iter().enumerate() {
-                        if i > 0 { write!(output, ", ")?; }
+                        if i > 0 {
+                            write!(output, ", ")?;
+                        }
                         self.format_ssa_type(output, generic)?;
                     }
                     write!(output, ">")?;
@@ -971,7 +1291,9 @@ impl IrPrettyPrinter {
             SsaType::Enum(variants) => {
                 write!(output, "enum(")?;
                 for (i, variant) in variants.iter().enumerate() {
-                    if i > 0 { write!(output, " | ")?; }
+                    if i > 0 {
+                        write!(output, " | ")?;
+                    }
                     self.format_ssa_type(output, variant)?;
                 }
                 write!(output, ")")
@@ -979,7 +1301,9 @@ impl IrPrettyPrinter {
             SsaType::Tuple(types) => {
                 write!(output, "(")?;
                 for (i, ty) in types.iter().enumerate() {
-                    if i > 0 { write!(output, ", ")?; }
+                    if i > 0 {
+                        write!(output, ", ")?;
+                    }
                     self.format_ssa_type(output, ty)?;
                 }
                 write!(output, ")")
@@ -993,9 +1317,12 @@ impl IrPrettyPrinter {
     }
 
     /// Format AST as readable text (simplified version)
-    pub fn format_ast_statements(&mut self, statements: &[Stmt<'_, '_>]) -> Result<String, fmt::Error> {
+    pub fn format_ast_statements(
+        &mut self,
+        statements: &[Stmt<'_, '_>],
+    ) -> Result<String, fmt::Error> {
         let mut output = String::new();
-        
+
         writeln!(output, "// AST Statements")?;
         writeln!(output)?;
 
@@ -1006,10 +1333,19 @@ impl IrPrettyPrinter {
         Ok(output)
     }
 
-    fn format_ast_statement(&mut self, output: &mut String, stmt: &Stmt<'_, '_>) -> Result<(), fmt::Error> {
+    fn format_ast_statement(
+        &mut self,
+        output: &mut String,
+        stmt: &Stmt<'_, '_>,
+    ) -> Result<(), fmt::Error> {
         match stmt {
             Stmt::Let(let_stmt) => {
-                write!(output, "{}let {}: ", self.indent(), self.resolve_str(let_stmt.ident))?;
+                write!(
+                    output,
+                    "{}let {}: ",
+                    self.indent(),
+                    self.resolve_str(let_stmt.ident)
+                )?;
                 self.format_ast_type(output, &let_stmt.type_annotation)?;
                 write!(output, " = ")?;
                 self.format_ast_expression(output, let_stmt.value)?;
@@ -1024,12 +1360,22 @@ impl IrPrettyPrinter {
                 writeln!(output, ";")?;
             }
             Stmt::FuncDecl(func_decl) => {
-                write!(output, "{}fn {}", self.indent(), self.resolve_str(func_decl.name))?;
+                write!(
+                    output,
+                    "{}fn {}",
+                    self.indent(),
+                    self.resolve_str(func_decl.name)
+                )?;
                 // Add parameters, return type, and body formatting here
                 writeln!(output, " {{ /* function body */ }}")?;
             }
             Stmt::StructDecl(class_decl) => {
-                write!(output, "{}class {}", self.indent(), self.resolve_str(class_decl.name))?;
+                write!(
+                    output,
+                    "{}class {}",
+                    self.indent(),
+                    self.resolve_str(class_decl.name)
+                )?;
                 writeln!(output, " {{ /* class body */ }}")?;
             }
             Stmt::Break => {
@@ -1045,43 +1391,66 @@ impl IrPrettyPrinter {
         Ok(())
     }
 
-    fn format_ast_expression(&mut self, output: &mut String, _expr: &Expr<'_, '_>) -> Result<(), fmt::Error> {
+    fn format_ast_expression(
+        &mut self,
+        output: &mut String,
+        _expr: &Expr<'_, '_>,
+    ) -> Result<(), fmt::Error> {
         // This would need to be implemented based on the actual Expr enum
         // For now, just a placeholder
         write!(output, "/* ast expr */")?;
         Ok(())
     }
 
-    fn format_ast_type(&mut self, output: &mut String, _ty: &Type<'_, '_>) -> Result<(), fmt::Error> {
+    fn format_ast_type(
+        &mut self,
+        output: &mut String,
+        _ty: &Type<'_, '_>,
+    ) -> Result<(), fmt::Error> {
         // This would need to be implemented based on the actual Type enum
         // For now, just a placeholder
         write!(output, "/* ast type */")?;
         Ok(())
     }
 
-    fn format_ctrc_analysis_details(&mut self, output: &mut String, ctrc: &CTRCAnalysisResult) -> Result<(), fmt::Error> {
+    fn format_ctrc_analysis_details(
+        &mut self,
+        output: &mut String,
+        ctrc: &CTRCAnalysisResult,
+    ) -> Result<(), fmt::Error> {
         writeln!(output, "// ===== CTRC Analysis Details =====")?;
         writeln!(output)?;
-        
+
         // Structs with destructors
         if !ctrc.structs_with_destructors.is_empty() {
             writeln!(output, "{}// Structs with destructors:", self.indent())?;
             for struct_name in &ctrc.structs_with_destructors {
-                writeln!(output, "{}//   - {}", self.indent(), self.resolve_str(*struct_name))?;
+                writeln!(
+                    output,
+                    "{}//   - {}",
+                    self.indent(),
+                    self.resolve_str(*struct_name)
+                )?;
             }
             writeln!(output)?;
         }
-        
+
         // Drop insertions
         if !ctrc.drop_insertions.is_empty() {
             writeln!(output, "{}// Drop insertions:", self.indent())?;
             for drop in &ctrc.drop_insertions {
-                writeln!(output, "{}//   Program point {}: drop {} (alias {})", 
-                        self.indent(), drop.program_point, self.resolve_str(drop.variable_name), drop.alias_id)?;
+                writeln!(
+                    output,
+                    "{}//   Program point {}: drop {} (alias {})",
+                    self.indent(),
+                    drop.program_point,
+                    self.resolve_str(drop.variable_name),
+                    drop.alias_id
+                )?;
             }
             writeln!(output)?;
         }
-        
+
         // Destructor calls
         if !ctrc.destructor_calls.is_empty() {
             writeln!(output, "{}// Destructor calls:", self.indent())?;
@@ -1091,41 +1460,62 @@ impl IrPrettyPrinter {
                     DestructorCallType::ExplicitDrop => "explicit-drop",
                     DestructorCallType::ScopeDrop => "scope-drop",
                 };
-                writeln!(output, "{}//   Program point {}: {} (alias {})", 
-                        self.indent(), call.program_point, call_type, call.alias_id)?;
+                writeln!(
+                    output,
+                    "{}//   Program point {}: {} (alias {})",
+                    self.indent(),
+                    call.program_point,
+                    call_type,
+                    call.alias_id
+                )?;
             }
             writeln!(output)?;
         }
-        
+
         // Allocation sites
         if !ctrc.allocation_sites.is_empty() {
             writeln!(output, "{}// Allocation sites:", self.indent())?;
             for (program_point, alias_id) in &ctrc.allocation_sites {
-                writeln!(output, "{}//   Program point {}: allocation -> alias {}", 
-                        self.indent(), program_point, alias_id)?;
+                writeln!(
+                    output,
+                    "{}//   Program point {}: allocation -> alias {}",
+                    self.indent(),
+                    program_point,
+                    alias_id
+                )?;
             }
             writeln!(output)?;
         }
-        
+
         // Potential leaks
         if !ctrc.potential_leaks.is_empty() {
             writeln!(output, "{}// ⚠️  Potential memory leaks:", self.indent())?;
             for alias_id in &ctrc.potential_leaks {
-                writeln!(output, "{}//   - Alias {} may leak", self.indent(), alias_id)?;
+                writeln!(
+                    output,
+                    "{}//   - Alias {} may leak",
+                    self.indent(),
+                    alias_id
+                )?;
             }
             writeln!(output)?;
         }
-        
+
         // Variable aliases
         if !ctrc.variable_aliases.is_empty() {
             writeln!(output, "{}// Variable aliases:", self.indent())?;
             for (var_name, alias_id) in &ctrc.variable_aliases {
-                writeln!(output, "{}//   {} -> alias {}", 
-                        self.indent(), self.resolve_str(*var_name), alias_id)?;
+                writeln!(
+                    output,
+                    "{}//   {} -> alias {}",
+                    self.indent(),
+                    self.resolve_str(*var_name),
+                    alias_id
+                )?;
             }
             writeln!(output)?;
         }
-        
+
         Ok(())
     }
 }
@@ -1133,25 +1523,37 @@ impl IrPrettyPrinter {
 /// Convenience functions for quick formatting
 impl IrPrettyPrinter {
     /// Format HIR module to string with default settings
-    pub fn hir_to_string(string_pool: Arc<StringPool>, module: &HirModule<'_, '_>) -> Result<String, fmt::Error> {
+    pub fn hir_to_string(
+        string_pool: Arc<StringPool>,
+        module: &HirModule<'_, '_>,
+    ) -> Result<String, fmt::Error> {
         let mut printer = IrPrettyPrinter::new(string_pool);
         printer.format_hir_module(module)
     }
 
     /// Format SSA module to string with default settings
-    pub fn ssa_to_string(string_pool: Arc<StringPool>, module: &Module<'_, '_>) -> Result<String, fmt::Error> {
+    pub fn ssa_to_string(
+        string_pool: Arc<StringPool>,
+        module: &Module<'_, '_>,
+    ) -> Result<String, fmt::Error> {
         let mut printer = IrPrettyPrinter::new(string_pool);
         printer.format_ssa_module(module)
     }
 
     /// Format AST statements to string with default settings
-    pub fn ast_to_string(string_pool: Arc<StringPool>, statements: &[Stmt<'_, '_>]) -> Result<String, fmt::Error> {
+    pub fn ast_to_string(
+        string_pool: Arc<StringPool>,
+        statements: &[Stmt<'_, '_>],
+    ) -> Result<String, fmt::Error> {
         let mut printer = IrPrettyPrinter::new(string_pool);
         printer.format_ast_statements(statements)
     }
 
     /// Format HIR module with CTRC analysis to string with default settings
-    pub fn hir_with_ctrc_to_string(string_pool: Arc<StringPool>, module_with_ctrc: &HirModuleWithCTRC<'_, '_>) -> Result<String, fmt::Error> {
+    pub fn hir_with_ctrc_to_string(
+        string_pool: Arc<StringPool>,
+        module_with_ctrc: &HirModuleWithCTRC<'_, '_>,
+    ) -> Result<String, fmt::Error> {
         let mut printer = IrPrettyPrinter::new(string_pool);
         printer.format_hir_module_with_ctrc(module_with_ctrc)
     }

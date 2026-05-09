@@ -1,7 +1,3 @@
-// =====================================
-// SSA IR (Low-level)
-// =====================================
-
 use std::collections::HashMap;
 use crate::hir::{HirStruct, HirEnum, HirInterface, StrId};
 use crate::ir_hasher::FxHashBuilder;
@@ -80,6 +76,7 @@ pub enum SsaType {
 }
 
 use smallvec::SmallVec;
+use crate::ast::FuncModifiers;
 
 #[derive(Debug, Clone)]
 pub enum Instruction {
@@ -203,7 +200,7 @@ pub struct Function {
     pub blocks: SmallVec<BasicBlock, 3>,
     pub value_types: HashMap<Value, SsaType, FxHashBuilder>,
     pub entry: BlockId,
-    pub noinline: bool,
+    pub function_metadata: FuncModifiers,
 }
 
 #[derive(Debug, Clone)]
@@ -224,7 +221,8 @@ pub struct InterfaceLayout {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct Module<'a, 'bump: 'a> {
+pub struct Module<'a, 'bump>
+where 'bump: 'a {
     pub functions: HashMap<StrId, Function, FxHashBuilder>,
     pub classes: HashMap<StrId, HirStruct<'a, 'bump>, FxHashBuilder>,
     pub interfaces: HashMap<StrId, HirInterface<'a, 'bump>, FxHashBuilder>,

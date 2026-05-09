@@ -78,7 +78,7 @@ enum Commands {
 }
 
 // entry point
-fn main() -> Result<(), CompilerError> {
+fn main() -> Result<(), CompilerError<'static>> {
     let start = Instant::now();
     let mut matches: ArgMatches = Cli::command().get_matches();
     let cli_result: Result<Cli, Error> = Cli::from_arg_matches_mut(&mut matches)
@@ -96,26 +96,28 @@ fn main() -> Result<(), CompilerError> {
             std::process::exit(error.exit_code());
         }
     };
-    
-    let result: Result<(), CompilerError> = match &cli.command {
+
+    let verbose: bool = cli.verbose;
+    let lib_override: Option<PathBuf> = cli.lib.clone();
+
+    let result: Result<(), CompilerError<'static>> = match cli.command {
         Commands::Build { path, out_dir, optimize, emit_obj } => {
             let source_path: PathBuf = path.clone().unwrap_or_else(|| PathBuf::from("./src"));
-            if cli.verbose {
+            if verbose {
                 println!("Building from: {}", source_path.display());
                 println!("Output directory: {}", out_dir.display());
                 println!("Optimization: {}", optimize);
             }
-            run_compiler(path.clone(), &out_dir, *optimize, cli.verbose, *emit_obj, cli.lib)
+            run_compiler(path, out_dir, optimize, verbose, emit_obj, lib_override)
         }
         Commands::Run { path, args } => {
             let source_path: PathBuf = path.clone().unwrap_or_else(|| PathBuf::from("./src"));
-            if cli.verbose {
+            if verbose {
                 println!("Running from: {}", source_path.display());
                 if !args.is_empty() {
                     println!("Arguments: {:?}", args);
                 }
             }
-            //run_compiler(path.clone(), &out_dir, *optimize, cli.verbose, *emit_obj, cli.lib);
             // TODO: Implement actual run logic
             Ok(())
         }
@@ -133,14 +135,14 @@ fn main() -> Result<(), CompilerError> {
     }
 }
 
-fn run_compiler(
+fn run_compiler<'a>(
     path: Option<PathBuf>,
-    out_dir: &PathBuf,
+    out_dir: PathBuf,
     optimize: bool,
     verbose: bool,
     emit_obj: bool,
     lib_override: Option<PathBuf>,
-) -> Result<(), CompilerError> {
+) -> Result<(), CompilerError<'a>> {
     let stdlib_path: PathBuf = if let Some(custom) = lib_override {
         custom
     } else {
@@ -160,7 +162,7 @@ fn run_compiler(
         .map_err(|_| CompilerError::FailedToAllocateStringPool)?;
     let arc: Arc<StringPool> = Arc::new(string_pool);
 
-    let stdlib_modules_result: Vec<_> = compile_files(&stdlib_files, arc.clone())?;
+    let stdlib_modules_result: Vec<_> = compile_files(stdlib_files, arc.clone())?;
     
     // Collect parser diagnostics from stdlib
     let mut error_reporter = ErrorReporter::new();
@@ -186,7 +188,7 @@ fn run_compiler(
         }
     }
 
-    let user_modules_result: Vec<_> = compile_files(&user_files, arc.clone())?;
+    let user_modules_result: Vec<_> = compile_files(user_files, arc.clone())?;
     
     // Collect parser diagnostics from user code
     let mut user_modules = Vec::new();
@@ -212,7 +214,7 @@ fn run_compiler(
     emit_all(stdlib_modules, &mut backend, arc.clone());
     emit_all(user_modules, &mut backend, arc.clone());
 
-    let out_obj: PathBuf = backend.finish(out_dir).map_err(CompilerError::FinishError)?;
+    let out_obj: PathBuf = backend.finish(&out_dir).map_err(CompilerError::FinishError)?;
     if !emit_obj {
         let program_path: PathBuf = out_dir.join("program");
         link(&[out_obj.to_str().unwrap()], program_path.to_str().unwrap(), true)?;

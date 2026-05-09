@@ -1,14 +1,14 @@
-use ir::hir::HirGeneric;
-use ir::hir::HirFunc;
-use ir::ast;
-use ir::hir::{HirParam, HirType};
-use ir::hir::HirFuncProto;
 use super::context::HirLowerer;
-use ir::ast::{FuncDecl, Path};
-use ir::ast::Stmt;
-use ir::hir::{Hir, HirModule, HirStmt, StrId};
-use zetaruntime::bump::GrowableBump;
 use crate::hir_lowerer::lower_visibility;
+use ir::ast;
+use ir::ast::Stmt;
+use ir::ast::{FuncDecl, Path};
+use ir::hir::HirFunc;
+use ir::hir::HirFuncProto;
+use ir::hir::HirGeneric;
+use ir::hir::{Hir, HirModule, HirStmt, StrId};
+use ir::hir::{HirParam, HirType};
+use zetaruntime::bump::GrowableBump;
 
 impl<'a, 'bump> HirLowerer<'a, 'bump> {
     // ===============================
@@ -66,29 +66,27 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         }
     }*/
 
-    pub fn lower_module(&mut self, stmts: Vec<Stmt<'a, '_>, &'_ GrowableBump>) -> HirModule<'a, 'bump> {
+    pub fn lower_module(
+        &mut self,
+        stmts: Vec<Stmt<'a, '_>, &'_ GrowableBump>,
+    ) -> HirModule<'a, 'bump> {
         self.collect_prototypes(&stmts);
-        let (imports, items): (Vec<Path>, Vec<Hir>) = self.lower_function_bodies(stmts);
+        let (imports, items, pkg_name) = self.lower_function_bodies(stmts);
 
         HirModule {
-            name: StrId(self.ctx.context.intern("root")),
+            name: pkg_name.unwrap_or_else(|| StrId(self.ctx.context.intern("root"))),
             imports: self.ctx.bump.alloc_slice(&imports),
             items: self.ctx.bump.alloc_slice(&items),
         }
     }
 
-    pub fn collect_prototypes(
-        &mut self,
-        stmts: &[Stmt<'a, '_>],
-    ) {
+    pub fn collect_prototypes(&mut self, stmts: &[Stmt<'a, '_>]) {
         for stmt in stmts {
             if let Stmt::FuncDecl(f) = stmt {
-                println!("Lowering function {}", f.name);
                 self.lower_func_as_proto(f);
             }
             if let Stmt::StructDecl(struct_decl) = stmt {
                 for x in struct_decl.body {
-                    println!("Lowering struct function {}", x.name);
                     self.lower_func_as_proto(x);
                 }
             }
@@ -97,7 +95,6 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                     continue;
                 };
                 for x in methods {
-                    println!("Lowering interface {}", x.name);
                     self.lower_func_as_proto(x);
                 }
             }
@@ -106,68 +103,84 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                     continue;
                 };
                 for x in methods {
-                    println!("Lowering impl {}", x.name);
                     self.lower_func_as_proto(x);
                 }
+            }
+            // Recurse into inline module declarations so nested functions
+            // get their prototypes registered before bodies are lowered.
+            if let Stmt::Module(module_decl) = stmt {
+                self.collect_prototypes(module_decl.body);
             }
         }
     }
 
     fn lower_func_as_proto(&mut self, f: &FuncDecl<'a, '_>) {
         let proto: HirFuncProto = self.lower_func_proto(f);
-        self.ctx.functions.borrow_mut().insert(proto.name, HirFunc {
-            name: proto.name,
-            params: proto.params,
-            return_type: Some(proto.return_type),
-            body: None,
-            inline: proto.inline,
-            noinline: proto.noinline,
-            is_unsafe: proto.is_unsafe,
-            visibility: proto.visibility,
-            generics: None,
-        });
+        self.ctx.functions.borrow_mut().insert(
+            proto.name,
+            HirFunc {
+                name: proto.name,
+                params: proto.params,
+                return_type: Some(proto.return_type),
+                body: None,
+                function_metadata: proto.function_metadata,
+                generics: None,
+            },
+        );
     }
 
     pub fn lower_function_bodies(
         &mut self,
         stmts: Vec<Stmt<'a, '_>, &'_ GrowableBump>,
-    ) -> (Vec<Path<'bump>>, Vec<Hir<'a, 'bump>>) {
+    ) -> (Vec<Path<'bump>>, Vec<Hir<'a, 'bump>>, Option<StrId>) {
         let mut imports: Vec<Path<'bump>> = Vec::with_capacity(64);
         let mut items: Vec<Hir<'a, 'bump>> = Vec::with_capacity(64);
+        let mut pkg_name: Option<StrId> = None;
 
         for stmt in stmts {
             match stmt {
                 Stmt::Import(import_stmt) => {
                     imports.push(*import_stmt.path);
-                    // Import statements are tracked but don't generate HIR items
-                    // They will be used by the dependency graph for module resolution
-                },
+                }
                 Stmt::Package(package_stmt) => {
-                    // Package statements define the current module's package
-                    // Store as module metadata (could be used for namespace resolution)
-                    let _ = package_stmt.path;
-                    // Package statements are metadata, not HIR items
-                },
+                    // Format the dot-joined path string and intern it as the
+                    // module's canonical name (e.g. "com.example.myapp").
+                    let joined = format!("{}", package_stmt.path);
+                    pkg_name = Some(StrId(self.ctx.context.intern(&joined)));
+                }
+                Stmt::Module(module_decl) => {
+                    // Flatten the inline module's declarations into the parent
+                    // module's item list (they share the same HIR module node).
+                    for &body_stmt in module_decl.body {
+                        match body_stmt {
+                            Stmt::FuncDecl(f) => {
+                                let mut func_binding = self.ctx.functions.borrow_mut();
+                                let func = func_binding.get_mut(&f.name).unwrap();
+                                if let Some(f_body) = f.body {
+                                    func.body = Some(self.lower_block(f_body));
+                                }
+                                items.push(Hir::Func(self.ctx.bump.alloc_value(func.clone())));
+                            }
+                            other => items.push(self.lower_toplevel(other)),
+                        }
+                    }
+                }
                 Stmt::FuncDecl(f) => {
                     let mut func_binding = self.ctx.functions.borrow_mut();
                     let func = func_binding.get_mut(&f.name).unwrap();
                     if let Some(f_body) = f.body {
                         func.body = Some(self.lower_block(f_body));
                     }
-
                     items.push(Hir::Func(self.ctx.bump.alloc_value(func.clone())));
                 }
                 other => items.push(self.lower_toplevel(other)),
             }
         }
 
-        (imports, items)
+        (imports, items, pkg_name)
     }
 
-    pub fn lower_func_proto(
-        &self,
-        f: &ast::FuncDecl<'a, 'bump>,
-    ) -> HirFuncProto<'a, 'bump> {
+    pub fn lower_func_proto(&self, f: &FuncDecl<'a, 'bump>) -> HirFuncProto<'a, 'bump> {
         let params = f.params.map(|ps| {
             let lowered: Vec<HirParam<'a, 'bump>> = self.lower_params(ps);
             self.ctx.bump.alloc_slice_immutable(&lowered)
@@ -182,23 +195,16 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             name: f.name,
             params,
             return_type,
-            inline: f.inline,
-            noinline: f.noinline,
-            is_unsafe: f.is_unsafe,
-            visibility: lower_visibility(&f.visibility),
-            generics: f.generics.map(|gs| {
-                let lowered: Vec<HirGeneric<'a, 'bump>> = self.lower_generics(gs);
-                self.ctx.bump.alloc_slice_immutable(&lowered)
-            }),
-            extern_string: f.extern_string,
-            is_extern: f.is_extern,
+            function_metadata: f.function_metadata,
+            generics: if f.generics.is_none() {
+                None
+            } else {
+                self.lower_generics_slice(f.generics.unwrap())
+            },
         }
     }
 
-    pub fn lower_block(
-        &self,
-        block: &'a ir::ast::Block<'a, 'bump>,
-    ) -> HirStmt<'a, 'bump> {
+    pub fn lower_block(&self, block: &'a ir::ast::Block<'a, 'bump>) -> HirStmt<'a, 'bump> {
         let mut stmts = Vec::with_capacity(block.block.len());
 
         for stmt in block {
@@ -210,20 +216,19 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         }
     }
 
-
     pub(super) fn lower_toplevel(&mut self, stmt: Stmt<'_, 'a>) -> Hir<'a, 'bump> {
         match stmt {
             Stmt::FuncDecl(f) => {
                 let func = self.lower_func_body_from_proto(*f);
 
                 // hydrate the global function table
-                self.ctx.functions
-                    .borrow_mut()
-                    .insert(func.name, func);
+                self.ctx.functions.borrow_mut().insert(func.name, func);
 
-                Hir::Func(self.ctx.bump.alloc_value(
-                    self.ctx.functions.borrow()[&func.name]
-                ))
+                Hir::Func(
+                    self.ctx
+                        .bump
+                        .alloc_value(self.ctx.functions.borrow()[&func.name]),
+                )
             }
             Stmt::StructDecl(c) => {
                 let class = self.lower_struct_decl(*c);

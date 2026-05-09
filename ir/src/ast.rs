@@ -1,9 +1,13 @@
 use crate::hir::StrId;
 use crate::span::SourceSpan;
+use std::fmt;
 use std::fmt::{Display, Formatter};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Stmt<'a, 'bump> where 'bump: 'a {
+pub enum Stmt<'a, 'bump>
+where
+    'bump: 'a,
+{
     Import(&'bump ImportStmt<'bump>),
     Package(&'bump PackageStmt<'bump>),
     Let(&'bump LetStmt<'a, 'bump>),
@@ -23,6 +27,7 @@ pub enum Stmt<'a, 'bump> where 'bump: 'a {
     StateMachineDecl(&'bump StateMachineDecl<'a, 'bump>),
     EffectDecl(&'bump EffectDecl<'a, 'bump>),
     Defer(&'bump DeferStmt<'a, 'bump>),
+    Module(&'bump ModuleDecl<'a, 'bump>),
     ExprStmt(&'bump InternalExprStmt<'a, 'bump>),
     Break,
     Continue,
@@ -43,8 +48,21 @@ pub struct Path<'bump> {
     pub path: &'bump [StrId],
 }
 
+impl<'bump> Display for Path<'bump> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        for i in 0..self.path.len() {
+            let element = self.path[i];
+            write!(f, "{element}")?;
+            if i + 1 < self.path.len() {
+                write!(f, ".")?;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LetStmt<'a, 'bump> 
+pub struct LetStmt<'a, 'bump>
 where
     'bump: 'a,
 {
@@ -52,10 +70,11 @@ where
     pub type_annotation: Type<'a, 'bump>,
     pub value: &'bump Expr<'a, 'bump>,
     pub mutable: bool,
+    pub is_static: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ConstStmt<'a, 'bump> 
+pub struct ConstStmt<'a, 'bump>
 where
     'bump: 'a,
 {
@@ -65,18 +84,18 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ImplDecl<'a, 'bump> 
+pub struct ImplDecl<'a, 'bump>
 where
     'bump: 'a,
 {
     pub generics: Option<&'bump [Generic<'a, 'bump>]>,
-    pub interface: StrId,
+    pub interface: Option<StrId>,
     pub target: StrId,
     pub methods: Option<&'bump [FuncDecl<'a, 'bump>]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct InterfaceDecl<'a, 'bump> 
+pub struct InterfaceDecl<'a, 'bump>
 where
     'bump: 'a,
 {
@@ -103,7 +122,7 @@ pub struct EnumVariant<'a, 'bump> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Field<'a, 'bump> 
+pub struct Field<'a, 'bump>
 where
     'bump: 'a,
 {
@@ -115,7 +134,7 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ReturnStmt<'a, 'bump> 
+pub struct ReturnStmt<'a, 'bump>
 where
     'bump: 'a,
 {
@@ -123,7 +142,7 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct IfStmt<'a, 'bump> 
+pub struct IfStmt<'a, 'bump>
 where
     'bump: 'a,
 {
@@ -133,7 +152,7 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ElseBranch<'a, 'bump> 
+pub enum ElseBranch<'a, 'bump>
 where
     'bump: 'a,
 {
@@ -142,7 +161,7 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct WhileStmt<'a, 'bump> 
+pub struct WhileStmt<'a, 'bump>
 where
     'bump: 'a,
 {
@@ -151,7 +170,7 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ForStmt<'a, 'bump> 
+pub struct ForStmt<'a, 'bump>
 where
     'bump: 'a,
 {
@@ -160,7 +179,7 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ForKind<'a, 'bump> 
+pub enum ForKind<'a, 'bump>
 where
     'bump: 'a,
 {
@@ -208,8 +227,67 @@ pub enum Op {
     Gte,
     BitNot,
     LogicalNot,
-    Range,      // .. (inclusive range)
-    RangeExcl,  // ..< (exclusive range)
+    Range,     // .. (inclusive range)
+    RangeExcl, // ..< (exclusive range)
+}
+
+impl Op {
+    /// Returns (left_binding_power, right_binding_power) for Pratt parsing
+    /// Higher values bind tighter
+    pub fn binding_power(&self) -> (u8, u8) {
+        match self {
+            // Range operators - lowest precedence
+            Op::Range | Op::RangeExcl => (25, 26),
+
+            // Assignment operators - right associative
+            Op::Assign => (10, 11),
+            Op::AddAssign
+            | Op::SubAssign
+            | Op::MulAssign
+            | Op::DivAssign
+            | Op::ModAssign
+            | Op::ShlAssign
+            | Op::ShrAssign
+            | Op::BitOrAssign
+            | Op::BitXorAssign
+            | Op::BitAndAssign => (10, 11),
+
+            // Logical OR
+            // Op::LogicalOr => (30, 31),
+
+            // Logical AND
+            // Op::LogicalAnd => (35, 36),
+
+            // Bitwise OR
+            Op::BitOr => (42, 43),
+
+            // Bitwise XOR
+            Op::BitXor => (43, 44),
+
+            // Bitwise AND
+            Op::BitAnd => (44, 45),
+
+            // Equality
+            Op::Eq | Op::Neq => (45, 46),
+
+            // Comparison
+            Op::Lt | Op::Lte | Op::Gt | Op::Gte => (50, 51),
+
+            // Shift
+            Op::Shl | Op::Shr => (55, 56),
+
+            // Additive
+            Op::Add | Op::Sub => (60, 61),
+
+            // Multiplicative
+            Op::Mul | Op::Div | Op::Mod => (70, 71),
+
+            // Unary - handled in prefix
+            Op::BitNot | Op::LogicalNot => (0, 80),
+
+            _ => (0, 0),
+        }
+    }
 }
 
 impl TryFrom<&str> for Op {
@@ -272,13 +350,16 @@ pub enum ComparisonOp {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MatchStmt<'a, 'bump> where 'bump: 'a {
+pub struct MatchStmt<'a, 'bump>
+where
+    'bump: 'a,
+{
     pub expr: &'bump Expr<'a, 'bump>,
     pub arms: &'bump [MatchArm<'a, 'bump>],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MatchArm<'a, 'bump> 
+pub struct MatchArm<'a, 'bump>
 where
     'bump: 'a,
 {
@@ -295,13 +376,20 @@ pub enum Pattern<'bump> {
     Boolean(bool),
     Tuple(&'bump [Pattern<'bump>]),
     Array(&'bump [Pattern<'bump>]),
-    Struct { name: StrId, fields: &'bump [(StrId, Pattern<'bump>)] },
+    Struct {
+        name: StrId,
+        fields: &'bump [(StrId, Pattern<'bump>)],
+    },
+    EnumVariant {
+        name: StrId,
+        bindings: &'bump [Pattern<'bump>],
+    },
     Or(&'bump [Pattern<'bump>]),
     Wildcard,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct UnsafeBlock<'a, 'bump> 
+pub struct UnsafeBlock<'a, 'bump>
 where
     'bump: 'a,
 {
@@ -309,21 +397,43 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct FuncDecl<'a, 'bump> 
+pub struct FuncDecl<'a, 'bump>
 where
     'bump: 'a,
 {
-    pub visibility: Visibility,
-    pub is_unsafe: bool,
-    pub is_extern: bool,
-    pub inline: bool,
-    pub noinline: bool,
-    pub extern_string: Option<StrId>,
+    pub function_metadata: FuncModifiers,
     pub name: StrId,
     pub generics: Option<&'bump [Generic<'a, 'bump>]>,
     pub params: Option<&'bump [Param<'a, 'bump>]>,
     pub return_type: Option<Type<'a, 'bump>>,
     pub body: Option<&'bump Block<'a, 'bump>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FuncModifiers {
+    pub visibility: Visibility,
+    pub extern_modifier: ExternModifier,
+    pub inline_modifier: InlineModifier,
+    pub func_safety: FuncSafety,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ExternModifier {
+    None,
+    Abi(StrId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum InlineModifier {
+    Inline,
+    Noinline,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FuncSafety {
+    Safe,
+    Unsafe,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -345,20 +455,20 @@ pub enum Visibility {
     Public,
     Private,
     Module,
-    Package,
+    Internal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Param<'a, 'bump> 
+pub enum Param<'a, 'bump>
 where
     'bump: 'a,
 {
     Normal(&'bump NormalParam<'a, 'bump>),
-    This(&'bump ThisParam<'a, 'bump>),
+    This(&'bump ThisParam),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct NormalParam<'a, 'bump> 
+pub struct NormalParam<'a, 'bump>
 where
     'bump: 'a,
 {
@@ -367,25 +477,24 @@ where
     pub name: StrId,
     pub type_annotation: Type<'a, 'bump>,
     pub visibility: Visibility,
-    pub default_value: Option<&'bump Expr<'a, 'bump>>,
+    pub default_value: Option<Expr<'a, 'bump>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ThisParam<'a, 'bump> {
+pub struct ThisParam {
     pub is_mut: bool,
     pub is_move: bool,
-    pub type_annotation: Option<Type<'a, 'bump>>, // e.g. Ptr<this>, this?, etc
 }
 
 #[derive(Debug, Clone, PartialEq, Copy, Default)]
-pub struct Block<'a, 'bump> 
+pub struct Block<'a, 'bump>
 where
     'bump: 'a,
 {
     pub block: &'bump [Stmt<'a, 'bump>],
 }
 
-impl<'a, 'bump> IntoIterator for &'bump Block<'a, 'bump> 
+impl<'a, 'bump> IntoIterator for &'bump Block<'a, 'bump>
 where
     'bump: 'a,
 {
@@ -399,13 +508,15 @@ where
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Generic<'a, 'bump> {
-    pub const_generic: bool,
     pub type_name: StrId,
+    pub span: SourceSpan<'a>,
+    pub is_const: bool,
+    pub is_static: bool,
     pub constraints: &'bump [Type<'a, 'bump>],
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct InternalExprStmt<'a, 'bump> 
+pub struct InternalExprStmt<'a, 'bump>
 where
     'bump: 'a,
 {
@@ -413,16 +524,33 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Expr<'a, 'bump> 
+pub enum Expr<'a, 'bump>
 where
     'bump: 'a,
 {
-    Null { span: SourceSpan<'a> },
-    Number { value: i64, span: SourceSpan<'a> },
-    Decimal { value: f64, span: SourceSpan<'a> },
-    String { value: StrId, span: SourceSpan<'a> },
-    Ident { name: StrId, span: SourceSpan<'a> },
-    Boolean { value: bool, span: SourceSpan<'a> },
+    Null {
+        span: SourceSpan<'a>,
+    },
+    Number {
+        value: i64,
+        span: SourceSpan<'a>,
+    },
+    Decimal {
+        value: f64,
+        span: SourceSpan<'a>,
+    },
+    String {
+        value: StrId,
+        span: SourceSpan<'a>,
+    },
+    Ident {
+        name: StrId,
+        span: SourceSpan<'a>,
+    },
+    Boolean {
+        value: bool,
+        span: SourceSpan<'a>,
+    },
     Comparison {
         lhs: &'bump Expr<'a, 'bump>,
         op: Op,
@@ -455,8 +583,14 @@ where
         field: StrId,
         span: SourceSpan<'a>,
     },
-    If { if_stmt: &'bump IfStmt<'a, 'bump>, span: SourceSpan<'a> },
-    Match { match_stmt: &'bump MatchStmt<'a, 'bump>, span: SourceSpan<'a> },
+    If {
+        if_stmt: &'bump IfStmt<'a, 'bump>,
+        span: SourceSpan<'a>,
+    },
+    Match {
+        match_stmt: &'bump MatchStmt<'a, 'bump>,
+        span: SourceSpan<'a>,
+    },
     Assignment {
         lhs: &'bump Expr<'a, 'bump>,
         op: Op,
@@ -468,19 +602,41 @@ where
         span: SourceSpan<'a>,
     },
 
-    Char { value: char, span: SourceSpan<'a> },
-    FieldInit { ident: StrId, expr: &'bump Expr<'a, 'bump>, span: SourceSpan<'a> },
-    Unary { op: Op, operand: &'bump Expr<'a, 'bump>, span: SourceSpan<'a> },
-    ArrayIndex { expr: &'bump Expr<'a, 'bump>, index: &'bump Expr<'a, 'bump>, span: SourceSpan<'a> },
+    Char {
+        value: char,
+        span: SourceSpan<'a>,
+    },
+    FieldInit {
+        ident: StrId,
+        expr: &'bump Expr<'a, 'bump>,
+        span: SourceSpan<'a>,
+    },
+    Unary {
+        op: Op,
+        operand: &'bump Expr<'a, 'bump>,
+        span: SourceSpan<'a>,
+    },
+    ArrayIndex {
+        expr: &'bump Expr<'a, 'bump>,
+        index: &'bump Expr<'a, 'bump>,
+        span: SourceSpan<'a>,
+    },
     ElseExpr {
         expr: &'bump Expr<'a, 'bump>,
         pattern: ErrorHandlerPattern<'a, 'bump>,
         span: SourceSpan<'a>,
     },
+    Deref {
+        expr: &'bump Expr<'a, 'bump>,
+        span: SourceSpan<'a>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ErrorHandlerPattern<'a, 'bump> where 'bump: 'a {
+pub enum ErrorHandlerPattern<'a, 'bump>
+where
+    'bump: 'a,
+{
     /// Single branch for nullable or error: `else () => { ... }` or `else (err) => { ... }`
     Single {
         binding: Option<StrId>,
@@ -493,7 +649,10 @@ pub enum ErrorHandlerPattern<'a, 'bump> where 'bump: 'a {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ErrorHandlerBranch<'a, 'bump> where 'bump: 'a {
+pub struct ErrorHandlerBranch<'a, 'bump>
+where
+    'bump: 'a,
+{
     pub kind: ErrorHandlerKind,
     pub body: &'bump Block<'a, 'bump>,
 }
@@ -505,14 +664,20 @@ pub enum ErrorHandlerKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Type<'a, 'bump> where 'bump: 'a {
+pub struct Type<'a, 'bump>
+where
+    'bump: 'a,
+{
     pub kind: TypeKind<'a, 'bump>,
     pub nullable: bool,
     pub error: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TypeKind<'a, 'bump> where 'bump: 'a {
+pub enum TypeKind<'a, 'bump>
+where
+    'bump: 'a,
+{
     U8,
     I8,
     U16,
@@ -533,7 +698,7 @@ pub enum TypeKind<'a, 'bump> where 'bump: 'a {
     Infer,
     Pointer {
         inner: &'a Type<'a, 'bump>,
-        mutable: bool,
+        raw: bool, // true for **T (raw C pointer), false for *T (aligned, non-null)
     },
     Lambda {
         params: &'bump [Type<'a, 'bump>],
@@ -549,91 +714,175 @@ pub enum TypeKind<'a, 'bump> where 'bump: 'a {
 
 impl<'a, 'bump> Type<'a, 'bump> {
     pub fn is_numeric(&self) -> bool {
-        matches!(self.kind,
-            TypeKind::U8 | TypeKind::I8 | TypeKind::U16 | TypeKind::I16 | TypeKind::I32 |
-            TypeKind::I64 | TypeKind::I128 | TypeKind::U32 | TypeKind::U64 | TypeKind::U128 |
-            TypeKind::F32 | TypeKind::F64 | TypeKind::UF32 | TypeKind::UF64
+        matches!(
+            self.kind,
+            TypeKind::U8
+                | TypeKind::I8
+                | TypeKind::U16
+                | TypeKind::I16
+                | TypeKind::I32
+                | TypeKind::I64
+                | TypeKind::I128
+                | TypeKind::U32
+                | TypeKind::U64
+                | TypeKind::U128
+                | TypeKind::F32
+                | TypeKind::F64
+                | TypeKind::UF32
+                | TypeKind::UF64
         )
     }
-    
+
     // Helper constructors for common types
     pub fn i8() -> Self {
-        Type { kind: TypeKind::I8, nullable: false, error: false }
+        Type {
+            kind: TypeKind::I8,
+            nullable: false,
+            error: false,
+        }
     }
 
     pub fn i16() -> Self {
-        Type { kind: TypeKind::I16, nullable: false, error: false }
+        Type {
+            kind: TypeKind::I16,
+            nullable: false,
+            error: false,
+        }
     }
 
     pub fn i32() -> Self {
-        Type { kind: TypeKind::I32, nullable: false, error: false }
+        Type {
+            kind: TypeKind::I32,
+            nullable: false,
+            error: false,
+        }
     }
-    
+
     pub fn i64() -> Self {
-        Type { kind: TypeKind::I64, nullable: false, error: false }
+        Type {
+            kind: TypeKind::I64,
+            nullable: false,
+            error: false,
+        }
     }
 
     pub fn i128() -> Self {
-        Type { kind: TypeKind::I128, nullable: false, error: false }
+        Type {
+            kind: TypeKind::I128,
+            nullable: false,
+            error: false,
+        }
     }
 
     pub fn u8() -> Self {
-        Type { kind: TypeKind::U8, nullable: false, error: false }
+        Type {
+            kind: TypeKind::U8,
+            nullable: false,
+            error: false,
+        }
     }
 
     pub fn u16() -> Self {
-        Type { kind: TypeKind::U16, nullable: false, error: false }
+        Type {
+            kind: TypeKind::U16,
+            nullable: false,
+            error: false,
+        }
     }
 
     pub fn u32() -> Self {
-        Type { kind: TypeKind::U32, nullable: false, error: false }
+        Type {
+            kind: TypeKind::U32,
+            nullable: false,
+            error: false,
+        }
     }
 
     pub fn u64() -> Self {
-        Type { kind: TypeKind::U64, nullable: false, error: false }
+        Type {
+            kind: TypeKind::U64,
+            nullable: false,
+            error: false,
+        }
     }
 
     pub fn u128() -> Self {
-        Type { kind: TypeKind::U128, nullable: false, error: false }
+        Type {
+            kind: TypeKind::U128,
+            nullable: false,
+            error: false,
+        }
     }
-    
+
     pub fn f32() -> Self {
-        Type { kind: TypeKind::F32, nullable: false, error: false }
+        Type {
+            kind: TypeKind::F32,
+            nullable: false,
+            error: false,
+        }
     }
-    
+
     pub fn f64() -> Self {
-        Type { kind: TypeKind::F64, nullable: false, error: false }
+        Type {
+            kind: TypeKind::F64,
+            nullable: false,
+            error: false,
+        }
     }
-    
+
     pub fn boolean() -> Self {
-        Type { kind: TypeKind::Boolean, nullable: false, error: false }
+        Type {
+            kind: TypeKind::Boolean,
+            nullable: false,
+            error: false,
+        }
     }
-    
+
     pub fn string() -> Self {
-        Type { kind: TypeKind::String, nullable: false, error: false }
+        Type {
+            kind: TypeKind::String,
+            nullable: false,
+            error: false,
+        }
     }
-    
+
     pub fn void() -> Self {
-        Type { kind: TypeKind::Void, nullable: false, error: false }
+        Type {
+            kind: TypeKind::Void,
+            nullable: false,
+            error: false,
+        }
     }
 
     pub fn this() -> Self {
-        Type { kind: TypeKind::This, nullable: false, error: false }
+        Type {
+            kind: TypeKind::This,
+            nullable: false,
+            error: false,
+        }
     }
-    
+
     pub fn char() -> Self {
-        Type { kind: TypeKind::Char, nullable: false, error: false }
+        Type {
+            kind: TypeKind::Char,
+            nullable: false,
+            error: false,
+        }
     }
-    
+
     pub fn infer() -> Self {
-        Type { kind: TypeKind::Infer, nullable: false, error: false }
+        Type {
+            kind: TypeKind::Infer,
+            nullable: false,
+            error: false,
+        }
     }
-    
+
     pub fn with_nullable(mut self, nullable: bool) -> Self {
         self.nullable = nullable;
         self
     }
-    
+
     pub fn with_error(mut self, error: bool) -> Self {
         self.error = error;
         self
@@ -641,11 +890,11 @@ impl<'a, 'bump> Type<'a, 'bump> {
 }
 
 impl<'a, 'bump> Display for Type<'a, 'bump> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         if self.error {
             f.write_str("!")?;
         }
-        
+
         match &self.kind {
             TypeKind::U8 => f.write_str("u8"),
             TypeKind::I8 => f.write_str("i8"),
@@ -685,15 +934,19 @@ impl<'a, 'bump> Display for Type<'a, 'bump> {
             TypeKind::Char => f.write_str("char"),
             TypeKind::This => f.write_str("this"),
             TypeKind::Infer => f.write_str("_"),
-            TypeKind::Pointer { mutable, inner} => {
-                write!(f, "*{}{}", if *mutable { "mut " } else { "" }, inner)
-            },
+            TypeKind::Pointer { inner, raw } => {
+                if *raw {
+                    write!(f, "**{}", inner)
+                } else {
+                    write!(f, "*{}", inner)
+                }
+            }
         }?;
-        
+
         if self.nullable {
             f.write_str("?")?;
         }
-        
+
         Ok(())
     }
 }
@@ -701,7 +954,7 @@ impl<'a, 'bump> Display for Type<'a, 'bump> {
 // New AST types for grammar features
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct StateMachineDecl<'a, 'bump> 
+pub struct StateMachineDecl<'a, 'bump>
 where
     'bump: 'a,
 {
@@ -710,7 +963,7 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Transition<'a, 'bump> 
+pub struct Transition<'a, 'bump>
 where
     'bump: 'a,
 {
@@ -726,7 +979,7 @@ pub enum StateRef {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct EffectDecl<'a, 'bump> 
+pub struct EffectDecl<'a, 'bump>
 where
     'bump: 'a,
 {
@@ -739,7 +992,7 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DeferStmt<'a, 'bump> 
+pub struct DeferStmt<'a, 'bump>
 where
     'bump: 'a,
 {
@@ -747,7 +1000,7 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum DeferAction<'a, 'bump> 
+pub enum DeferAction<'a, 'bump>
 where
     'bump: 'a,
 {
@@ -756,7 +1009,17 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PermitsExpr<'a, 'bump> 
+pub struct ModuleDecl<'a, 'bump>
+where
+    'bump: 'a,
+{
+    pub name: StrId,
+    pub visibility: Visibility,
+    pub body: &'bump [Stmt<'a, 'bump>],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PermitsExpr<'a, 'bump>
 where
     'bump: 'a,
 {

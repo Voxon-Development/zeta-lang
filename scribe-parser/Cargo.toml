@@ -10,4 +10,3 @@ opt-level = 3
 ir = { path = "../ir" }
 zetaruntime = { path = "../zeta_utilities" }
 smallvec = "2.0.0-alpha.12"
-ctrc-graph = { path = "../ctrc-graph" }

@@ -1,10 +1,10 @@
 pub mod descent_parser;
-pub mod pratt_expr_parser;
-pub mod statement_parser;
-pub mod declaration_parser;
-pub mod parser_types;
-mod container_declarations;
-mod tests;
-mod integration_tests;
+mod functions;
+mod expressions;
+mod statements;
+mod declarations;
+mod misc;
 
-pub use descent_parser::{parse_program, ParseResult, ParserDiagnostics, ParserError};
+pub use descent_parser::{parse_program, ParseResult, ParserDiagnostics};
+
+// TODO: write individual tests for each function

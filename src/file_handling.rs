@@ -1,5 +1,5 @@
 use crate::compilation_passes::{
-    pass_hir_lowering, pass_monomorphization, pass_type_checking_and_ctrc,
+    pass_hir_lowering, pass_monomorphization, pass_type_checking,
 };
 use crate::main_structs::{CompilerError, ModuleWithArena};
 use codex_dependency_graph::DepGraph;
@@ -14,7 +14,7 @@ use walkdir::WalkDir;
 use zetaruntime::arena::GrowableAtomicBump;
 use zetaruntime::string_pool::StringPool;
 
-pub(crate) fn compiler_lib_path() -> Result<PathBuf, CompilerError> {
+pub(crate) fn compiler_lib_path<'a>() -> Result<PathBuf, CompilerError<'a>> {
     let exe = std::env::current_exe()
         .map_err(|_| CompilerError::SourceNotFound(PathBuf::from("current_exe()")))?;
 
@@ -26,7 +26,7 @@ pub(crate) fn compiler_lib_path() -> Result<PathBuf, CompilerError> {
     Ok(root.join("lib"))
 }
 
-pub(crate) fn collect_zeta_files(dir: &Path) -> Result<Vec<PathBuf>, CompilerError> {
+pub(crate) fn collect_zeta_files<'a>(dir: &Path) -> Result<Vec<PathBuf>, CompilerError<'a>> {
     if !dir.exists() {
         return Err(CompilerError::SourceNotFound(dir.to_path_buf()));
     }
@@ -46,9 +46,9 @@ pub(crate) fn collect_zeta_files(dir: &Path) -> Result<Vec<PathBuf>, CompilerErr
 }
 
 pub(crate) fn compile_files<'a, 'bump>(
-    files: &[PathBuf],
+    files: Vec<PathBuf>,
     pool: Arc<StringPool>,
-) -> Result<Vec<ModuleWithArena<'a, 'bump>>, CompilerError> {
+) -> Result<Vec<ModuleWithArena<'a, 'bump>>, CompilerError<'a>> {
     let modules: Vec<ModuleWithArena> = files
         .iter()
         .map(|f| process_single_file(pool.clone(), f.clone()))
@@ -97,7 +97,7 @@ pub(crate) fn emit_all(
 pub(crate) fn process_single_file<'a, 'bump>(
     context: Arc<StringPool>,
     path: PathBuf,
-) -> Result<ModuleWithArena<'a, 'bump>, CompilerError>
+) -> Result<ModuleWithArena<'a, 'bump>, CompilerError<'a>>
 where
     'a: 'bump,
     'bump: 'a,
@@ -169,7 +169,7 @@ where
     // ============================================
     // PASS 2: Type Checking and CTRC Analysis
     // ============================================
-    pass_type_checking_and_ctrc(&module, context.clone(), file_name_static)?;
+    pass_type_checking(&module, context.clone(), file_name_static)?;
 
     // ============================================
     // PASS 3: Monomorphization (deferred to backend)

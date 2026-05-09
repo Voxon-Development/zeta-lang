@@ -1,10 +1,13 @@
 #![cfg(test)]
+#![feature(allocator_api)]
+
+mod parser;
 
 use scribe_parser::parser::parse_program;
 use zetaruntime::arena::GrowableAtomicBump;
 use zetaruntime::string_pool::StringPool;
 use std::sync::Arc;
-use ctrc_graph::hir_integration::convenience::analyze_and_pretty_print;
+use ir::pretty::IrPrettyPrinter;
 use zetaruntime::bump::GrowableBump;
 
 // Helper function to parse and lower code to HIR
@@ -19,7 +22,9 @@ fn parse_and_lower<'bump>(code: &str) -> (String, GrowableBump<'bump>) {
     println!("{:#?}", new_module);
     let bump = GrowableBump::new(1024, 8);
 
-    (analyze_and_pretty_print(new_module, &bump, context.clone()).expect("REASON"), bump)
+    let mut printer: IrPrettyPrinter = IrPrettyPrinter::new(context.clone());
+
+    (printer.format_hir_module(&new_module).expect("REASON"), bump)
 }
 
 #[cfg(test)]
@@ -78,7 +83,7 @@ mod hir_tests {
             assert_eq!(body.len(), 3, "Expected 3 let statements in main");
             
             // Check first let: let x: i32 = 5 + 3 * 2;
-            if let HirStmt::Let { name, ty, value } = &body[0] {
+            if let HirStmt::Let { name, ty, value, .. } = &body[0] {
                 assert_eq!(context.resolve_string(name), "x");
                 assert_eq!(*ty, HirType::I32);
                 if let HirExpr::Binary { .. } = value {

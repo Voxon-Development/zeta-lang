@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
 use engraver_assembly_emit::cranelift::cranelift_backend::EmitError;
+use ir::errors::error::ParserError;
 use ir::hir::HirModule;
-use scribe_parser::parser::{ParserError, ParserDiagnostics};
+use scribe_parser::parser::{ParserDiagnostics};
 use zetaruntime::arena::GrowableAtomicBump;
 
 pub struct ModuleWithArena<'a, 'bump> {
@@ -13,13 +14,13 @@ pub struct ModuleWithArena<'a, 'bump> {
 
     pub(crate) module: HirModule<'a, 'bump>,
 
-    pub(crate) parser_diagnostics: ParserDiagnostics,
+    pub(crate) parser_diagnostics: ParserDiagnostics<'a>,
 
     pub(crate) valid: bool
 }
 
 #[derive(Error, Debug)]
-pub enum CompilerError {
+pub enum CompilerError<'a> {
     #[error("Source not found: {0:?}")]
     SourceNotFound(PathBuf),
 
@@ -45,7 +46,7 @@ pub enum CompilerError {
     InvalidFileName(Vec<u8>),
 
     #[error("Parser error: {0:#?}")]
-    ParserError(Vec<ParserError>),
+    ParserError(Vec<ParserError<'a>>),
 
     #[error("Failed to emit module: {0}")]
     FinishError(EmitError),

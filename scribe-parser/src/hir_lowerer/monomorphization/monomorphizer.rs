@@ -1,15 +1,15 @@
-use std::collections::hash_map::Entry;
+use smallvec::SmallVec;
 use std::cell::RefCell;
-use std::sync::Arc;
+use std::collections::hash_map::Entry;
 use std::marker::PhantomData;
 use std::rc::Rc;
-use smallvec::SmallVec;
+use std::sync::Arc;
 
 use super::naming::suffix_for_subs;
 use super::type_substitution::substitute_type;
-use crate::hir_lowerer::context::{LoweringCtx};
-use ir::ir_hasher::{FxHashMap, HashMap};
+use crate::hir_lowerer::context::LoweringCtx;
 use ir::hir::{HirExpr, HirFunc, HirParam, HirStmt, HirType, StrId};
+use ir::ir_hasher::{FxHashMap, HashMap};
 use zetaruntime::arena::GrowableAtomicBump;
 use zetaruntime::string_pool::StringPool;
 /// Handles monomorphization of generic functions and expressions
@@ -60,7 +60,7 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
         // Check if we've already monomorphized this function with these types
         let key = (orig_name.clone(), suffix.clone());
         let mut instantiated_functions = self.instantiated_functions.borrow_mut();
-        
+
         if let Some(existing) = instantiated_functions.get(&key) {
             // Return existing monomorphized function name
             return Some(*existing);
@@ -75,21 +75,23 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
         small_vec.extend_from_slice(self.context.resolve_bytes(&*suffix));
 
         let new_name = StrId(self.context.intern_bytes(small_vec.as_slice()));
-        
+
         // Update function name and body with monomorphized types
         new_func.name = new_name;
-        
+
         if let Some(body) = new_func.body {
             let new_body = self.monomorphize_stmt(&body, substitutions);
             new_func.body = Some(*self.bump.alloc_value_immutable(new_body));
         }
 
         // Insert the new function into the functions map
-        self.functions.borrow_mut().insert(new_func.name.clone(), new_func);
-        
+        self.functions
+            .borrow_mut()
+            .insert(new_func.name.clone(), new_func);
+
         // Cache the monomorphized function name
         instantiated_functions.insert(key, new_name);
-        
+
         Some(new_name)
     }
 
@@ -105,7 +107,11 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
         }
     }
 
-    fn apply_substitutions_to_params(&self, func: &mut HirFunc<'a, '_>, substitutions: &FxHashMap<StrId, HirType<'a, '_>>) {
+    fn apply_substitutions_to_params(
+        &self,
+        func: &mut HirFunc<'a, '_>,
+        substitutions: &FxHashMap<StrId, HirType<'a, '_>>,
+    ) {
         if let Some(params) = func.params {
             if params.is_empty() {
                 func.params = None;
@@ -116,18 +122,11 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
 
             for param in params.iter() {
                 let new_param = match param {
-                    HirParam::Normal { name, param_type } => {
-                        HirParam::Normal {
-                            name: *name,
-                            param_type: substitute_type(param_type, substitutions, self.bump.clone()),
-                        }
-                    }
-                    HirParam::This { param_type } => {
-                        let new_type = param_type.as_ref().map(|ty| {
-                            substitute_type(ty, substitutions, self.bump.clone())
-                        });
-                        HirParam::This { param_type: new_type }
-                    }
+                    HirParam::Normal { name, param_type } => HirParam::Normal {
+                        name: *name,
+                        param_type: substitute_type(param_type, substitutions, self.bump.clone()),
+                    },
+                    HirParam::This => HirParam::This,
                 };
                 new_params.push(new_param);
             }
@@ -143,15 +142,21 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
     ) -> HirStmt<'a, 'bump> {
         match stmt {
             HirStmt::Block { body } => {
-                let new_body: Vec<HirStmt> = body.iter()
+                let new_body: Vec<HirStmt> = body
+                    .iter()
                     .map(|s| self.monomorphize_stmt(s, substitutions))
                     .collect();
                 let body_slice = self.bump.alloc_slice(&new_body);
                 HirStmt::Block { body: body_slice }
             }
-            HirStmt::If { cond, then_block, else_block } => {
+            HirStmt::If {
+                cond,
+                then_block,
+                else_block,
+            } => {
                 let new_cond = self.monomorphize_expr(cond, substitutions);
-                let new_then: Vec<HirStmt> = then_block.iter()
+                let new_then: Vec<HirStmt> = then_block
+                    .iter()
                     .map(|s| self.monomorphize_stmt(s, substitutions))
                     .collect();
                 let then_slice = self.bump.alloc_slice(&new_then);
@@ -173,13 +178,19 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
                     body: self.bump.alloc_value_immutable(new_body),
                 }
             }
-            HirStmt::Let { name, ty, value } => {
+            HirStmt::Let {
+                name,
+                ty,
+                value,
+                is_static,
+            } => {
                 let new_ty = substitute_type(ty, substitutions, self.bump.clone());
                 let new_value = self.monomorphize_expr(value, substitutions);
                 HirStmt::Let {
                     name: *name,
                     ty: new_ty,
                     value: *self.bump.alloc_value_immutable(new_value),
+                    is_static: *is_static,
                 }
             }
             HirStmt::Return(opt) => {
@@ -212,7 +223,8 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
         match expr {
             HirExpr::Call { callee, args } => {
                 let new_callee = self.monomorphize_expr(callee, subs);
-                let new_args: Vec<HirExpr> = args.iter()
+                let new_args: Vec<HirExpr> = args
+                    .iter()
                     .map(|a| self.monomorphize_expr(a, subs))
                     .collect();
                 let args_slice = self.bump.alloc_slice(&new_args);
@@ -221,9 +233,14 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
                     args: args_slice,
                 }
             }
-            HirExpr::InterfaceCall { callee, interface, args } => {
+            HirExpr::InterfaceCall {
+                callee,
+                interface,
+                args,
+            } => {
                 let new_callee = self.monomorphize_expr(callee, subs);
-                let new_args: Vec<HirExpr> = args.iter()
+                let new_args: Vec<HirExpr> = args
+                    .iter()
                     .map(|a| self.monomorphize_expr(a, subs))
                     .collect();
                 let args_slice = self.bump.alloc_slice(&new_args);
@@ -235,7 +252,8 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
             }
             HirExpr::StructInit { name, args, span } => {
                 let new_name = self.monomorphize_expr(name, subs);
-                let new_args: Vec<HirExpr> = args.iter()
+                let new_args: Vec<HirExpr> = args
+                    .iter()
                     .map(|a| self.monomorphize_expr(a, subs))
                     .collect();
                 let args_slice = self.bump.alloc_slice(&new_args);
@@ -245,7 +263,11 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
                     span: *span,
                 }
             }
-            HirExpr::FieldAccess { object, field, span } => {
+            HirExpr::FieldAccess {
+                object,
+                field,
+                span,
+            } => {
                 let new_object = self.monomorphize_expr(object, subs);
                 HirExpr::FieldAccess {
                     object: self.bump.alloc_value_immutable(new_object),
@@ -253,7 +275,11 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
                     span: *span,
                 }
             }
-            HirExpr::Get { object, field, span } => {
+            HirExpr::Get {
+                object,
+                field,
+                span,
+            } => {
                 let new_object = self.monomorphize_expr(object, subs);
                 HirExpr::Get {
                     object: self.bump.alloc_value_immutable(new_object),
@@ -261,7 +287,12 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
                     span: *span,
                 }
             }
-            HirExpr::Binary { left, op, right, span } => {
+            HirExpr::Binary {
+                left,
+                op,
+                right,
+                span,
+            } => {
                 let new_left = self.monomorphize_expr(left, subs);
                 let new_right = self.monomorphize_expr(right, subs);
                 HirExpr::Binary {
@@ -271,7 +302,12 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
                     span: *span,
                 }
             }
-            HirExpr::Assignment { target, op, value, span } => {
+            HirExpr::Assignment {
+                target,
+                op,
+                value,
+                span,
+            } => {
                 let new_target = self.monomorphize_expr(target, subs);
                 let new_value = self.monomorphize_expr(value, subs);
                 HirExpr::Assignment {
@@ -282,7 +318,8 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
                 }
             }
             HirExpr::ExprList { list, span } => {
-                let new_list: Vec<HirExpr> = list.iter()
+                let new_list: Vec<HirExpr> = list
+                    .iter()
                     .map(|e| self.monomorphize_expr(e, subs))
                     .collect();
                 let list_slice = self.bump.alloc_slice(&new_list);
@@ -291,7 +328,12 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
                     span: *span,
                 }
             }
-            HirExpr::Comparison { left, op, right, span } => {
+            HirExpr::Comparison {
+                left,
+                op,
+                right,
+                span,
+            } => {
                 let new_left = self.monomorphize_expr(left, subs);
                 let new_right = self.monomorphize_expr(right, subs);
                 HirExpr::Comparison {

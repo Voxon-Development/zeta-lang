@@ -1,9 +1,10 @@
-use crate::ast::{Generic, Param, Path, Type};
-use std::fmt::{Display, Formatter, Write};
-use std::ops::Deref;
-use zetaruntime::string_pool::VmString;
+pub use crate::ast::{FuncModifiers, Path, Visibility};
 use crate::span::SourceSpan;
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
+use std::ops::Deref;
+use zetaruntime::string_pool::VmString;
 
 // =====================================
 // HIR (High-Level IR)
@@ -55,6 +56,16 @@ impl StrId {
     }
 }
 
+impl PartialEq<str> for StrId {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+
+    fn ne(&self, other: &str) -> bool {
+        self.as_str() != other
+    }
+}
+
 impl From<VmString> for StrId {
     fn from(vm_string: VmString) -> Self {
         StrId(vm_string)
@@ -62,7 +73,7 @@ impl From<VmString> for StrId {
 }
 
 impl Display for StrId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.as_str())
     }
 }
@@ -108,13 +119,10 @@ where
     'bump: 'a,
 {
     pub name: StrId,
-    pub visibility: Visibility,
-    pub is_unsafe: bool,
-    pub inline: bool,
-    pub noinline: bool,
+    pub function_metadata: FuncModifiers,
     pub generics: Option<&'bump [HirGeneric<'a, 'bump>]>,
     pub params: Option<&'bump [HirParam<'a, 'bump>]>,
-    pub return_type: Option<HirType<'a, 'bump> >,
+    pub return_type: Option<HirType<'a, 'bump>>,
     pub body: Option<HirStmt<'a, 'bump>>,
 }
 
@@ -139,7 +147,7 @@ where
     'bump: 'a,
 {
     pub generics: Option<&'bump [HirGeneric<'a, 'bump>]>,
-    pub interface: StrId,
+    pub interface: Option<StrId>,
     pub target: StrId,
     pub methods: Option<&'bump [HirFunc<'a, 'bump>]>,
 }
@@ -186,8 +194,11 @@ pub enum HirParam<'a, 'bump>
 where
     'bump: 'a,
 {
-    Normal { name: StrId, param_type: HirType<'a, 'bump> },
-    This { param_type: Option<HirType<'a, 'bump>> },
+    Normal {
+        name: StrId,
+        param_type: HirType<'a, 'bump>,
+    },
+    This,
 }
 
 impl<'a, 'bump> HirParam<'a, 'bump> {
@@ -195,7 +206,7 @@ impl<'a, 'bump> HirParam<'a, 'bump> {
     pub fn get_type(&self) -> Option<&HirType<'a, 'bump>> {
         match self {
             HirParam::Normal { param_type, .. } => Some(param_type),
-            HirParam::This { param_type } => param_type.as_ref(),
+            HirParam::This => Some(&HirType::This),
         }
     }
 }
@@ -259,6 +270,7 @@ where
         name: StrId,
         ty: HirType<'a, 'bump>,
         value: HirExpr<'a, 'bump>,
+        is_static: bool,
     },
     Const(&'bump ConstStmt<'a, 'bump>),
     Return(Option<&'bump HirExpr<'a, 'bump>>),
@@ -290,6 +302,7 @@ where
     },
     Break,
     Continue,
+    Defer(&'bump HirStmt<'a, 'bump>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -321,16 +334,9 @@ pub struct HirFuncProto<'a, 'bump> {
     pub name: StrId,
     pub params: Option<&'bump [HirParam<'a, 'bump>]>,
     pub return_type: HirType<'a, 'bump>,
-    pub inline: bool,
-
-    pub visibility: Visibility,
-    pub is_unsafe: bool,
-    pub is_extern: bool,
-    pub noinline: bool,
-    pub extern_string: Option<StrId>,
+    pub function_metadata: FuncModifiers,
     pub generics: Option<&'bump [HirGeneric<'a, 'bump>]>,
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum HirExpr<'a, 'bump>
@@ -362,7 +368,7 @@ where
     FieldAccess {
         object: &'bump HirExpr<'a, 'bump>,
         field: StrId,
-        span: SourceSpan<'a>
+        span: SourceSpan<'a>,
     },
     Assignment {
         target: &'bump HirExpr<'a, 'bump>,
@@ -376,22 +382,29 @@ where
         variant: StrId,
         args: &'bump [HirExpr<'a, 'bump>],
     },
-    ExprList { list: &'bump [HirExpr<'a, 'bump>], span: SourceSpan<'a> },
+    ExprList {
+        list: &'bump [HirExpr<'a, 'bump>],
+        span: SourceSpan<'a>,
+    },
     Get {
         object: &'bump HirExpr<'a, 'bump>,
         field: StrId,
-        span: SourceSpan<'a>
+        span: SourceSpan<'a>,
     },
     StructInit {
         name: &'bump HirExpr<'a, 'bump>,
         args: &'bump [HirExpr<'a, 'bump>],
-        span: SourceSpan<'a>
+        span: SourceSpan<'a>,
     },
     Comparison {
         left: &'bump HirExpr<'a, 'bump>,
         op: Operator,
         right: &'bump HirExpr<'a, 'bump>,
-        span: SourceSpan<'a>
+        span: SourceSpan<'a>,
+    },
+    Deref {
+        expr: &'bump HirExpr<'a, 'bump>,
+        span: SourceSpan<'a>,
     },
 }
 
@@ -454,19 +467,11 @@ where
     Expr(&'bump HirExpr<'a, 'bump>),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Visibility {
-    Public,
-    Private,
-    Module,
-    Package,
-}
-
 impl<'a, 'bump> Display for HirType<'a, 'bump>
 where
     'bump: 'a,
 {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             HirType::I8 => write!(f, "i8"),
             HirType::I16 => write!(f, "i16"),
@@ -534,7 +539,7 @@ where
         }
     }
 
-    fn write_args(f: &mut Formatter, name: &StrId, args: &[HirType<'a, 'bump>]) -> std::fmt::Result {
+    fn write_args(f: &mut Formatter, name: &StrId, args: &[HirType<'a, 'bump>]) -> fmt::Result {
         if args.is_empty() {
             write!(f, "{}", name)
         } else {
@@ -544,10 +549,10 @@ where
     }
 }
 
-use std::cell::UnsafeCell;
-use std::hash::{Hash, Hasher};
-use std::str::from_utf8_unchecked;
 use crate::ir_hasher::FxHashBuilder;
+use std::cell::UnsafeCell;
+use std::hash::Hash;
+use std::str::from_utf8_unchecked;
 
 pub struct HirSlice<'bump, T> {
     inner: UnsafeCell<&'bump [T]>,
@@ -593,8 +598,8 @@ where
 #[derive(Debug, Clone)]
 pub struct CTRCAnalysisResult {
     pub structs_with_destructors: std::collections::HashSet<StrId, FxHashBuilder>,
-    pub droppable_fields: std::collections::HashSet<(StrId, StrId),FxHashBuilder>, // (struct_name, field_name)
-    pub variable_aliases: std::collections::HashMap<StrId, usize>, // AliasID
+    pub droppable_fields: std::collections::HashSet<(StrId, StrId), FxHashBuilder>, // (struct_name, field_name)
+    pub variable_aliases: std::collections::HashMap<StrId, usize>,                  // AliasID
     pub allocation_sites: std::collections::HashMap<usize, usize>, // ProgramPoint -> AliasID
     pub drop_insertions: Vec<DropInsertion>,
     pub destructor_calls: Vec<DestructorCall>,
@@ -648,11 +653,11 @@ impl CTRCAnalysisResult {
             potential_leaks: Vec::new(),
         }
     }
-    
+
     pub fn has_memory_safety_issues(&self) -> bool {
         !self.potential_leaks.is_empty()
     }
-    
+
     pub fn get_drop_points_for_variable(&self, var_name: StrId) -> Vec<usize> {
         self.drop_insertions
             .iter()
@@ -660,14 +665,14 @@ impl CTRCAnalysisResult {
             .map(|drop| drop.program_point)
             .collect()
     }
-    
+
     pub fn get_destructor_calls_at_point(&self, program_point: usize) -> Vec<&DestructorCall> {
         self.destructor_calls
             .iter()
             .filter(|call| call.program_point == program_point)
             .collect()
     }
-    
+
     pub fn get_drop_insertions_at_point(&self, program_point: usize) -> Vec<&DropInsertion> {
         self.drop_insertions
             .iter()
