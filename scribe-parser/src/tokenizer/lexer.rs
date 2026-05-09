@@ -1,713 +1,823 @@
-use std::fs::File;
-use std::io::{Error, ErrorKind, Read};
-use std::iter::Peekable;
-use std::str::Chars;
-use std::sync::Arc;
-use smallvec::SmallVec;
 use ir::hir::StrId;
 use ir::span::SourceSpan;
+use ir::tokens::{Token, TokenKind, Tokens};
+use smallvec::SmallVec;
+use std::fs::File;
+use std::io::{Error, ErrorKind, Read};
+use std::sync::Arc;
 use zetaruntime::bump::GrowableBump;
 use zetaruntime::string_pool::StringPool;
-use crate::tokenizer::tokens::{TokenKind, Tokens};
 
-pub struct Lexer<'a, 'bump> {
-    pub tokens: Tokens<'a>,
-    context: Arc<StringPool>,
-    file_name: &'a str,
-    characters: &'bump str,
+// Maps ASCII bytes 0..128 to a dispatch category.
+// Non-ASCII bytes (>= 128) are handled as potential identifier starts.
 
-    #[allow(dead_code)] // If we don't move bump in Lexer, it will UB (lifetime hacks make life easier but the compiler trusts it too much).
-    bump: GrowableBump<'bump>,
-
-    pos: usize,
-    line: usize,
-    column: usize,
+#[derive(Clone, Copy)]
+#[repr(u8)]
+enum ByteClass {
+    Whitespace, // space, \t, \r
+    Newline,    // \n
+    Alpha,      // a-z A-Z _
+    Digit,      // 0-9
+    Quote,      // "
+    Plus,       // +
+    Minus,      // -
+    Star,       // *
+    Slash,      // /
+    Percent,    // %
+    Caret,      // ^
+    Lt,         // <
+    Gt,         // >
+    Amp,        // &
+    Pipe,       // |
+    Semi,       // ;
+    Colon,      // :
+    Tilde,      // ~
+    Bang,       // !
+    Eq,         // =
+    Dot,        // .
+    LParen,     // (
+    RParen,     // )
+    LBracket,   // [
+    RBracket,   // ]
+    LBrace,     // {
+    RBrace,     // }
+    Comma,      // ,
+    Question,   // ?
+    Unknown,
 }
 
-impl<'a, 'bump> Lexer<'a, 'bump> {
-    pub fn new(context: Arc<StringPool>, file_name: &'a str) -> std::io::Result<Self> {
+const JUMP: [ByteClass; 128] = {
+    let mut t = [ByteClass::Unknown; 128];
+    let mut i = 0usize;
+    // whitespace
+    t[b' ' as usize] = ByteClass::Whitespace;
+    t[b'\t' as usize] = ByteClass::Whitespace;
+    t[b'\r' as usize] = ByteClass::Whitespace;
+    t[b'\n' as usize] = ByteClass::Newline;
+    // alpha + underscore
+    i = b'a' as usize;
+    while i <= b'z' as usize {
+        t[i] = ByteClass::Alpha;
+        i += 1;
+    }
+    i = b'A' as usize;
+    while i <= b'Z' as usize {
+        t[i] = ByteClass::Alpha;
+        i += 1;
+    }
+    t[b'_' as usize] = ByteClass::Alpha;
+    // digits
+    i = b'0' as usize;
+    while i <= b'9' as usize {
+        t[i] = ByteClass::Digit;
+        i += 1;
+    }
+    // single-char punctuation
+    t[b'"' as usize] = ByteClass::Quote;
+    t[b'+' as usize] = ByteClass::Plus;
+    t[b'-' as usize] = ByteClass::Minus;
+    t[b'*' as usize] = ByteClass::Star;
+    t[b'/' as usize] = ByteClass::Slash;
+    t[b'%' as usize] = ByteClass::Percent;
+    t[b'^' as usize] = ByteClass::Caret;
+    t[b'<' as usize] = ByteClass::Lt;
+    t[b'>' as usize] = ByteClass::Gt;
+    t[b'&' as usize] = ByteClass::Amp;
+    t[b'|' as usize] = ByteClass::Pipe;
+    t[b';' as usize] = ByteClass::Semi;
+    t[b':' as usize] = ByteClass::Colon;
+    t[b'~' as usize] = ByteClass::Tilde;
+    t[b'!' as usize] = ByteClass::Bang;
+    t[b'=' as usize] = ByteClass::Eq;
+    t[b'.' as usize] = ByteClass::Dot;
+    t[b'(' as usize] = ByteClass::LParen;
+    t[b')' as usize] = ByteClass::RParen;
+    t[b'[' as usize] = ByteClass::LBracket;
+    t[b']' as usize] = ByteClass::RBracket;
+    t[b'{' as usize] = ByteClass::LBrace;
+    t[b'}' as usize] = ByteClass::RBrace;
+    t[b',' as usize] = ByteClass::Comma;
+    t[b'?' as usize] = ByteClass::Question;
+    t
+};
+
+#[inline(always)]
+fn byte_class(b: u8) -> ByteClass {
+    if b < 128 {
+        JUMP[b as usize]
+    } else {
+        ByteClass::Alpha
+    }
+}
+
+pub struct Lexer {
+    context: Arc<StringPool>,
+}
+
+impl Lexer {
+    pub fn new(context: Arc<StringPool>) -> Self {
+        Self { context }
+    }
+
+    pub fn tokenize_file<'a>(
+        &self,
+        file_name: &'a str,
+        bump: &'a GrowableBump<'a>,
+    ) -> std::io::Result<Tokens<'a>> {
         let mut file = File::open(file_name)?;
         let len = file.metadata().map(|m| m.len() as usize).unwrap_or(0);
-
-        let bump: GrowableBump<'bump> = GrowableBump::new(len, 8);
-        let buf: &'bump mut [u8] = bump.alloc_bytes(len);
+        let buf: &'a mut [u8] = bump.alloc_bytes(len);
         let bytes_read = file.read(buf)?;
-        let slice = &buf[..bytes_read];
-
-        let string: &'bump str = std::str::from_utf8(slice).map_err(|_| Error::new(ErrorKind::InvalidData, "Invalid UTF-8"))?;
-
-        Ok(Lexer {
-            tokens: Tokens::new(),
-            context,
-            file_name,
-            characters: string,
-            bump,
-            pos: 0,
-            line: 1,
-            column: 1,
-        })
+        let src = std::str::from_utf8(&buf[..bytes_read])
+            .map_err(|_| Error::new(ErrorKind::InvalidData, "Invalid UTF-8"))?;
+        Ok(self.tokenize(src, file_name, bump))
     }
 
-    /// Create a lexer from a string source
-    pub fn from_str(src: &'bump str, file_name: &'a str, context: Arc<StringPool>) -> Self {
-        let bump: GrowableBump = GrowableBump::new(1024, 8);
+    pub fn tokenize<'a>(
+        &self,
+        src: &str,
+        file_name: &'a str,
+        bump: &'a GrowableBump<'a>,
+    ) -> Tokens<'a> {
+        let bytes = src.as_bytes();
+        let len = bytes.len();
+        let mut tokens: Vec<Token<'a>> = Vec::with_capacity(len / 4);
 
-        Lexer {
-            tokens: Tokens::new(),
-            context,
-            file_name,
-            characters: src,
-            bump,
-            pos: 0,
-            line: 1,
-            column: 1,
+        let mut pos = 0usize; // byte offset into src
+        let mut line = 1usize;
+        let mut column = 1usize;
+
+        macro_rules! span {
+            () => {
+                SourceSpan::new(file_name, pos, line)
+            };
         }
-    }
 
-    pub fn tokenize(mut self) -> Tokens<'a> {
-        let mut chars: Peekable<Chars> = self.characters.chars().peekable();
+        macro_rules! push {
+            ($kind:expr) => {
+                tokens.push(Token {
+                    kind: $kind,
+                    text: None,
+                    span: span!(),
+                });
+            };
+            ($kind:expr, $id:expr) => {
+                tokens.push(Token {
+                    kind: $kind,
+                    text: Some($id),
+                    span: span!(),
+                });
+            };
+        }
 
-        while let Some(ch) = chars.next() {
-            if ch.is_whitespace() {
-                continue;
-            }
-
-            let len = ch.len_utf8();
-            self.pos += len;
-
-            if ch.is_alphabetic() {
-                self.tokenize_alphabetic(ch, &mut chars);
-                continue;
-            }
-
-            if ch.is_numeric() {
-                self.tokenize_number(ch, &mut chars);
-                continue;
-            }
-
-            if ch == '"' {
-                self.pos += 1;
-                self.tokenize_string(&mut chars);
-                continue;
-            }
-
-            match ch {
-                '+' => {
-                    self.detect_assign_or_append(&mut chars, TokenKind::AddAssign, TokenKind::Add);
+        macro_rules! peek {
+            ($offset:expr) => {
+                if pos + $offset < len {
+                    bytes[pos + $offset]
+                } else {
+                    0
                 }
-                '-' => {
-                    if let Some(character) = chars.peek() {
-                        if *character == '=' {
-                            self.pos += 1;
-                            self.column += 1;
-                            self.push_token(TokenKind::SubAssign);
-                        } else if *character == '>' {
-                            self.push_token(TokenKind::Arrow);
-                        }
+            };
+        }
+
+        while pos < len {
+            let b = bytes[pos];
+
+            match byte_class(b) {
+                ByteClass::Whitespace => {
+                    pos += 1;
+                    column += 1;
+                }
+
+                ByteClass::Newline => {
+                    pos += 1;
+                    line += 1;
+                    column = 1;
+                }
+
+                ByteClass::Alpha => {
+                    let start = pos;
+                    while pos < len && {
+                        let c = bytes[pos];
+                        c.is_ascii_alphanumeric() || c == b'_'
+                    } {
+                        pos += 1;
                     }
-                    self.push_token(TokenKind::Sub);
+                    let text = &src[start..pos];
+                    column += pos - start;
+
+                    let kind = keyword_or_ident(text);
+                    if kind == TokenKind::Ident {
+                        let id = self.context.intern_bytes(text.as_bytes());
+                        push!(TokenKind::Ident, StrId(id));
+                    } else {
+                        push!(kind);
+                    }
                 }
-                '*' => {
-                    self.detect_assign_or_append(&mut chars, TokenKind::MulAssign, TokenKind::Mul);
+
+                ByteClass::Digit => {
+                    let (kind, id) = lex_number(src, bytes, &mut pos, &mut column, &self.context);
+                    push!(kind, id);
                 }
-                '/' => {
-                    match chars.peek() {
-                        Some('/') => {
-                            chars.next(); // consume second '/'
-                            self.pos += 1;
 
-                            let is_doc = matches!(chars.peek(), Some('/'));
-                            if is_doc {
-                                chars.next(); // consume third '/'
-                                self.pos += 1;
-                            }
+                ByteClass::Quote => {
+                    pos += 1; // consume opening "
+                    column += 1;
+                    let id = lex_string(src, bytes, &mut pos, &mut column, &self.context);
+                    push!(TokenKind::String, id);
+                }
 
-                            self.tokenize_line_comment(&mut chars, is_doc);
-                            continue;
+                ByteClass::Plus => {
+                    pos += 1;
+                    column += 1;
+                    if peek!(0) == b'=' {
+                        pos += 1;
+                        column += 1;
+                        push!(TokenKind::AddAssign);
+                    } else {
+                        push!(TokenKind::Add);
+                    }
+                }
+
+                ByteClass::Minus => {
+                    pos += 1;
+                    column += 1;
+                    match peek!(0) {
+                        b'=' => {
+                            pos += 1;
+                            column += 1;
+                            push!(TokenKind::SubAssign);
                         }
-
-                        Some('*') => {
-                            chars.next(); // consume '*'
-                            self.pos += 1;
-                            panic!("Block comments are not supported");
-                            //continue;
+                        b'>' => {
+                            pos += 1;
+                            column += 1;
+                            push!(TokenKind::Arrow);
                         }
-
                         _ => {
-                            self.detect_assign_or_append(&mut chars, TokenKind::DivAssign, TokenKind::Div);
+                            push!(TokenKind::Sub);
                         }
                     }
                 }
-                '%' => {
-                    self.detect_assign_or_append(&mut chars, TokenKind::ModAssign, TokenKind::Mod);
-                }
-                '^' => {
-                    self.detect_assign_or_append(&mut chars, TokenKind::XorAssign, TokenKind::BitXor);
-                }
-                '<' => {
-                    self.process_left_arrow(&mut chars);
-                }
-                '>' => {
-                    self.process_right_arrow(&mut chars);
-                }
-                '&' => {
-                    self.process_and(&mut chars);
-                }
-                '|' => {
-                    self.process_or(&mut chars);
-                }
-                ';' => {
-                    self.push_token(TokenKind::Semicolon);
-                }
-                ':' => {
-                    if let Some(character) = chars.peek() {
-                        if *character == '=' {
-                            self.pos += 1;
-                            self.column += 1;
-                            self.push_token(TokenKind::ColonAssign);
-                        } else {
-                            self.push_token(TokenKind::Colon);
-                        }
+
+                ByteClass::Star => {
+                    pos += 1;
+                    column += 1;
+                    if peek!(0) == b'=' {
+                        pos += 1;
+                        column += 1;
+                        push!(TokenKind::MulAssign);
                     } else {
-                        self.push_token(TokenKind::Colon);
+                        push!(TokenKind::Mul);
                     }
                 }
-                '~' => {
-                    if let Some(character) = chars.peek() {
-                        if *character == '=' {
-                            self.pos += 1;
-                            self.push_token(TokenKind::NotAssign);
-                        }
-                    }
-                    self.push_token(TokenKind::BitNot);
-                }
-                ')' => {
-                    self.push_token(TokenKind::RParen);
-                }
-                '(' => {
-                    self.push_token(TokenKind::LParen);
-                }
-                '[' => {
-                    self.push_token(TokenKind::LBracket);
-                }
-                ']' => {
-                    self.push_token(TokenKind::RBracket);
-                }
-                '{' => {
-                    self.push_token(TokenKind::LBrace);
-                }
-                '}' => {
-                    self.push_token(TokenKind::RBrace);
-                }
-                ',' => {
-                    self.push_token(TokenKind::Comma);
-                }
-                '.' => {
-                    // Check for .. or ..<
-                    if let Some(&next_ch) = chars.peek() {
-                        if next_ch == '.' {
-                            chars.next(); // consume second dot
-                            if let Some(&third_ch) = chars.peek() {
-                                if third_ch == '<' {
-                                    chars.next(); // consume '<'
-                                    self.push_token(TokenKind::DotDotLt);
-                                } else if third_ch == '.' {
-                                    chars.next(); // consume third dot
-                                    self.push_token(TokenKind::Ellipsis);
-                                } else {
-                                    self.push_token(TokenKind::DotDot);
-                                }
-                            } else {
-                                self.push_token(TokenKind::DotDot);
+
+                ByteClass::Slash => {
+                    pos += 1;
+                    column += 1;
+                    match peek!(0) {
+                        b'/' => {
+                            pos += 1;
+                            column += 1;
+                            let is_doc = peek!(0) == b'/';
+                            if is_doc {
+                                pos += 1;
+                                column += 1;
                             }
-                        } else {
-                            self.push_token(TokenKind::Dot);
+                            let id =
+                                lex_line_comment(src, bytes, &mut pos, &mut column, &self.context);
+                            let kind = if is_doc {
+                                TokenKind::DocComment
+                            } else {
+                                TokenKind::LineComment
+                            };
+                            push!(kind, id);
                         }
-                    } else {
-                        self.push_token(TokenKind::Dot);
-                    }
-                }
-                '_' => {
-                    // Check if it's a standalone underscore or part of identifier
-                    if let Some(&next_ch) = chars.peek() {
-                        if next_ch.is_alphanumeric() || next_ch == '_' {
-                            self.tokenize_alphabetic(ch, &mut chars);
-                        } else {
-                            self.push_token(TokenKind::Underscore);
+                        b'*' => panic!("Block comments are not supported"),
+                        b'=' => {
+                            pos += 1;
+                            column += 1;
+                            push!(TokenKind::DivAssign);
                         }
-                    } else {
-                        self.push_token(TokenKind::Underscore);
-                    }
-                }
-                '!' => {
-                    self.push_token(TokenKind::LogicalNot);
-                }
-                '=' => {
-                    if let Some(character) = chars.peek() {
-                        if *character == '=' {
-                            chars.next();
-                            self.pos += 1;
-                            self.push_token(TokenKind::Eq);
-                            continue;
-                        } else if *character == '>' {
-                            chars.next();
-                            self.pos += 1;
-                            self.push_token(TokenKind::FatArrow);
-                            continue;
+                        _ => {
+                            push!(TokenKind::Div);
                         }
                     }
-                    self.push_token(TokenKind::Assign);
-                }
-                '\n' => {
-                    self.line += 1;
-                    self.column = 1;
-                }
-                '\t' | '\r' => {
-                    self.column += 1;
-                }
-                _ => {
-                    self.push_token(TokenKind::Unknown);
-                }
-            }
-            self.column += 1;
-        }
-
-        self.push_token(TokenKind::EOF);
-
-        self.tokens
-    }
-
-    fn process_or(&mut self, chars: &mut Peekable<Chars>) {
-        match chars.peek() {
-            Some('|') => {
-                let ch = chars.next().unwrap();
-                self.pos += ch.len_utf8();
-                self.column += 1;
-                self.push_token(TokenKind::OrOr);
-            }
-            Some('=') => {
-                let ch = chars.next().unwrap();
-                self.pos += ch.len_utf8();
-                self.column += 1;
-                self.push_token(TokenKind::OrAssign);
-            }
-            _ => {
-                self.push_token(TokenKind::BitOr);
-            }
-        }
-    }
-
-    fn process_and(&mut self, chars: &mut Peekable<Chars>) {
-        match chars.peek() {
-            Some('&') => {
-                let ch = chars.next().unwrap();
-                self.pos += ch.len_utf8();
-                self.column += 1;
-                self.push_token(TokenKind::AndAnd);
-            }
-            Some('=') => {
-                let ch = chars.next().unwrap();
-                self.pos += ch.len_utf8();
-                self.column += 1;
-                self.push_token(TokenKind::AndAssign);
-            }
-            _ => {
-                self.push_token(TokenKind::BitAnd);
-            }
-        }
-    }
-
-    fn process_right_arrow(&mut self, chars: &mut Peekable<Chars>) {
-        match chars.peek() {
-            Some(character) if *character == '>' => {
-                chars.next().unwrap();
-                self.processs_shr(chars);
-            }
-            Some(character) if *character == '=' => {
-                chars.next().unwrap();
-                self.push_token(TokenKind::Ge);
-            }
-            Some(_) => {
-                chars.next().unwrap();
-                self.push_token(TokenKind::Gt);
-            }
-            None => {},
-        }
-    }
-
-    fn processs_shr(&mut self, chars: &mut Peekable<Chars>) {
-        match chars.peek() {
-            Some(character) if *character == '=' => {
-                chars.next().unwrap();
-                self.push_token(TokenKind::ShrAssign);
-            }
-            Some(character) if *character == '>' => {
-                self.process_unsigned_shr(chars);
-            }
-            Some(_) => {
-                chars.next().unwrap();
-                self.push_token(TokenKind::Shr);
-            }
-            None => {}
-        }
-    }
-
-    fn process_unsigned_shr(&mut self, chars: &mut Peekable<Chars>) {
-        match chars.peek() {
-            Some(character) if *character == '=' => {
-                chars.next().unwrap();
-                self.push_token(TokenKind::UnsignedShrAssign);
-            }
-            _ => {
-                chars.next().unwrap();
-                self.push_token(TokenKind::UnsignedShr);
-            }
-        }
-    }
-
-    fn process_left_arrow(&mut self, mut chars: &mut Peekable<Chars>) {
-        match chars.peek() {
-            Some(character) if *character == '<' => {
-                chars.next().unwrap();
-                self.detect_assign_or_op(&mut chars);
-            }
-            Some(character) if *character == '=' => {
-                chars.next().unwrap();
-                self.push_token(TokenKind::Le);
-            }
-            Some(_) => {
-                chars.next().unwrap();
-                self.push_token(TokenKind::Lt);
-            }
-            None => {},
-        }
-    }
-
-    fn detect_assign_or_op(&mut self, chars: &mut Peekable<Chars>) {
-        match chars.peek() {
-            Some(character) if *character == '=' => {
-                chars.next().unwrap();
-                self.push_token(TokenKind::ShlAssign);
-            }
-            _ => {
-                self.push_token(TokenKind::Shl);
-            }
-        }
-    }
-
-    fn detect_assign_or_append(
-        &mut self,
-        chars: &mut Peekable<Chars>,
-        if_assign: TokenKind,
-        if_not: TokenKind
-    ) {
-        if let Some('=') = chars.peek() {
-            self.pos += 1;
-            self.column += 1;
-            self.push_token(if_assign);
-        } else {
-            self.push_token(if_not);
-        }
-    }
-
-    fn tokenize_alphabetic(&mut self, ch: char, chars: &mut Peekable<Chars>) {
-        let mut text: SmallVec<u8, 16> = SmallVec::from_buf([ch as u8]);
-        while let Some(&next_ch) = chars.peek() {
-            if next_ch.is_alphanumeric() || next_ch == '_' {
-                let ch = chars.next().unwrap(); // Only consume if it's part of the identifier
-                self.pos += ch.len_utf8();
-                text.push(ch as u8);
-            } else {
-                break; // Don't consume the character, leave it for the next iteration
-            }
-        }
-
-        let string = self.context.intern_bytes(text.as_slice());
-        let text = self.context.resolve_string(&string);
-
-        match text {
-            "true" => self.push_token(TokenKind::BooleanTrue),
-            "false" => self.push_token(TokenKind::BooleanFalse),
-            "null" => self.push_token(TokenKind::Null),
-
-            "if" => self.push_token(TokenKind::If),
-            "else" => self.push_token(TokenKind::Else),
-            "while" => self.push_token(TokenKind::While),
-            "for" => self.push_token(TokenKind::For),
-            "in" => self.push_token(TokenKind::In),
-            "return" => self.push_token(TokenKind::Return),
-            "break" => self.push_token(TokenKind::Break),
-            "continue" => self.push_token(TokenKind::Continue),
-            "enum" => self.push_token(TokenKind::Enum),
-            "struct" => self.push_token(TokenKind::Struct),
-            "interface" => self.push_token(TokenKind::Interface),
-            "impl" => self.push_token(TokenKind::Impl),
-            "import" => self.push_token(TokenKind::Import),
-            "package" => self.push_token(TokenKind::Package),
-            "type" => self.push_token(TokenKind::Type),
-            "const" => self.push_token(TokenKind::Const),
-            "let" => self.push_token(TokenKind::Let),
-            "mut" => self.push_token(TokenKind::Mut),
-            "own" => self.push_token(TokenKind::Own),
-            "match" => self.push_token(TokenKind::Match),
-            "defer" => self.push_token(TokenKind::Defer),
-
-            "unsafe" => self.push_token(TokenKind::Unsafe),
-            "inline" => self.push_token(TokenKind::Inline),
-            "noinline" => self.push_token(TokenKind::Noinline),
-            "sealed" => self.push_token(TokenKind::Sealed),
-            "private" => self.push_token(TokenKind::Private),
-            "module" => self.push_token(TokenKind::Module),
-            "extern" => self.push_token(TokenKind::Extern),
-            "static" => self.push_token(TokenKind::Static),
-            "effect" => self.push_token(TokenKind::Effect),
-            "permits" => self.push_token(TokenKind::Permits),
-            "statem" => self.push_token(TokenKind::Statem),
-            "trait" => self.push_token(TokenKind::Trait),
-            "where" => self.push_token(TokenKind::Where),
-            "fn" => self.push_token(TokenKind::Fn),
-            "requires" => self.push_token(TokenKind::Requires),
-            "ensures" => self.push_token(TokenKind::Ensures),
-            "uses" => self.push_token(TokenKind::Uses),
-
-            "this" => self.push_token(TokenKind::This),
-
-            "u8" => self.push_token(TokenKind::U8),
-            "u16" => self.push_token(TokenKind::U16),
-            "u32" => self.push_token(TokenKind::U32),
-            "u64" => self.push_token(TokenKind::U64),
-            "u128" => self.push_token(TokenKind::U128),
-            "i8" => self.push_token(TokenKind::I8),
-            "i16" => self.push_token(TokenKind::I16),
-            "i32" => self.push_token(TokenKind::I32),
-            "i64" => self.push_token(TokenKind::I64),
-            "i128" => self.push_token(TokenKind::I128),
-            "f32" => self.push_token(TokenKind::F32),
-            "f64" => self.push_token(TokenKind::F64),
-            "usize" => self.push_token(TokenKind::Usize),
-            "isize" => self.push_token(TokenKind::Isize),
-            "char" => self.push_token(TokenKind::Char),
-            "str" => self.push_token(TokenKind::Str),
-            "boolean" => self.push_token(TokenKind::Boolean),
-
-            _ => self.push(TokenKind::Ident, StrId(string))
-        }
-    }
-
-    fn tokenize_number(&mut self, first: char, chars: &mut Peekable<Chars>) {
-        let mut kind = TokenKind::Number;
-        let mut text: SmallVec<u8, 16> = SmallVec::from_buf([first as u8]);
-
-        let mut seen_dot = false;
-        let mut seen_exp = false;
-        let mut last_was_underscore = false;
-
-        // --- base prefixes (0x / 0b) ---
-        if first == '0' {
-            if let Some(&('x' | 'X')) = chars.peek() {
-                let ch = chars.next().unwrap();
-                self.pos += 1;
-                text.push(ch as u8);
-                kind = TokenKind::Hexadecimal;
-
-                self.consume_digits(chars, &mut text, |c| c.is_ascii_hexdigit());
-                self.consume_suffix(chars, &mut text);
-                self.finish_number(kind, text);
-                return;
-            }
-
-            if let Some(&('b' | 'B')) = chars.peek() {
-                let ch = chars.next().unwrap();
-                self.pos += 1;
-                text.push(ch as u8);
-                kind = TokenKind::Binary;
-
-                self.consume_digits(chars, &mut text, |c| matches!(c, '0' | '1'));
-                self.consume_suffix(chars, &mut text);
-                self.finish_number(kind, text);
-                return;
-            }
-        }
-
-        // --- decimal / float / scientific ---
-        while let Some(&c) = chars.peek() {
-            match c {
-                '0'..='9' => {
-                    let c = chars.next().unwrap();
-                    self.pos += 1;
-                    text.push(c as u8);
-                    last_was_underscore = false;
                 }
 
-                '_' if !last_was_underscore => {
-                    let c = chars.next().unwrap();
-                    self.pos += 1;
-                    text.push(c as u8);
-                    last_was_underscore = true;
-                }
-
-                '.' if !seen_dot && !seen_exp => {
-                    let c = chars.next().unwrap();
-                    self.pos += 1;
-                    text.push(c as u8);
-                    seen_dot = true;
-                    kind = TokenKind::Decimal;
-                    last_was_underscore = false;
-                }
-
-                'e' | 'E' if !seen_exp => {
-                    let c = chars.next().unwrap();
-                    self.pos += 1;
-                    text.push(c as u8);
-                    seen_exp = true;
-                    kind = TokenKind::Decimal;
-                    last_was_underscore = false;
-
-                    if let Some(&('+' | '-')) = chars.peek() {
-                        let sign = chars.next().unwrap();
-                        self.pos += 1;
-                        text.push(sign as u8);
-                    }
-                }
-
-                _ => break,
-            }
-        }
-
-        // trailing underscore is illegal → stop number before it
-        if last_was_underscore {
-            text.pop();
-        }
-
-        // --- numeric suffix ---
-        self.consume_suffix(chars, &mut text);
-        self.finish_number(kind, text);
-    }
-
-    #[inline]
-    fn consume_digits<F>(&mut self, chars: &mut Peekable<Chars>, text: &mut SmallVec<u8, 16>, mut valid: F)
-    where
-        F: FnMut(char) -> bool,
-    {
-        let mut last_was_underscore = false;
-
-        while let Some(&c) = chars.peek() {
-            if valid(c) {
-                let c = chars.next().unwrap();
-                self.pos += 1;
-                text.push(c as u8);
-                last_was_underscore = false;
-            } else if c == '_' && !last_was_underscore {
-                let c = chars.next().unwrap();
-                self.pos += 1;
-                text.push(c as u8);
-                last_was_underscore = true;
-            } else {
-                break;
-            }
-        }
-
-        if last_was_underscore {
-            text.pop();
-        }
-    }
-
-    #[inline]
-    fn consume_suffix(&mut self, chars: &mut Peekable<Chars>, text: &mut SmallVec<u8, 16>) {
-        if let Some(&c) = chars.peek() {
-            if c.is_ascii_alphabetic() {
-                while let Some(&c) = chars.peek() {
-                    if c.is_ascii_alphanumeric() {
-                        let c = chars.next().unwrap();
-                        self.pos += 1;
-                        text.push(c as u8);
+                ByteClass::Percent => {
+                    pos += 1;
+                    column += 1;
+                    if peek!(0) == b'=' {
+                        pos += 1;
+                        column += 1;
+                        push!(TokenKind::ModAssign);
                     } else {
-                        break;
+                        push!(TokenKind::Mod);
                     }
+                }
+
+                ByteClass::Caret => {
+                    pos += 1;
+                    column += 1;
+                    if peek!(0) == b'=' {
+                        pos += 1;
+                        column += 1;
+                        push!(TokenKind::XorAssign);
+                    } else {
+                        push!(TokenKind::BitXor);
+                    }
+                }
+
+                ByteClass::Amp => {
+                    pos += 1;
+                    column += 1;
+                    match peek!(0) {
+                        b'&' => {
+                            pos += 1;
+                            column += 1;
+                            push!(TokenKind::AndAnd);
+                        }
+                        b'=' => {
+                            pos += 1;
+                            column += 1;
+                            push!(TokenKind::AndAssign);
+                        }
+                        _ => {
+                            push!(TokenKind::BitAnd);
+                        }
+                    }
+                }
+
+                ByteClass::Pipe => {
+                    pos += 1;
+                    column += 1;
+                    match peek!(0) {
+                        b'|' => {
+                            pos += 1;
+                            column += 1;
+                            push!(TokenKind::OrOr);
+                        }
+                        b'=' => {
+                            pos += 1;
+                            column += 1;
+                            push!(TokenKind::OrAssign);
+                        }
+                        _ => {
+                            push!(TokenKind::BitOr);
+                        }
+                    }
+                }
+
+                ByteClass::Lt => {
+                    pos += 1;
+                    column += 1;
+                    match peek!(0) {
+                        b'<' => {
+                            pos += 1;
+                            column += 1;
+                            if peek!(0) == b'=' {
+                                pos += 1;
+                                column += 1;
+                                push!(TokenKind::ShlAssign);
+                            } else {
+                                push!(TokenKind::Shl);
+                            }
+                        }
+                        b'=' => {
+                            pos += 1;
+                            column += 1;
+                            push!(TokenKind::Le);
+                        }
+                        _ => {
+                            push!(TokenKind::Lt);
+                        }
+                    }
+                }
+
+                ByteClass::Gt => {
+                    pos += 1;
+                    column += 1;
+                    match peek!(0) {
+                        b'>' => {
+                            pos += 1;
+                            column += 1;
+                            match peek!(0) {
+                                b'>' => {
+                                    pos += 1;
+                                    column += 1;
+                                    if peek!(0) == b'=' {
+                                        pos += 1;
+                                        column += 1;
+                                        push!(TokenKind::UnsignedShrAssign);
+                                    } else {
+                                        push!(TokenKind::UnsignedShr);
+                                    }
+                                }
+                                b'=' => {
+                                    pos += 1;
+                                    column += 1;
+                                    push!(TokenKind::ShrAssign);
+                                }
+                                _ => {
+                                    push!(TokenKind::Shr);
+                                }
+                            }
+                        }
+                        b'=' => {
+                            pos += 1;
+                            column += 1;
+                            push!(TokenKind::Ge);
+                        }
+                        _ => {
+                            push!(TokenKind::Gt);
+                        }
+                    }
+                }
+
+                ByteClass::Semi => {
+                    pos += 1;
+                    column += 1;
+                    push!(TokenKind::Semicolon);
+                }
+                ByteClass::LParen => {
+                    pos += 1;
+                    column += 1;
+                    push!(TokenKind::LParen);
+                }
+                ByteClass::RParen => {
+                    pos += 1;
+                    column += 1;
+                    push!(TokenKind::RParen);
+                }
+                ByteClass::LBracket => {
+                    pos += 1;
+                    column += 1;
+                    push!(TokenKind::LBracket);
+                }
+                ByteClass::RBracket => {
+                    pos += 1;
+                    column += 1;
+                    push!(TokenKind::RBracket);
+                }
+                ByteClass::LBrace => {
+                    pos += 1;
+                    column += 1;
+                    push!(TokenKind::LBrace);
+                }
+                ByteClass::RBrace => {
+                    pos += 1;
+                    column += 1;
+                    push!(TokenKind::RBrace);
+                }
+                ByteClass::Comma => {
+                    pos += 1;
+                    column += 1;
+                    push!(TokenKind::Comma);
+                }
+                ByteClass::Question => {
+                    pos += 1;
+                    column += 1;
+                    push!(TokenKind::Question);
+                }
+
+                ByteClass::Colon => {
+                    pos += 1;
+                    column += 1;
+                    if peek!(0) == b'=' {
+                        pos += 1;
+                        column += 1;
+                        push!(TokenKind::ColonAssign);
+                    } else {
+                        push!(TokenKind::Colon);
+                    }
+                }
+
+                ByteClass::Tilde => {
+                    pos += 1;
+                    column += 1;
+                    if peek!(0) == b'=' {
+                        pos += 1;
+                        column += 1;
+                        push!(TokenKind::NotAssign);
+                    } else {
+                        push!(TokenKind::BitNot);
+                    }
+                }
+
+                ByteClass::Bang => {
+                    pos += 1;
+                    column += 1;
+                    push!(TokenKind::LogicalNot);
+                }
+
+                ByteClass::Eq => {
+                    pos += 1;
+                    column += 1;
+                    match peek!(0) {
+                        b'=' => {
+                            pos += 1;
+                            column += 1;
+                            push!(TokenKind::Eq);
+                        }
+                        b'>' => {
+                            pos += 1;
+                            column += 1;
+                            push!(TokenKind::FatArrow);
+                        }
+                        _ => {
+                            push!(TokenKind::Assign);
+                        }
+                    }
+                }
+
+                ByteClass::Dot => {
+                    pos += 1;
+                    column += 1;
+                    if peek!(0) == b'.' {
+                        pos += 1;
+                        column += 1;
+                        match peek!(0) {
+                            b'<' => {
+                                pos += 1;
+                                column += 1;
+                                push!(TokenKind::DotDotLt);
+                            }
+                            b'.' => {
+                                pos += 1;
+                                column += 1;
+                                push!(TokenKind::Ellipsis);
+                            }
+                            _ => {
+                                push!(TokenKind::DotDot);
+                            }
+                        }
+                    } else {
+                        push!(TokenKind::Dot);
+                    }
+                }
+
+                ByteClass::Unknown => {
+                    pos += 1;
+                    column += 1;
+                    push!(TokenKind::Unknown);
                 }
             }
         }
+
+        push!(TokenKind::EOF);
+        Tokens::new(bump, tokens)
+    }
+}
+
+#[inline(never)] // large match arm, keep out of hot loop
+fn keyword_or_ident(text: &str) -> TokenKind {
+    match text {
+        "true" => TokenKind::BooleanTrue,
+        "false" => TokenKind::BooleanFalse,
+        "null" => TokenKind::Null,
+        "if" => TokenKind::If,
+        "else" => TokenKind::Else,
+        "while" => TokenKind::While,
+        "for" => TokenKind::For,
+        "in" => TokenKind::In,
+        "return" => TokenKind::Return,
+        "break" => TokenKind::Break,
+        "continue" => TokenKind::Continue,
+        "enum" => TokenKind::Enum,
+        "struct" => TokenKind::Struct,
+        "interface" => TokenKind::Interface,
+        "impl" => TokenKind::Impl,
+        "import" => TokenKind::Import,
+        "package" => TokenKind::Package,
+        "type" => TokenKind::Type,
+        "const" => TokenKind::Const,
+        "let" => TokenKind::Let,
+        "mut" => TokenKind::Mut,
+        "match" => TokenKind::Match,
+        "case" => TokenKind::Case,
+        "defer" => TokenKind::Defer,
+        "unsafe" => TokenKind::Unsafe,
+        "inline" => TokenKind::Inline,
+        "noinline" => TokenKind::Noinline,
+        "sealed" => TokenKind::Sealed,
+        "private" => TokenKind::Private,
+        "module" => TokenKind::Module,
+        "internal" => TokenKind::Internal,
+        "extern" => TokenKind::Extern,
+        "static" => TokenKind::Static,
+        "effect" => TokenKind::Effect,
+        "permits" => TokenKind::Permits,
+        "statem" => TokenKind::Statem,
+        "trait" => TokenKind::Trait,
+        "where" => TokenKind::Where,
+        "fn" => TokenKind::Fn,
+        "requires" => TokenKind::Requires,
+        "ensures" => TokenKind::Ensures,
+        "uses" => TokenKind::Uses,
+        "this" => TokenKind::This,
+        "u8" => TokenKind::U8,
+        "u16" => TokenKind::U16,
+        "u32" => TokenKind::U32,
+        "u64" => TokenKind::U64,
+        "u128" => TokenKind::U128,
+        "i8" => TokenKind::I8,
+        "i16" => TokenKind::I16,
+        "i32" => TokenKind::I32,
+        "i64" => TokenKind::I64,
+        "i128" => TokenKind::I128,
+        "f32" => TokenKind::F32,
+        "f64" => TokenKind::F64,
+        "usize" => TokenKind::Usize,
+        "isize" => TokenKind::Isize,
+        "char" => TokenKind::Char,
+        "str" => TokenKind::Str,
+        "boolean" => TokenKind::Boolean,
+        _ => TokenKind::Ident,
+    }
+}
+
+fn lex_number<'a>(
+    src: &str,
+    bytes: &[u8],
+    pos: &mut usize,
+    column: &mut usize,
+    ctx: &Arc<StringPool>,
+) -> (TokenKind, StrId) {
+    let start = *pos;
+    let mut kind = TokenKind::Number;
+    let mut seen_dot = false;
+    let mut seen_exp = false;
+    let mut last_under = false;
+
+    // Base prefix
+    if bytes[start] == b'0' {
+        match bytes.get(start + 1).copied() {
+            Some(b'x') | Some(b'X') => {
+                *pos += 2;
+                *column += 2;
+                consume_digits_while(bytes, pos, column, |c| c.is_ascii_hexdigit());
+                consume_suffix(bytes, pos, column);
+                return finish_number(src, start, *pos, TokenKind::Hexadecimal, ctx);
+            }
+            Some(b'b') | Some(b'B') => {
+                *pos += 2;
+                *column += 2;
+                consume_digits_while(bytes, pos, column, |c| matches!(c, b'0' | b'1'));
+                consume_suffix(bytes, pos, column);
+                return finish_number(src, start, *pos, TokenKind::Binary, ctx);
+            }
+            _ => {}
+        }
     }
 
-    #[inline]
-    fn finish_number(&mut self, kind: TokenKind, text: SmallVec<u8, 16>) {
-        let string = unsafe { std::str::from_utf8_unchecked(text.as_slice()) };
-        let id = self.context.intern_bytes(string.as_bytes());
-        self.push(kind, StrId(id));
-    }
+    *pos += 1;
+    *column += 1; // consume first digit
 
-    fn tokenize_string(&mut self, chars: &mut Peekable<Chars>) {
-        let mut text: SmallVec<u8, 16> = SmallVec::new(); // Don't include the opening quote
-        while chars.peek().is_some() {
-            let ch = chars.next().unwrap();
-            if ch == '\\' {
-                let ch = chars.next().unwrap();
-                match ch {
-                    'n' => text.push(b'\n'),
-                    't' => text.push(b'\t'),
-                    'r' => text.push(b'\r'),
-                    '\\' => text.push(b'\\'),
-                    '"' => text.push(b'"'),
-                    other => {
-                        text.push(other as u8);
-                    }
+    loop {
+        match bytes.get(*pos).copied() {
+            Some(c @ b'0'..=b'9') => {
+                *pos += 1;
+                *column += 1;
+                last_under = false;
+                let _ = c;
+            }
+            Some(b'_') if !last_under => {
+                *pos += 1;
+                *column += 1;
+                last_under = true;
+            }
+            Some(b'.') if !seen_dot && !seen_exp => {
+                // don't consume ".." as float
+                if bytes.get(*pos + 1).copied() == Some(b'.') {
+                    break;
                 }
-                self.pos += 2;
-            } else if ch == '"' {
-                self.pos += 1;
-                break;
-            } else {
-                self.pos += ch.len_utf8();
-                text.push(ch as u8);
+                *pos += 1;
+                *column += 1;
+                seen_dot = true;
+                kind = TokenKind::Decimal;
+                last_under = false;
             }
-        }
-
-        let string = unsafe { str::from_utf8_unchecked(text.as_slice()) };
-        let text = self.context
-            .intern_bytes(string.as_bytes());
-        self.push(TokenKind::String, StrId(text));
-    }
-
-    fn tokenize_line_comment(&mut self, chars: &mut Peekable<Chars>, is_doc: bool) {
-        let mut text: SmallVec<u8, 128> = SmallVec::new();
-
-        while let Some(&ch) = chars.peek() {
-            if ch == '\n' {
-                break;
+            Some(b'e') | Some(b'E') if !seen_exp => {
+                *pos += 1;
+                *column += 1;
+                seen_exp = true;
+                kind = TokenKind::Decimal;
+                last_under = false;
+                if matches!(bytes.get(*pos).copied(), Some(b'+') | Some(b'-')) {
+                    *pos += 1;
+                    *column += 1;
+                }
             }
-            chars.next();
-            self.pos += ch.len_utf8();
-            self.column += 1;
-            text.push(ch as u8);
+            _ => break,
         }
-
-        let string = unsafe { str::from_utf8_unchecked(text.as_slice()) };
-        let text_id = self.context.intern_bytes(string.as_bytes());
-
-        let kind = if is_doc {
-            TokenKind::DocComment
-        } else {
-            TokenKind::LineComment
-        };
-
-        self.push(kind, StrId(text_id));
     }
 
-    fn push(&mut self, kind: TokenKind, text: StrId) {
-        let span = SourceSpan::new(
-            self.file_name,
-            self.pos,
-            self.line
-        );
-        self.tokens.push(kind, text, span);
+    // strip trailing underscore
+    if last_under {
+        *pos -= 1;
+        *column -= 1;
     }
 
-    fn push_token(&mut self, kind: TokenKind) {
-        let span = SourceSpan::new(
-            self.file_name,
-            self.pos,
-            self.line
-        );
-        self.tokens.push_token(kind, span);
+    consume_suffix(bytes, pos, column);
+    finish_number(src, start, *pos, kind, ctx)
+}
+
+#[inline]
+fn consume_digits_while(
+    bytes: &[u8],
+    pos: &mut usize,
+    column: &mut usize,
+    mut valid: impl FnMut(u8) -> bool,
+) {
+    let mut last_under = false;
+    loop {
+        match bytes.get(*pos).copied() {
+            Some(c) if valid(c) => {
+                *pos += 1;
+                *column += 1;
+                last_under = false;
+            }
+            Some(b'_') if !last_under => {
+                *pos += 1;
+                *column += 1;
+                last_under = true;
+            }
+            _ => break,
+        }
     }
+    if last_under {
+        *pos -= 1;
+        *column -= 1;
+    }
+}
+
+#[inline]
+fn consume_suffix(bytes: &[u8], pos: &mut usize, column: &mut usize) {
+    if bytes.get(*pos).map_or(false, |b| b.is_ascii_alphabetic()) {
+        while bytes.get(*pos).map_or(false, |b| b.is_ascii_alphanumeric()) {
+            *pos += 1;
+            *column += 1;
+        }
+    }
+}
+
+#[inline]
+fn finish_number(
+    src: &str,
+    start: usize,
+    end: usize,
+    kind: TokenKind,
+    ctx: &Arc<StringPool>,
+) -> (TokenKind, StrId) {
+    let id = ctx.intern_bytes(src[start..end].as_bytes());
+    (kind, StrId(id))
+}
+
+fn lex_string(
+    src: &str,
+    bytes: &[u8],
+    pos: &mut usize,
+    column: &mut usize,
+    ctx: &Arc<StringPool>,
+) -> StrId {
+    let mut text: SmallVec<u8, 32> = SmallVec::new();
+    while *pos < bytes.len() {
+        let b = bytes[*pos];
+        *pos += 1;
+        *column += 1;
+        match b {
+            b'"' => break,
+            b'\\' => {
+                let esc = bytes[*pos];
+                *pos += 1;
+                *column += 1;
+                text.push(match esc {
+                    b'n' => b'\n',
+                    b't' => b'\t',
+                    b'r' => b'\r',
+                    b'\\' => b'\\',
+                    b'"' => b'"',
+                    other => other,
+                });
+            }
+            other => text.push(other),
+        }
+    }
+    StrId(ctx.intern_bytes(&text))
+}
+
+fn lex_line_comment(
+    _src: &str,
+    bytes: &[u8],
+    pos: &mut usize,
+    column: &mut usize,
+    ctx: &Arc<StringPool>,
+) -> StrId {
+    let start = *pos;
+    while *pos < bytes.len() && bytes[*pos] != b'\n' {
+        *pos += 1;
+        *column += 1;
+    }
+    // safe: comments are ASCII or valid UTF-8 slices of the original source
+    StrId(ctx.intern_bytes(&bytes[start..*pos]))
 }
