@@ -363,19 +363,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
-name = "ctrc-graph"
-version = "0.1.0"
-dependencies = [
- "codex-dependency-graph",
- "dashmap",
- "ir",
- "iris-math",
- "smallvec 2.0.0-alpha.12",
- "thiserror",
- "zetaruntime",
-]
-
-[[package]]
 name = "dashmap"
 version = "7.0.0-rc2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -803,7 +790,6 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 name = "scribe-parser"
 version = "0.1.0"
 dependencies = [
- "ctrc-graph",
  "ir",
  "smallvec 2.0.0-alpha.12",
  "zetaruntime",
@@ -1114,7 +1100,6 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "codex-dependency-graph",
- "ctrc-graph",
  "emberforge-compiler",
  "engraver-assembly-emit",
  "ir",

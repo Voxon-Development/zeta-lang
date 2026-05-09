@@ -17,8 +17,8 @@ members = [
     "engraver-assembly-emit",
     "smelter-optimizer",
     "zeta_utilities",
-    "ctrc-graph"
-, "iris-math"]
+    "iris-math"
+]
 
 [dependencies]
 snmalloc-rs = "0.3.8"
@@ -32,5 +32,4 @@ engraver-assembly-emit = { path = "./engraver-assembly-emit" }
 ir = { path = "./ir" }
 thiserror = "2.0.17"
 clap = { version = "4.5.53", features = ["derive"] }
-ctrc-graph = { path = "./ctrc-graph" }
 sentinel-typechecker = { path = "./sentinel-typechecker" }
