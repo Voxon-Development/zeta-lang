@@ -1,11 +1,10 @@
-
+use crate::symbol_table::{ModulesSoA, SymbolsSoA};
+use ir::hir::{Hir, HirModule, StrId};
+use ir::ir_hasher::FxHashBuilder;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
-use ir::hir::{Hir, HirModule, StrId};
-use ir::ir_hasher::FxHashBuilder;
 use zetaruntime::string_pool::StringPool;
-use crate::symbol_table::{ModulesSoA, SymbolsSoA};
 
 pub struct ModuleBuilder<'bump> {
     pub modules: ModulesSoA<'bump>,
@@ -25,7 +24,8 @@ impl<'bump> ModuleBuilder<'bump> {
             }
 
             let path = PathBuf::from(format!("{}.zeta", module.name));
-            let deps: HashSet<usize, FxHashBuilder> = HashSet::with_hasher(FxHashBuilder::default());
+            let deps: HashSet<usize, FxHashBuilder> =
+                HashSet::with_hasher(FxHashBuilder::default());
             modules.push_module(module.name, path, deps, symbols);
         }
 
@@ -33,12 +33,17 @@ impl<'bump> ModuleBuilder<'bump> {
     }
 }
 
-
 fn extract_symbol_info(hir: &Hir, string_pool: Arc<StringPool>) -> (StrId, StrId) {
     match hir {
         Hir::Func(f) => (f.name, StrId(string_pool.intern("function"))),
         Hir::Struct(s) => (s.name, StrId(string_pool.intern("struct"))),
         Hir::Const(c) => (c.name, StrId(string_pool.intern("const"))),
-        _ => (StrId(string_pool.intern("<anon>")), StrId(string_pool.intern("unknown"))),
+        Hir::Interface(i) => (i.name, StrId(string_pool.intern("interface"))),
+        Hir::Enum(e) => (e.name, StrId(string_pool.intern("enum"))),
+        Hir::Impl(i) => (i.target, StrId(string_pool.intern("impl"))),
+        _ => (
+            StrId(string_pool.intern("<anon>")),
+            StrId(string_pool.intern("unknown")),
+        ),
     }
 }

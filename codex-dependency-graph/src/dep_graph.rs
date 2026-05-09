@@ -1,5 +1,5 @@
-use std::collections::{VecDeque};
 use ir::ir_hasher::{HashMap, HashSet};
+use std::collections::VecDeque;
 
 use ir::hir::{Hir, HirModule, StrId};
 use zetaruntime::string_pool::StringPool;
@@ -15,9 +15,9 @@ pub struct TypeKey {
 #[derive(Clone, Debug)]
 pub enum NodeKind {
     Module { module_idx: usize },
-    TypeDecl { module_idx: usize, item_idx: usize },   // struct/enum/interface
-    FuncSig { module_idx: usize, item_idx: usize },    // signature (params/returns)
-    FuncBody { module_idx: usize, item_idx: usize },   // body
+    TypeDecl { module_idx: usize, item_idx: usize }, // struct/enum/interface
+    FuncSig { module_idx: usize, item_idx: usize },  // signature (params/returns)
+    FuncBody { module_idx: usize, item_idx: usize }, // body
     ConstDecl { module_idx: usize, item_idx: usize },
     TraitDecl { module_idx: usize, item_idx: usize },
     TraitImpl { module_idx: usize, item_idx: usize },
@@ -33,7 +33,10 @@ impl NodeKind {
         matches!(self, NodeKind::TypeDecl { .. })
     }
     pub fn is_generic_instance(&self) -> bool {
-        matches!(self, NodeKind::GenericTypeInstance { .. } | NodeKind::GenericFnInstance { .. })
+        matches!(
+            self,
+            NodeKind::GenericTypeInstance { .. } | NodeKind::GenericFnInstance { .. }
+        )
     }
 }
 
@@ -43,7 +46,7 @@ pub struct DepNode {
     pub idx: NodeIdx,
     pub kind: NodeKind,
     pub hint: Option<StrId>,
-    pub deps: Vec<NodeIdx>,  // outgoing edges: this -> dependency
+    pub deps: Vec<NodeIdx>,     // outgoing edges: this -> dependency
     pub rev_deps: Vec<NodeIdx>, // reverse edges
 }
 
@@ -102,18 +105,32 @@ impl DepGraph {
     }
 
     /// Register mapping for a declaration-like node so we can resolve later.
-    pub fn register_item_node(&mut self, module_idx: usize, item_idx: usize, tag: &'static str, node_idx: NodeIdx) {
-        self.item_index.insert((module_idx, item_idx, tag), node_idx);
+    pub fn register_item_node(
+        &mut self,
+        module_idx: usize,
+        item_idx: usize,
+        tag: &'static str,
+        node_idx: NodeIdx,
+    ) {
+        self.item_index
+            .insert((module_idx, item_idx, tag), node_idx);
     }
 
     /// Lookup existing item node produced in Phase A.
-    pub fn lookup_item_node(&self, module_idx: usize, item_idx: usize, tag: &'static str) -> Option<NodeIdx> {
+    pub fn lookup_item_node(
+        &self,
+        module_idx: usize,
+        item_idx: usize,
+        tag: &'static str,
+    ) -> Option<NodeIdx> {
         self.item_index.get(&(module_idx, item_idx, tag)).copied()
     }
 
     /// Add an edge a -> b (a depends on b)
     pub fn add_edge(&mut self, a: NodeIdx, b: NodeIdx) {
-        if a >= self.nodes.len() || b >= self.nodes.len() { return; }
+        if a >= self.nodes.len() || b >= self.nodes.len() {
+            return;
+        }
 
         if !self.nodes[a].deps.contains(&b) {
             self.nodes[a].deps.push(b);
@@ -125,15 +142,29 @@ impl DepGraph {
     }
 
     /// Create or get an instance node for (base, args). If newly created, queue it for work.
-    pub fn get_or_create_instance(&mut self, base: NodeIdx, args: Vec<TypeKey>, is_fn: bool) -> NodeIdx {
-        let key = InstanceKey { base, args: args.clone() };
+    pub fn get_or_create_instance(
+        &mut self,
+        base: NodeIdx,
+        args: Vec<TypeKey>,
+        is_fn: bool,
+    ) -> NodeIdx {
+        let key = InstanceKey {
+            base,
+            args: args.clone(),
+        };
         if let Some(&idx) = self.instance_map.get(&key) {
             return idx;
         }
         let kind = if is_fn {
-            NodeKind::GenericFnInstance { base, args: args.clone() }
+            NodeKind::GenericFnInstance {
+                base,
+                args: args.clone(),
+            }
         } else {
-            NodeKind::GenericTypeInstance { base, args: args.clone() }
+            NodeKind::GenericTypeInstance {
+                base,
+                args: args.clone(),
+            }
         };
         let hint = None;
         let idx = self.push_node(kind, hint);
@@ -168,11 +199,9 @@ impl DepGraph {
     /// It does NOT yet inspect bodies for edges.
     pub fn phase_a_create_nodes(&mut self, modules: &Vec<HirModule>) {
         for (midx, module) in modules.iter().enumerate() {
-            let module_node = self.push_node(
-                NodeKind::Module { module_idx: midx }, 
-                Some(module.name)
-            );
-            
+            let module_node =
+                self.push_node(NodeKind::Module { module_idx: midx }, Some(module.name));
+
             let _ = module_node;
 
             // iterate items and create nodes per top-level item
@@ -181,56 +210,83 @@ impl DepGraph {
                     Hir::Func(f) => {
                         // function signature node
                         let sig_node = self.push_node(
-                            NodeKind::FuncSig { module_idx: midx, item_idx },
+                            NodeKind::FuncSig {
+                                module_idx: midx,
+                                item_idx,
+                            },
                             Some(f.name),
                         );
                         self.register_item_node(midx, item_idx, "func_sig", sig_node);
 
                         // function body node
                         let body_node = self.push_node(
-                            NodeKind::FuncBody { module_idx: midx, item_idx },
+                            NodeKind::FuncBody {
+                                module_idx: midx,
+                                item_idx,
+                            },
                             Some(f.name),
                         );
                         self.register_item_node(midx, item_idx, "func_body", body_node);
                     }
                     Hir::Struct(s) => {
                         let td = self.push_node(
-                            NodeKind::TypeDecl { module_idx: midx, item_idx },
+                            NodeKind::TypeDecl {
+                                module_idx: midx,
+                                item_idx,
+                            },
                             Some(s.name),
                         );
                         self.register_item_node(midx, item_idx, "type", td);
                     }
                     Hir::Enum(e) => {
                         let td = self.push_node(
-                            NodeKind::TypeDecl { module_idx: midx, item_idx },
+                            NodeKind::TypeDecl {
+                                module_idx: midx,
+                                item_idx,
+                            },
                             Some(e.name),
                         );
                         self.register_item_node(midx, item_idx, "type", td);
                     }
                     Hir::Const(c) => {
                         let cd = self.push_node(
-                            NodeKind::ConstDecl { module_idx: midx, item_idx },
+                            NodeKind::ConstDecl {
+                                module_idx: midx,
+                                item_idx,
+                            },
                             Some(c.name),
                         );
                         self.register_item_node(midx, item_idx, "const", cd);
                     }
                     Hir::Interface(t) => {
                         let td = self.push_node(
-                            NodeKind::TraitDecl { module_idx: midx, item_idx },
+                            NodeKind::TraitDecl {
+                                module_idx: midx,
+                                item_idx,
+                            },
                             Some(t.name),
                         );
                         self.register_item_node(midx, item_idx, "trait", td);
                     }
                     Hir::Impl(_i) => {
                         let id = self.push_node(
-                            NodeKind::TraitImpl { module_idx: midx, item_idx },
+                            NodeKind::TraitImpl {
+                                module_idx: midx,
+                                item_idx,
+                            },
                             None,
                         );
                         self.register_item_node(midx, item_idx, "impl", id);
                     }
                     _ => {
                         // other top-level items - treat as unknown for now
-                        let _id = self.push_node(NodeKind::ConstDecl { module_idx: midx, item_idx }, None);
+                        let _id = self.push_node(
+                            NodeKind::ConstDecl {
+                                module_idx: midx,
+                                item_idx,
+                            },
+                            None,
+                        );
                         // don't register by default
                     }
                 }
@@ -238,24 +294,19 @@ impl DepGraph {
         }
     }
 
-    pub fn phase_b_extract_edges<
-        RN,
-        RT,
-        WSig,
-        WBody,
-    >(
+    pub fn phase_b_extract_edges<RN, RT, WSig, WBody>(
         &mut self,
         modules: &Vec<HirModule>,
         _resolve_name: RN,
         resolve_typekey: RT,
         mut walk_signature_fn: WSig,
         mut walk_body_fn: WBody,
-    )
-    where
+    ) where
         RN: Fn(StrId, usize) -> Option<(usize, usize, &'static str)>,
         RT: Fn(&TypeKey, usize) -> Option<NodeIdx>,
         WSig: FnMut(&Hir, NodeIdx, &mut DepGraph, usize),
-        WBody: FnMut(&Hir, NodeIdx, &mut DepGraph, usize, &mut dyn FnMut(NodeIdx, Vec<TypeKey>, bool)),
+        WBody:
+            FnMut(&Hir, NodeIdx, &mut DepGraph, usize, &mut dyn FnMut(NodeIdx, Vec<TypeKey>, bool)),
     {
         // queue is used even when not necessary to avoid borrowck issues
         let mut inst_queue: Vec<(NodeIdx, Vec<TypeKey>, bool)> = Vec::new();
@@ -330,7 +381,9 @@ impl DepGraph {
                         let w = stack.pop().expect("stack underflow in tarjan");
                         onstack[w] = false;
                         component.push(w);
-                        if w == v { break; }
+                        if w == v {
+                            break;
+                        }
                     }
                     sccs.push(component);
                 }
@@ -375,15 +428,21 @@ impl DepGraph {
             let su = node_to_scc[u];
             for &v in &node.deps {
                 let sv = node_to_scc[v];
-                if su == sv { continue; };
-                if scc_adj[su].insert(sv) { indeg[sv] += 1; }
+                if su == sv {
+                    continue;
+                };
+                if scc_adj[su].insert(sv) {
+                    indeg[sv] += 1;
+                }
             }
         }
 
         // Kahn topo on SCC graph
         let mut q: VecDeque<usize> = VecDeque::new();
         for s in 0..scc_count {
-            if indeg[s] == 0 { q.push_back(s); }
+            if indeg[s] == 0 {
+                q.push_back(s);
+            }
         }
 
         let mut ordered_sccs: Vec<Vec<NodeIdx>> = Vec::with_capacity(scc_count);
@@ -391,7 +450,9 @@ impl DepGraph {
             ordered_sccs.push(sccs[s].clone());
             for &nbr in scc_adj[s].iter() {
                 indeg[nbr] -= 1;
-                if indeg[nbr] == 0 { q.push_back(nbr); }
+                if indeg[nbr] == 0 {
+                    q.push_back(nbr);
+                }
             }
         }
 
@@ -408,33 +469,73 @@ impl DepGraph {
         let node = &self.nodes[node_idx];
         let kind_str = match &node.kind {
             NodeKind::Module { module_idx } => format!("Module({})", module_idx),
-            NodeKind::TypeDecl { module_idx, item_idx } => format!("TypeDecl(m{}:i{})", module_idx, item_idx),
-            NodeKind::FuncSig { module_idx, item_idx } => format!("FuncSig(m{}:i{})", module_idx, item_idx),
-            NodeKind::FuncBody { module_idx, item_idx } => format!("FuncBody(m{}:i{})", module_idx, item_idx),
-            NodeKind::ConstDecl { module_idx, item_idx } => format!("Const(m{}:i{})", module_idx, item_idx),
-            NodeKind::TraitDecl { module_idx, item_idx } => format!("Trait(m{}:i{})", module_idx, item_idx),
-            NodeKind::TraitImpl { module_idx, item_idx } => format!("Impl(m{}:i{})", module_idx, item_idx),
-            NodeKind::GenericTypeInstance { base, args } => format!("GenericTypeInst(base={}, args={:?})", base, args),
-            NodeKind::GenericFnInstance { base, args } => format!("GenericFnInst(base={}, args={:?})", base, args),
+            NodeKind::TypeDecl {
+                module_idx,
+                item_idx,
+            } => format!("TypeDecl(m{}:i{})", module_idx, item_idx),
+            NodeKind::FuncSig {
+                module_idx,
+                item_idx,
+            } => format!("FuncSig(m{}:i{})", module_idx, item_idx),
+            NodeKind::FuncBody {
+                module_idx,
+                item_idx,
+            } => format!("FuncBody(m{}:i{})", module_idx, item_idx),
+            NodeKind::ConstDecl {
+                module_idx,
+                item_idx,
+            } => format!("Const(m{}:i{})", module_idx, item_idx),
+            NodeKind::TraitDecl {
+                module_idx,
+                item_idx,
+            } => format!("Trait(m{}:i{})", module_idx, item_idx),
+            NodeKind::TraitImpl {
+                module_idx,
+                item_idx,
+            } => format!("Impl(m{}:i{})", module_idx, item_idx),
+            NodeKind::GenericTypeInstance { base, args } => {
+                format!("GenericTypeInst(base={}, args={:?})", base, args)
+            }
+            NodeKind::GenericFnInstance { base, args } => {
+                format!("GenericFnInst(base={}, args={:?})", base, args)
+            }
         };
-        let hint_str = node.hint.map(|s| pool.resolve_string(&s).to_string()).unwrap_or_else(|| "<no-hint>".into());
-        format!("Node[{}] {} hint={} -> deps={:?}", node.idx, kind_str, hint_str, node.deps)
+        let hint_str = node
+            .hint
+            .map(|s| pool.resolve_string(&s).to_string())
+            .unwrap_or_else(|| "<no-hint>".into());
+        format!(
+            "Node[{}] {} hint={} -> deps={:?}",
+            node.idx, kind_str, hint_str, node.deps
+        )
     }
 
     /// Register an import dependency: current_module imports imported_module
     /// This creates an edge from current_module to imported_module in the dependency graph
     pub fn register_import(&mut self, current_module_idx: usize, imported_module_idx: usize) {
         // Create module nodes if they don't exist
-        let current_module_node: NodeIdx = self.lookup_item_node(current_module_idx, 0, "module")
+        let current_module_node: NodeIdx = self
+            .lookup_item_node(current_module_idx, 0, "module")
             .unwrap_or_else(|| {
-                let idx = self.push_node(NodeKind::Module { module_idx: current_module_idx }, None);
+                let idx = self.push_node(
+                    NodeKind::Module {
+                        module_idx: current_module_idx,
+                    },
+                    None,
+                );
                 self.register_item_node(current_module_idx, 0, "module", idx);
                 idx
             });
 
-        let imported_module_node: NodeIdx = self.lookup_item_node(imported_module_idx, 0, "module")
+        let imported_module_node: NodeIdx = self
+            .lookup_item_node(imported_module_idx, 0, "module")
             .unwrap_or_else(|| {
-                let idx = self.push_node(NodeKind::Module { module_idx: imported_module_idx }, None);
+                let idx = self.push_node(
+                    NodeKind::Module {
+                        module_idx: imported_module_idx,
+                    },
+                    None,
+                );
                 self.register_item_node(imported_module_idx, 0, "module", idx);
                 idx
             });
@@ -447,7 +548,7 @@ impl DepGraph {
     /// This creates a package hierarchy for namespace resolution
     pub fn register_package(&mut self, module_idx: usize, package_path: StrId, _pool: &StringPool) {
         self.package_hierarchy.insert(module_idx, package_path);
-        
+
         // Also set the hint on the module node for diagnostics
         if let Some(module_node_idx) = self.lookup_item_node(module_idx, 0, "module") {
             if let Some(node) = self.nodes.get_mut(module_node_idx) {
@@ -455,7 +556,7 @@ impl DepGraph {
             }
         }
     }
-    
+
     /// Get the package path for a module
     pub fn get_module_package(&self, module_idx: usize) -> Option<&str> {
         self.package_hierarchy.get(&module_idx).map(|s| s.as_str())
@@ -465,15 +566,26 @@ impl DepGraph {
     pub fn get_module_imports(&self, module_idx: usize) -> Vec<usize> {
         let mut imports: Vec<usize> = Vec::new();
 
-        let Some(module_node_idx) = self.lookup_item_node(module_idx, 0, "module") else { return imports; };
-        let Some(node) = self.nodes.get(module_node_idx) else { return imports; };
+        let Some(module_node_idx) = self.lookup_item_node(module_idx, 0, "module") else {
+            return imports;
+        };
+        let Some(node) = self.nodes.get(module_node_idx) else {
+            return imports;
+        };
 
         for &dep_idx in &node.deps {
-            let Some(dep_node) = self.nodes.get(dep_idx) else { continue; };
-            let NodeKind::Module { module_idx: imported_idx } = dep_node.kind else { continue; };
+            let Some(dep_node) = self.nodes.get(dep_idx) else {
+                continue;
+            };
+            let NodeKind::Module {
+                module_idx: imported_idx,
+            } = dep_node.kind
+            else {
+                continue;
+            };
             imports.push(imported_idx);
         }
-        
+
         imports
     }
 
@@ -481,15 +593,26 @@ impl DepGraph {
     pub fn get_module_importers(&self, module_idx: usize) -> Vec<usize> {
         let mut importers = Vec::new();
 
-        let Some(module_node_idx) = self.lookup_item_node(module_idx, 0, "module") else { return importers; };
-        let Some(node) = self.nodes.get(module_node_idx) else { return importers; };
+        let Some(module_node_idx) = self.lookup_item_node(module_idx, 0, "module") else {
+            return importers;
+        };
+        let Some(node) = self.nodes.get(module_node_idx) else {
+            return importers;
+        };
 
         for &rev_dep_idx in &node.rev_deps {
-            let Some(rev_dep_node) = self.nodes.get(rev_dep_idx) else { continue; };
-            let NodeKind::Module { module_idx: importer_idx } = rev_dep_node.kind else { continue; };
+            let Some(rev_dep_node) = self.nodes.get(rev_dep_idx) else {
+                continue;
+            };
+            let NodeKind::Module {
+                module_idx: importer_idx,
+            } = rev_dep_node.kind
+            else {
+                continue;
+            };
             importers.push(importer_idx);
         }
-        
+
         importers
     }
 
@@ -544,14 +667,15 @@ impl DepGraph {
         // Phase C: Drain instantiation queue for generics
         self.phase_c_instantiate_generics();
     }
-    
+
     /// Populate internal symbol table from item_index using node hints
     fn populate_symbol_table(&mut self) {
         for (key, &node_idx) in &self.item_index.clone() {
             let (module_idx, item_idx, tag): (usize, usize, &str) = *key;
             if let Some(node) = self.nodes.get(node_idx) {
                 if let Some(hint) = node.hint {
-                    self.symbol_table.insert((hint, module_idx), (module_idx, item_idx, tag));
+                    self.symbol_table
+                        .insert((hint, module_idx), (module_idx, item_idx, tag));
                 }
             }
         }
@@ -568,7 +692,8 @@ impl DepGraph {
                             self.walk_function_signature(f, sig_node, midx, pool);
                         }
                         // Function body depends on called functions and accessed types
-                        if let Some(body_node) = self.lookup_item_node(midx, item_idx, "func_body") {
+                        if let Some(body_node) = self.lookup_item_node(midx, item_idx, "func_body")
+                        {
                             self.walk_function_body(f, body_node, midx, pool);
                         }
                     }
@@ -602,7 +727,7 @@ impl DepGraph {
             if let Some(&node_idx) = self.instance_map.get(&key) {
                 // Instance depends on its base generic
                 self.add_edge(node_idx, key.base);
-                
+
                 // Instance also depends on the type arguments (if they're TypeDecl nodes)
                 // This would require a type resolver to map TypeKey -> NodeIdx
                 // For now, we just establish the base dependency
@@ -611,7 +736,13 @@ impl DepGraph {
     }
 
     /// Walk function signature to extract type dependencies
-    fn walk_function_signature(&mut self, func: &ir::hir::HirFunc, from_node: NodeIdx, module_idx: usize, pool: &StringPool) {
+    fn walk_function_signature(
+        &mut self,
+        func: &ir::hir::HirFunc,
+        from_node: NodeIdx,
+        module_idx: usize,
+        pool: &StringPool,
+    ) {
         // Depend on parameter types
         if let Some(params) = func.params {
             for param in params {
@@ -624,30 +755,48 @@ impl DepGraph {
     }
 
     /// Walk function body to extract call and type dependencies
-    fn walk_function_body(&mut self, func: &ir::hir::HirFunc, from_node: NodeIdx, module_idx: usize, pool: &StringPool) {
+    fn walk_function_body(
+        &mut self,
+        func: &ir::hir::HirFunc,
+        from_node: NodeIdx,
+        module_idx: usize,
+        pool: &StringPool,
+    ) {
         if let Some(body) = func.body {
             self.walk_stmt_for_deps(&body, from_node, module_idx, pool);
         }
     }
 
     /// Walk struct fields to extract type dependencies
-    fn walk_struct_fields(&mut self, s: &ir::hir::HirStruct, from_node: NodeIdx, module_idx: usize, pool: &StringPool) {
+    fn walk_struct_fields(
+        &mut self,
+        s: &ir::hir::HirStruct,
+        from_node: NodeIdx,
+        module_idx: usize,
+        pool: &StringPool,
+    ) {
         // Check if fields slice is valid before iterating
         if s.fields.is_empty() {
             return;
         }
-        
+
         for field in s.fields {
             self.add_type_dependency(from_node, Some(&field.field_type), module_idx, pool);
         }
     }
 
     /// Walk enum variants to extract type dependencies
-    fn walk_enum_variants(&mut self, e: &ir::hir::HirEnum, from_node: NodeIdx, module_idx: usize, pool: &StringPool) {
+    fn walk_enum_variants(
+        &mut self,
+        e: &ir::hir::HirEnum,
+        from_node: NodeIdx,
+        module_idx: usize,
+        pool: &StringPool,
+    ) {
         if e.variants.is_empty() {
             return;
         }
-        
+
         for variant in e.variants {
             for field in variant.fields {
                 self.add_type_dependency(from_node, Some(&field.field_type), module_idx, pool);
@@ -656,13 +805,25 @@ impl DepGraph {
     }
 
     /// Walk const value to extract dependencies
-    fn walk_const_value(&mut self, c: &ir::hir::ConstStmt, from_node: NodeIdx, module_idx: usize, pool: &StringPool) {
+    fn walk_const_value(
+        &mut self,
+        c: &ir::hir::ConstStmt,
+        from_node: NodeIdx,
+        module_idx: usize,
+        pool: &StringPool,
+    ) {
         self.add_type_dependency(from_node, Some(&c.ty), module_idx, pool);
         self.walk_expr_for_deps(&c.value, from_node, module_idx, pool);
     }
 
     /// Recursively walk statements to extract dependencies
-    fn walk_stmt_for_deps(&mut self, stmt: &ir::hir::HirStmt, from_node: NodeIdx, module_idx: usize, pool: &StringPool) {
+    fn walk_stmt_for_deps(
+        &mut self,
+        stmt: &ir::hir::HirStmt,
+        from_node: NodeIdx,
+        module_idx: usize,
+        pool: &StringPool,
+    ) {
         use ir::hir::HirStmt;
         match stmt {
             HirStmt::Let { ty, value, .. } => {
@@ -675,7 +836,11 @@ impl DepGraph {
             HirStmt::Expr(expr) => {
                 self.walk_expr_for_deps(expr, from_node, module_idx, pool);
             }
-            HirStmt::If { cond, then_block, else_block } => {
+            HirStmt::If {
+                cond,
+                then_block,
+                else_block,
+            } => {
                 self.walk_expr_for_deps(cond, from_node, module_idx, pool);
                 for s in *then_block {
                     self.walk_stmt_for_deps(s, from_node, module_idx, pool);
@@ -688,7 +853,12 @@ impl DepGraph {
                 self.walk_expr_for_deps(cond, from_node, module_idx, pool);
                 self.walk_stmt_for_deps(body, from_node, module_idx, pool);
             }
-            HirStmt::For { init, condition, increment, body } => {
+            HirStmt::For {
+                init,
+                condition,
+                increment,
+                body,
+            } => {
                 if let Some(init_stmt) = init {
                     self.walk_stmt_for_deps(init_stmt, from_node, module_idx, pool);
                 }
@@ -717,12 +887,22 @@ impl DepGraph {
                     self.walk_stmt_for_deps(s, from_node, module_idx, pool);
                 }
             }
+            // Deferred code still depends on whatever it references.
+            HirStmt::Defer(inner) => {
+                self.walk_stmt_for_deps(inner, from_node, module_idx, pool);
+            }
             _ => {}
         }
     }
 
     /// Recursively walk expressions to extract dependencies
-    fn walk_expr_for_deps(&mut self, expr: &ir::hir::HirExpr, from_node: NodeIdx, module_idx: usize, pool: &StringPool) {
+    fn walk_expr_for_deps(
+        &mut self,
+        expr: &ir::hir::HirExpr,
+        from_node: NodeIdx,
+        module_idx: usize,
+        pool: &StringPool,
+    ) {
         use ir::hir::HirExpr;
         match expr {
             HirExpr::Call { callee, args } => {
@@ -790,12 +970,18 @@ impl DepGraph {
     }
 
     /// Add a dependency edge for a type reference
-    fn add_type_dependency(&mut self, from_node: NodeIdx, ty: Option<&ir::hir::HirType>, module_idx: usize, pool: &StringPool) {
+    fn add_type_dependency(
+        &mut self,
+        from_node: NodeIdx,
+        ty: Option<&ir::hir::HirType>,
+        module_idx: usize,
+        pool: &StringPool,
+    ) {
         let ty = match ty {
             Some(t) => t,
             None => return,
         };
-        
+
         use ir::hir::HirType;
         match ty {
             HirType::Struct(name, _) | HirType::Enum(name, _) | HirType::Interface(name, _) => {
@@ -807,7 +993,7 @@ impl DepGraph {
                     }
                     return;
                 }
-                
+
                 // Try to find in imported modules
                 let imports = self.get_module_imports(module_idx);
                 for imported_idx in imports {
@@ -828,34 +1014,68 @@ impl DepGraph {
     }
 
     /// Get all functions that call a given function
-    pub fn get_function_callers(&self, target_module: usize, target_item: usize) -> Vec<(usize, usize)> {
+    pub fn get_function_callers(
+        &self,
+        target_module: usize,
+        target_item: usize,
+    ) -> Vec<(usize, usize)> {
         let mut callers: Vec<(usize, usize)> = Vec::new();
 
-        let Some(target_node) = self.lookup_item_node(target_module, target_item, "func_body") else { return callers; };
-        let Some(node) = self.nodes.get(target_node) else { return callers; };
+        let Some(target_node) = self.lookup_item_node(target_module, target_item, "func_body")
+        else {
+            return callers;
+        };
+        let Some(node) = self.nodes.get(target_node) else {
+            return callers;
+        };
 
         for &caller_idx in &node.rev_deps {
-            let Some(caller_node) = self.nodes.get(caller_idx) else { continue; };
-            let NodeKind::FuncBody { module_idx, item_idx } = caller_node.kind else { continue; };
+            let Some(caller_node) = self.nodes.get(caller_idx) else {
+                continue;
+            };
+            let NodeKind::FuncBody {
+                module_idx,
+                item_idx,
+            } = caller_node.kind
+            else {
+                continue;
+            };
             callers.push((module_idx, item_idx));
         }
-        
+
         callers
     }
 
     /// Get all functions that a given function calls
-    pub fn get_function_callees(&self, caller_module: usize, caller_item: usize) -> Vec<(usize, usize)> {
+    pub fn get_function_callees(
+        &self,
+        caller_module: usize,
+        caller_item: usize,
+    ) -> Vec<(usize, usize)> {
         let mut callees: Vec<(usize, usize)> = Vec::new();
 
-        let Some(caller_node) = self.lookup_item_node(caller_module, caller_item, "func_body") else { return callees; };
-        let Some(node) = self.nodes.get(caller_node) else { return callees; };
+        let Some(caller_node) = self.lookup_item_node(caller_module, caller_item, "func_body")
+        else {
+            return callees;
+        };
+        let Some(node) = self.nodes.get(caller_node) else {
+            return callees;
+        };
 
         for &callee_idx in &node.deps {
-            let Some(callee_node) = self.nodes.get(callee_idx) else { continue; };
-            let NodeKind::FuncBody { module_idx, item_idx } = callee_node.kind else { continue; };
+            let Some(callee_node) = self.nodes.get(callee_idx) else {
+                continue;
+            };
+            let NodeKind::FuncBody {
+                module_idx,
+                item_idx,
+            } = callee_node.kind
+            else {
+                continue;
+            };
             callees.push((module_idx, item_idx));
         }
-        
+
         callees
     }
 
@@ -865,32 +1085,60 @@ impl DepGraph {
         let mut cycles: Vec<Vec<(usize, usize)>> = Vec::new();
 
         for scc in sccs {
-            if scc.len() < 1 { continue; }
+            if scc.len() < 1 {
+                continue;
+            }
             let mut func_refs: Vec<(usize, usize)> = Vec::new();
             for &node_idx in &scc {
-                let Some(node) = self.nodes.get(node_idx) else { continue; };
-                let NodeKind::FuncBody { module_idx, item_idx } = node.kind else { continue; };
+                let Some(node) = self.nodes.get(node_idx) else {
+                    continue;
+                };
+                let NodeKind::FuncBody {
+                    module_idx,
+                    item_idx,
+                } = node.kind
+                else {
+                    continue;
+                };
                 func_refs.push((module_idx, item_idx));
             }
-            if !func_refs.is_empty() { cycles.push(func_refs); }
+            if !func_refs.is_empty() {
+                cycles.push(func_refs);
+            }
         }
 
         cycles
     }
 
     /// Get all types that a function depends on
-    pub fn get_function_type_deps(&self, module_idx: usize, item_idx: usize) -> Vec<(usize, usize)> {
+    pub fn get_function_type_deps(
+        &self,
+        module_idx: usize,
+        item_idx: usize,
+    ) -> Vec<(usize, usize)> {
         let mut type_deps: Vec<(usize, usize)> = Vec::new();
 
-        let Some(sig_node) = self.lookup_item_node(module_idx, item_idx, "func_sig") else { return type_deps; };
-        let Some(node): Option<&DepNode> = self.nodes.get(sig_node) else { return type_deps; };
+        let Some(sig_node) = self.lookup_item_node(module_idx, item_idx, "func_sig") else {
+            return type_deps;
+        };
+        let Some(node): Option<&DepNode> = self.nodes.get(sig_node) else {
+            return type_deps;
+        };
 
         for &dep_idx in &node.deps {
-            let Some(dep_node): Option<&DepNode> = self.nodes.get(dep_idx) else { continue; };
-            let NodeKind::TypeDecl { module_idx: m, item_idx: i } = dep_node.kind else { continue; };
+            let Some(dep_node): Option<&DepNode> = self.nodes.get(dep_idx) else {
+                continue;
+            };
+            let NodeKind::TypeDecl {
+                module_idx: m,
+                item_idx: i,
+            } = dep_node.kind
+            else {
+                continue;
+            };
             type_deps.push((m, i));
         }
-        
+
         type_deps
     }
 
@@ -905,8 +1153,16 @@ impl DepGraph {
         for scc in sccs.iter().rev() {
             let mut func_refs: Vec<(usize, usize)> = Vec::new();
             for node_idx in scc {
-                let Some(node) = self.nodes.get(*node_idx) else { continue; };
-                let NodeKind::FuncBody { module_idx, item_idx } = node.kind else { continue; };
+                let Some(node) = self.nodes.get(*node_idx) else {
+                    continue;
+                };
+                let NodeKind::FuncBody {
+                    module_idx,
+                    item_idx,
+                } = node.kind
+                else {
+                    continue;
+                };
                 func_refs.push((module_idx, item_idx));
             }
             if !func_refs.is_empty() {
@@ -934,8 +1190,12 @@ impl DepGraph {
         // key: &(usize, usize, &str)
         for (key, &node_idx) in &self.item_index {
             let (module_idx, item_idx, tag): &(usize, usize, &str) = key;
-            let Some(node) = self.nodes.get(node_idx) else { continue; };
-            let Some(hint) = node.hint else { continue; };
+            let Some(node) = self.nodes.get(node_idx) else {
+                continue;
+            };
+            let Some(hint) = node.hint else {
+                continue;
+            };
             table.insert((hint, *module_idx), (*module_idx, *item_idx, tag));
         }
 
@@ -944,7 +1204,12 @@ impl DepGraph {
 
     /// Resolve a name to its definition node
     /// Searches in current module first, then in imported modules
-    pub fn resolve_name(&self, name: StrId, current_module_idx: usize, symbol_table: &HashMap<(StrId, usize), (usize, usize, &'static str)>) -> Option<NodeIdx> {
+    pub fn resolve_name(
+        &self,
+        name: StrId,
+        current_module_idx: usize,
+        symbol_table: &HashMap<(StrId, usize), (usize, usize, &'static str)>,
+    ) -> Option<NodeIdx> {
         // First try current module
         if let Some(&(m, i, tag)) = symbol_table.get(&(name, current_module_idx)) {
             return self.lookup_item_node(m, i, tag);
@@ -953,7 +1218,9 @@ impl DepGraph {
         // Then try imported modules
         let imports: Vec<usize> = self.get_module_imports(current_module_idx);
         for imported_idx in imports {
-            let Some(&(m, i, tag)) = symbol_table.get(&(name, imported_idx)) else { continue; };
+            let Some(&(m, i, tag)) = symbol_table.get(&(name, imported_idx)) else {
+                continue;
+            };
             return self.lookup_item_node(m, i, tag);
         }
 
@@ -970,17 +1237,41 @@ impl DepGraph {
         // Reverse the SCC order because scc_topo_order gives us dependents first, we want dependencies first
         for scc in sccs.iter().rev() {
             for node_idx in scc {
-                let Some(node) = self.nodes.get(*node_idx) else { continue; };
-                let NodeKind::Module { module_idx } = node.kind else { continue; };
-                if seen.insert(module_idx) { order.push(module_idx); }
+                let Some(node) = self.nodes.get(*node_idx) else {
+                    continue;
+                };
+                let NodeKind::Module { module_idx } = node.kind else {
+                    continue;
+                };
+                if seen.insert(module_idx) {
+                    order.push(module_idx);
+                }
             }
         }
 
         order
     }
 
+    /// Test-only thin wrapper that exposes the private `walk_stmt_for_deps` so
+    /// unit tests can exercise it directly without going through `build_from_hir`.
+    #[cfg(test)]
+    pub fn walk_stmt_for_deps_pub(
+        &mut self,
+        stmt: &ir::hir::HirStmt,
+        from_node: NodeIdx,
+        module_idx: usize,
+        pool: &zetaruntime::string_pool::StringPool,
+    ) {
+        self.walk_stmt_for_deps(stmt, from_node, module_idx, pool);
+    }
+
     /// Check if user code can access a stdlib item (visibility check)
-    pub fn can_access(&self, from_module: usize, target_module: usize, _target_item_idx: usize) -> bool {
+    pub fn can_access(
+        &self,
+        from_module: usize,
+        target_module: usize,
+        _target_item_idx: usize,
+    ) -> bool {
         if from_module == target_module {
             return true;
         }
