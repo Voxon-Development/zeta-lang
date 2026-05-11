@@ -483,7 +483,8 @@ impl Lexer {
                 ByteClass::Colon => {
                     pos += 1;
                     column += 1;
-                    if peek!(0) == b'=' {
+                    let peeked = peek!(0);
+                    if peeked == b'=' {
                         pos += 1;
                         column += 1;
                         push!(TokenKind::ColonAssign);
