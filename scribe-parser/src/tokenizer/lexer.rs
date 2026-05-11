@@ -133,15 +133,19 @@ impl Lexer {
         Ok(self.tokenize(src, file_name, bump))
     }
 
-    pub fn tokenize<'a>(
+    pub fn tokenize<'a, 'bump>(
         &self,
         src: &str,
         file_name: &'a str,
-        bump: &'a GrowableBump<'a>,
-    ) -> Tokens<'a> {
+        bump: &'bump GrowableBump<'bump>,
+    ) -> Tokens<'bump>
+    where
+        'a: 'bump,
+    {
         let bytes = src.as_bytes();
         let len = bytes.len();
-        let mut tokens: Vec<Token<'a>> = Vec::with_capacity(len / 4);
+        #[allow(unused_mut)] // Used by macros like `push`
+        let mut tokens: Vec<Token<'bump>> = Vec::with_capacity(len / 4);
 
         let mut pos = 0usize; // byte offset into src
         let mut line = 1usize;
