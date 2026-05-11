@@ -55,28 +55,34 @@ impl<'a> Cursor<'a> {
 
     #[inline]
     pub fn is_eof(&self) -> bool {
-        self.index >= self.tokens.len() || self.tokens[self.index].kind == TokenKind::EOF
+        self.peek() == TokenKind::EOF
     }
 
     #[inline]
     pub fn peek(&self) -> TokenKind {
-        if self.index >= self.tokens.len() {
-            TokenKind::EOF
-        } else {
-            self.tokens[self.index].kind
+        let mut idx = self.index;
+        while idx < self.tokens.len() {
+            match self.tokens[idx].kind {
+                TokenKind::LineComment | TokenKind::DocComment => idx += 1,
+                kind => return kind,
+            }
         }
+        TokenKind::EOF
     }
 
     #[inline]
     pub fn peek_token(&self) -> Token<'a> {
-        if self.index >= self.tokens.len() {
-            Token {
-                kind: TokenKind::EOF,
-                text: None,
-                span: Default::default(),
+        let mut idx = self.index;
+        while idx < self.tokens.len() {
+            match self.tokens[idx].kind {
+                TokenKind::LineComment | TokenKind::DocComment => idx += 1,
+                _ => return self.tokens[idx],
             }
-        } else {
-            self.tokens[self.index]
+        }
+        Token {
+            kind: TokenKind::EOF,
+            text: None,
+            span: Default::default(),
         }
     }
 
@@ -88,6 +94,23 @@ impl<'a> Cursor<'a> {
     #[inline]
     pub fn advance(&mut self) {
         self.index += 1;
+        // Skip over any comments that follow
+        while self.index < self.tokens.len() {
+            match self.tokens[self.index].kind {
+                TokenKind::LineComment | TokenKind::DocComment => self.index += 1,
+                _ => break,
+            }
+        }
+    }
+
+    #[inline]
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    #[inline]
+    pub fn set_index(&mut self, index: usize) {
+        self.index = index;
     }
 
     #[inline]
@@ -123,6 +146,7 @@ impl<'a> Cursor<'a> {
 
     #[inline]
     pub fn expect_ident(&mut self) -> Result<(StrId, SourceSpan<'a>), ParserError<'a>> {
+        self.skip_comments();
         let tok = self.peek_token();
         if tok.kind == TokenKind::Ident {
             self.advance();
@@ -133,6 +157,19 @@ impl<'a> Cursor<'a> {
                 found: tok.kind,
                 span: tok.span,
             })
+        }
+    }
+
+    /// Skip over comment tokens (LineComment and DocComment)
+    #[inline]
+    pub fn skip_comments(&mut self) {
+        loop {
+            match self.peek() {
+                TokenKind::LineComment | TokenKind::DocComment => {
+                    self.advance();
+                }
+                _ => break,
+            }
         }
     }
 }
@@ -278,6 +315,7 @@ pub enum TokenKind {
     EOF,
     Unknown,
     Internal,
+    ColonColon,
 }
 
 impl fmt::Display for TokenKind {
@@ -426,6 +464,7 @@ impl fmt::Display for TokenKind {
             Unknown => "unknown",
             NotAssign => "!=",
             Internal => "internal",
+            ColonColon => "::",
         };
 
         f.write_str(s)

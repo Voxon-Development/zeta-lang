@@ -547,6 +547,13 @@ where
         name: StrId,
         span: SourceSpan<'a>,
     },
+    /// An identifier with generic arguments, used for struct initialization with explicit generics:
+    /// `Container<i32> { value: 42 }`
+    GenericIdent {
+        name: StrId,
+        generic_args: &'bump [Type<'a, 'bump>],
+        span: SourceSpan<'a>,
+    },
     Boolean {
         value: bool,
         span: SourceSpan<'a>,
@@ -575,6 +582,7 @@ where
     },
     Call {
         callee: &'bump Expr<'a, 'bump>,
+        generic_args: &'bump [Type<'a, 'bump>],
         arguments: &'bump [Expr<'a, 'bump>],
         span: SourceSpan<'a>,
     },

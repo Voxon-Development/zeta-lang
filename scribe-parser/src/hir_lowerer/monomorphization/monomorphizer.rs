@@ -59,12 +59,13 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
 
         // Check if we've already monomorphized this function with these types
         let key = (orig_name.clone(), suffix.clone());
-        let mut instantiated_functions = self.instantiated_functions.borrow_mut();
-
-        if let Some(existing) = instantiated_functions.get(&key) {
-            // Return existing monomorphized function name
-            return Some(*existing);
-        }
+        {
+            let instantiated_functions = self.instantiated_functions.borrow();
+            if let Some(existing) = instantiated_functions.get(&key) {
+                // Return existing monomorphized function name
+                return Some(*existing);
+            }
+        } // Release borrow before proceeding
 
         // Generate new monomorphized function name
         const UNDERSCORE_LEN: usize = 1;
@@ -79,6 +80,7 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
         // Update function name and body with monomorphized types
         new_func.name = new_name;
 
+        // Monomorphize body (may trigger recursive monomorphization, so no borrows held)
         if let Some(body) = new_func.body {
             let new_body = self.monomorphize_stmt(&body, substitutions);
             new_func.body = Some(*self.bump.alloc_value_immutable(new_body));
@@ -90,7 +92,7 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
             .insert(new_func.name.clone(), new_func);
 
         // Cache the monomorphized function name
-        instantiated_functions.insert(key, new_name);
+        self.instantiated_functions.borrow_mut().insert(key, new_name);
 
         Some(new_name)
     }
