@@ -211,13 +211,13 @@ impl<'a, 'bump> HirParam<'a, 'bump> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HirGeneric<'a, 'bump> {
     pub name: StrId,
     pub constraints: &'bump [HirType<'a, 'bump>],
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HirType<'a, 'bump>
 where
     'bump: 'a,
