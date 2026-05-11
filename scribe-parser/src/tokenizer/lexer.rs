@@ -488,6 +488,10 @@ impl Lexer {
                         pos += 1;
                         column += 1;
                         push!(TokenKind::ColonAssign);
+                    } else if peeked == b':' {
+                        pos += 1;
+                        column += 1;
+                        push!(TokenKind::ColonColon);
                     } else {
                         push!(TokenKind::Colon);
                     }
