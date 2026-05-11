@@ -343,6 +343,64 @@ where
             types: self.bump.alloc_slice_copy(&types),
         }))
     }
+
+    pub fn parse_enum_decl(&mut self, visibility: Visibility) -> Result<Stmt<'a, 'bump>, ParserError<'a>> {
+        self.cursor.consume(TokenKind::Enum);
+        let (name, _span) = self.cursor.expect_ident()?;
+        let generics = self.parse_generics()?;
+
+        let mut variants = Vec::new();
+
+        self.cursor.expect(TokenKind::LBrace)?;
+        while self.cursor.peek() != TokenKind::RBrace && self.cursor.peek() != TokenKind::EOF {
+            variants.push(self.parse_variant()?);
+            if !self.cursor.consume(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.cursor.expect(TokenKind::RBrace)?;
+        Ok(Stmt::EnumDecl(self.bump.alloc_value_immutable(EnumDecl {
+            name,
+            visibility,
+            generics,
+            variants: self.bump.alloc_slice_copy(&variants),
+        })))
+    }
+
+    /// Allows `VariantName` or `VariantName { first_field: type, second_field: type }`
+    fn parse_variant(&mut self) -> Result<EnumVariant<'a, 'bump>, ParserError<'a>> {
+        let (name, _span) = self.cursor.expect_ident()?;
+
+        if self.cursor.peek() != TokenKind::LBrace {
+            Ok(EnumVariant { name, fields: &[] })
+        } else {
+            self.cursor.advance();
+            let (variant_name, variant_span) = self.cursor.expect_ident()?;
+            let mut fields = Vec::new();
+            while self.cursor.peek() != TokenKind::RBrace && self.cursor.peek() != TokenKind::EOF {
+                // visibility
+                let visibility = match self.cursor.peek() {
+                    TokenKind::Private => Visibility::Private,
+                    TokenKind::Module => Visibility::Module,
+                    TokenKind::Internal => Visibility::Internal,
+                    _ => Visibility::Public,
+                };
+
+                let (field_name, field_span) = self.cursor.expect_ident()?;
+                self.cursor.expect(TokenKind::Colon)?;
+                let field_type = self.parse_type()?;
+
+                // TODO: generics
+                fields.push(Field { name: field_name, field_type, visibility, generics: None });
+                if !self.cursor.consume(TokenKind::Comma) {
+                    break;
+                }
+            }
+
+            self.cursor.expect(TokenKind::RBrace)?;
+            Ok(EnumVariant { name, fields: self.bump.alloc_slice_copy(&fields) })
+        }
+    }
 }
 
 fn token_to_visibility(token_kind: TokenKind) -> Visibility {
