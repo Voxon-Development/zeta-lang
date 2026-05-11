@@ -158,7 +158,7 @@ impl CraneliftBackend {
                         if clif_ty == types::F32 {
                             builder.ins().f32const(*i as f32)
                         } else if clif_ty == types::F64 {
-                            builder.ins().f64const(*i as f64)
+                            builder.ins().f64const(*i)
                         } else {
                             unreachable!("ConstFloat with non-float type")
                         }
@@ -329,7 +329,7 @@ impl CraneliftBackend {
             }
             Instruction::Alloc { dest, ty, count: _ } => {
                 let size_bytes = sizeof_ssa(ty, self.target).unwrap();
-                let ptr: cranelift_codegen::ir::Value = cranelift_intrinsics::stack_alloc(builder, &mut self.module, size_bytes as usize);
+                let ptr: cranelift_codegen::ir::Value = cranelift_intrinsics::stack_alloc(builder, &mut self.module, size_bytes);
                 let var: Variable = Variable::new(var_map.len());
                 builder.def_var(var, ptr);
                 var_map.insert(*dest, var);

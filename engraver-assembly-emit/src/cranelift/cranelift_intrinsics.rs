@@ -252,10 +252,7 @@ pub fn codegen_intrinsic(
         }
 
         Intrinsic::PtrCastToRaw => {
-            match ptr_cast_to_raw(args, builder, module) {
-                Ok(value) => value,
-                Err(value) => return value,
-            }
+            ptr_cast_to_raw(args, builder, module).unwrap_or_else(|value| value)
         }
 
         Intrinsic::PtrAdd => {
