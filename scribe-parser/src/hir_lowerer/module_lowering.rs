@@ -68,7 +68,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
 
     pub fn lower_module(
         &mut self,
-        stmts: Vec<Stmt<'a, '_>, &'_ GrowableBump>,
+        stmts: Vec<Stmt<'a, 'bump>>,
     ) -> HirModule<'a, 'bump> {
         self.collect_prototypes(&stmts);
         let (imports, items, pkg_name) = self.lower_function_bodies(stmts);
@@ -131,7 +131,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
 
     pub fn lower_function_bodies(
         &mut self,
-        stmts: Vec<Stmt<'a, '_>, &'_ GrowableBump>,
+        stmts: Vec<Stmt<'a, 'bump>>,
     ) -> (Vec<Path<'bump>>, Vec<Hir<'a, 'bump>>, Option<StrId>) {
         let mut imports: Vec<Path<'bump>> = Vec::with_capacity(64);
         let mut items: Vec<Hir<'a, 'bump>> = Vec::with_capacity(64);
@@ -154,11 +154,12 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                     for &body_stmt in module_decl.body {
                         match body_stmt {
                             Stmt::FuncDecl(f) => {
+                                // Lower body first (needs immutable borrow of functions)
+                                let lowered_body = f.body.map(|b| self.lower_block(b));
+                                // Now do mutable borrow to update function
                                 let mut func_binding = self.ctx.functions.borrow_mut();
                                 let func = func_binding.get_mut(&f.name).unwrap();
-                                if let Some(f_body) = f.body {
-                                    func.body = Some(self.lower_block(f_body));
-                                }
+                                func.body = lowered_body;
                                 items.push(Hir::Func(self.ctx.bump.alloc_value(func.clone())));
                             }
                             other => items.push(self.lower_toplevel(other)),
@@ -166,11 +167,12 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                     }
                 }
                 Stmt::FuncDecl(f) => {
+                    // Lower body first (needs immutable borrow of functions)
+                    let lowered_body = f.body.map(|b| self.lower_block(b));
+                    // Now do mutable borrow to update function
                     let mut func_binding = self.ctx.functions.borrow_mut();
                     let func = func_binding.get_mut(&f.name).unwrap();
-                    if let Some(f_body) = f.body {
-                        func.body = Some(self.lower_block(f_body));
-                    }
+                    func.body = lowered_body;
                     items.push(Hir::Func(self.ctx.bump.alloc_value(func.clone())));
                 }
                 other => items.push(self.lower_toplevel(other)),
