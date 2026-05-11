@@ -4,7 +4,7 @@ use ir::ast::{Expr, InlineModifier, Op, Pattern, Type};
 use ir::hir::{
     AssignmentOperator, HirExpr, HirFunc, HirPattern, HirStmt, HirType, Operator, StrId,
 };
-use ir::ir_hasher::FxHashBuilder;
+use ir::ir_hasher::{FxHashBuilder, FxHashMap};
 use ir::span::SourceSpan;
 use std::collections::HashMap;
 
@@ -16,8 +16,49 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         match expr {
             Expr::Null { .. } => HirExpr::Null,
             Expr::Call {
-                callee, arguments, ..
-            } => self.lower_expr_call(callee, arguments),
+                callee,
+                generic_args,
+                arguments,
+                ..
+            } => {
+                // If there are generic args, handle monomorphization
+                if !generic_args.is_empty() {
+                    if let Expr::Ident { name, .. } = callee {
+                        let hir_types: Vec<HirType> = generic_args
+                            .iter()
+                            .map(|t| self.lower_type(t))
+                            .collect();
+
+                        // Try to find and monomorphize the function
+                        let func_opt = self.ctx.functions.borrow().get(&name).cloned();
+                        if let Some(func) = func_opt {
+                            let mut substitutions = FxHashMap::default();
+                            if let Some(params) = func.generics {
+                                for (i, param) in params.iter().enumerate() {
+                                    if let Some(hir_ty) = hir_types.get(i) {
+                                        substitutions.insert(param.name, *hir_ty);
+                                    }
+                                }
+                            }
+
+                            if let Some(mono_name) = self.mono.monomorphize_function(&func, &substitutions) {
+                                // Call the monomorphized version
+                                let args_vec: Vec<HirExpr> =
+                                    arguments.iter().map(|a| self.lower_expr(a)).collect();
+                                let args = self.ctx.bump.alloc_slice(&args_vec);
+
+                                return HirExpr::Call {
+                                    callee: self.ctx.bump.alloc_value(HirExpr::Ident(mono_name)),
+                                    args,
+                                };
+                            }
+                        }
+                    }
+                }
+
+                // Regular call without generics (or fallback)
+                self.lower_expr_call(callee, arguments)
+            }
             Expr::FieldAccess {
                 object,
                 field,
@@ -35,6 +76,35 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             Expr::String { value, .. } => HirExpr::String(*value),
             Expr::Boolean { value, .. } => HirExpr::Boolean(*value),
             Expr::Ident { name, .. } => HirExpr::Ident(*name),
+            Expr::GenericIdent { name, generic_args, .. } => {
+                // Look up the generic struct/function and monomorphize it
+                let hir_types: Vec<HirType> = generic_args
+                    .iter()
+                    .map(|t| self.lower_type(t))
+                    .collect();
+
+                // Try to find a generic function with this name
+                let func_opt = self.ctx.functions.borrow().get(name).cloned();
+                if let Some(func) = func_opt {
+                    // Build substitutions from generic params to concrete types
+                    let mut substitutions = FxHashMap::default();
+                    if let Some(params) = func.generics {
+                        for (i, param) in params.iter().enumerate() {
+                            if let Some(hir_ty) = hir_types.get(i) {
+                                substitutions.insert(param.name, *hir_ty);
+                            }
+                        }
+                    }
+
+                    // Monomorphize and return the new function name
+                    if let Some(mono_name) = self.mono.monomorphize_function(&func, &substitutions) {
+                        return HirExpr::Ident(mono_name);
+                    }
+                }
+
+                // Fallback: return original name (will fail later if not found)
+                HirExpr::Ident(*name)
+            }
 
             Expr::Decimal { value, .. } => HirExpr::Decimal(*value),
 
@@ -124,11 +194,13 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             }
 
             Expr::Char { value, .. } => {
+                // TODO
                 // Convert char to its numeric value
                 HirExpr::Number(*value as i64)
             }
 
             Expr::FieldInit { ident, expr, span } => {
+                // TODO
                 // FieldInit is used in struct initialization and should be lowered to a simple expression
                 // The field name is tracked separately in RecordInit, so we just lower the expression
                 let lowered_expr = self.lower_expr(expr);
@@ -139,6 +211,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             }
 
             Expr::If { if_stmt, span } => {
+                // TODO
                 // Lower if statement as an expression
                 // For now, convert if expression to an empty expression list
                 // Proper if-expression support would need HIR changes to support control flow as expressions
@@ -148,7 +221,8 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 }
             }
 
-            Expr::Match { match_stmt, span } => {
+            Expr::Match { match_stmt: _match_stmt, span } => {
+                // TODO
                 // Lower match statement as an expression
                 // This is a placeholder - proper match-expression support would need HIR changes
                 HirExpr::ExprList {
