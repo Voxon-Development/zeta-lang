@@ -46,7 +46,7 @@ pub enum CompilerError<'a> {
     InvalidFileName(Vec<u8>),
 
     #[error("Parser error: {0:#?}")]
-    ParserError(Vec<ParserError<'a>>),
+    ParserError(Vec<DiagnosticError<'a>>),
 
     #[error("Failed to emit module: {0}")]
     FinishError(EmitError),

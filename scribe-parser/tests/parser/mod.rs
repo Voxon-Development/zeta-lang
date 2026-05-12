@@ -5,3 +5,4 @@ mod imports_modules;
 mod match_defer_static;
 mod pointers;
 pub mod statements;
+pub mod diagnostic_tests;

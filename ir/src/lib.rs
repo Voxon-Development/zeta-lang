@@ -9,3 +9,5 @@ pub mod span;
 pub mod pretty;
 pub mod layout;
 pub mod tokens;
+pub mod diagnostics_context;
+pub mod tests;

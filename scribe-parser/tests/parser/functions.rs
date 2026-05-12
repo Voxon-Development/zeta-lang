@@ -31,8 +31,6 @@ mod tests {
         }};
     }
 
-    // ── Name ─────────────────────────────────────────────────────────────────
-
     #[test]
     fn test_simple_name() {
         let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
@@ -68,8 +66,6 @@ mod tests {
         parse("fn () {}", bump);
     }
 
-    // ── Visibility ───────────────────────────────────────────────────────────
-
     #[test]
     fn test_visibility_public_by_default() {
         let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
@@ -99,8 +95,6 @@ mod tests {
         assert_eq!(f.function_metadata.visibility, Visibility::Internal);
     }*/
 
-    // ── Safety ───────────────────────────────────────────────────────────────
-
     #[test]
     fn test_safe_by_default() {
         let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
@@ -114,8 +108,6 @@ mod tests {
         let f = func!(parse("unsafe fn foo() {}", bump));
         assert_eq!(f.function_metadata.func_safety, FuncSafety::Unsafe);
     }
-
-    // ── Inline modifiers ─────────────────────────────────────────────────────
 
     #[test]
     fn test_inline_modifier() {
@@ -166,8 +158,6 @@ mod tests {
         parse("noinline noinline fn foo() {}", bump);
     }
 
-    // ── Extern / ABI ─────────────────────────────────────────────────────────
-
     #[test]
     fn test_extern_c_abi() {
         let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
@@ -184,8 +174,6 @@ mod tests {
         let f = func!(parse("fn foo() {}", bump));
         assert_eq!(f.function_metadata.extern_modifier, ExternModifier::None);
     }
-
-    // ── Generics ─────────────────────────────────────────────────────────────
 
     #[test]
     fn test_no_generics() {
@@ -230,8 +218,6 @@ mod tests {
         let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
         parse("fn foo<T() {}", bump);
     }
-
-    // ── Params ───────────────────────────────────────────────────────────────
 
     #[test]
     fn test_no_params() {

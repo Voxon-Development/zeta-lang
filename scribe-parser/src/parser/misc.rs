@@ -1,6 +1,6 @@
 use crate::parser::descent_parser::DescentParser;
 use ir::ast::{Generic, NormalParam, Param, ThisParam, Type, TypeKind, Visibility};
-use ir::errors::error::ParserError;
+use ir::errors::error::DiagnosticError;
 use ir::hir::StrId;
 use ir::span::SourceSpan;
 use ir::tokens::{Token, TokenKind};
@@ -12,7 +12,7 @@ where
 {
     pub fn parse_generics(
         &mut self,
-    ) -> Result<Option<&'bump [Generic<'a, 'bump>]>, ParserError<'a>> {
+    ) -> Result<Option<&'bump [Generic<'a, 'bump>]>, DiagnosticError<'a>> {
         // No generics present
         if self.cursor.peek() != TokenKind::Lt {
             return Ok(None);
@@ -39,7 +39,7 @@ where
                 let mut types = Vec::new_in(self.bump);
 
                 loop {
-                    let ty = self.parse_type()?; // assumes you have parse_type()
+                    let ty = self.parse_type()?;
                     types.push(ty);
 
                     if !self.cursor.consume(TokenKind::Comma)
@@ -72,7 +72,7 @@ where
         Ok(Some(self.bump.alloc_slice_copy(&generics)))
     }
 
-    pub fn parse_params(&mut self) -> Result<Option<&'bump [Param<'a, 'bump>]>, ParserError<'a>> {
+    pub fn parse_params(&mut self) -> Result<Option<&'bump [Param<'a, 'bump>]>, DiagnosticError<'a>> {
         // No generics present
         if self.cursor.peek() != TokenKind::LParen {
             return Ok(None);
@@ -183,11 +183,9 @@ where
         Ok(Some(self.bump.alloc_slice_copy(&params)))
     }
 
-    pub(crate) fn parse_type(&mut self) -> Result<Type<'a, 'bump>, ParserError<'a>> {
-        // ── Error prefix: {E1, E2}!Type or SingleError!Type ──────────────────
+    pub(crate) fn parse_type(&mut self) -> Result<Type<'a, 'bump>, DiagnosticError<'a>> {
         let error = match self.cursor.peek() {
             TokenKind::LBrace => {
-                // {E1, E2, ...}!
                 self.cursor.advance();
                 let mut error_types = Vec::new();
                 loop {
@@ -225,9 +223,6 @@ where
             }
 
             TokenKind::Ident => {
-                // Could be `SingleError!Type` — peek ahead for `!`
-                // We only treat it as an error prefix if the token after the ident is `!`
-                // Otherwise fall through to normal type parsing below.
                 if self.cursor.peek_n(1) == TokenKind::LogicalNot {
                     self.cursor.advance(); // consume error type ident
                     self.cursor.advance(); // consume `!`
@@ -240,10 +235,8 @@ where
             _ => false,
         };
 
-        // ── Core type ────────────────────────────────────────────────────────
         let mut ty = self.parse_core_type()?;
 
-        // ── Nullable suffix: ? ───────────────────────────────────────────────
         let nullable = if self.cursor.peek() == TokenKind::Question {
             self.cursor.advance();
             true
@@ -256,11 +249,10 @@ where
         Ok(ty)
     }
 
-    fn parse_core_type(&mut self) -> Result<Type<'a, 'bump>, ParserError<'a>> {
+    fn parse_core_type(&mut self) -> Result<Type<'a, 'bump>, DiagnosticError<'a>> {
         let tok = self.cursor.bump();
 
         let kind = match tok.kind {
-            // ── Primitives ───────────────────────────────────────────────────
             TokenKind::U8 => return Ok(Type::u8()),
             TokenKind::U16 => return Ok(Type::u16()),
             TokenKind::U32 => return Ok(Type::u32()),
@@ -281,10 +273,8 @@ where
             // `this` as a type (for self-referential method return types)
             TokenKind::This => return Ok(Type::this()),
 
-            // `_` — infer
             TokenKind::Underscore => return Ok(Type::infer()),
 
-            // ── Pointer: *Type (aligned, non-null) or **Type (raw C pointer) ─
             TokenKind::Mul => {
                 // Check for **T (raw pointer) vs *T (aligned pointer)
                 let raw = if self.cursor.peek() == TokenKind::Mul {
@@ -301,7 +291,6 @@ where
                 }
             }
 
-            // ── Lambda: fn(T, U) -> R ────────────────────────────────────────
             TokenKind::Fn => {
                 self.cursor.expect(TokenKind::LParen)?;
                 let mut params: Vec<Type<'a, 'bump>> = Vec::new();
@@ -328,7 +317,6 @@ where
                 }
             }
 
-            // ── Named / generic struct: Foo or Foo<T, U> ────────────────────
             TokenKind::Ident => {
                 let name = tok
                     .text

@@ -41,7 +41,7 @@ mod hir_tests {
         use scribe_parser::hir_lowerer::HirLowerer;
 
         let code = r#"
-        fn add(a: i32, b: i32): i32 {
+        fn add(a: i32, b: i32) -> i32 {
             a + b
         }
 
@@ -120,11 +120,10 @@ mod hir_tests {
             panic!("Expected main body to be a block");
         }
     }
-}
 
-#[test]
-fn test_control_flow() {
-    let code = r#"
+    #[test]
+    fn test_control_flow() {
+        let code = r#"
         fn max(a: i32, b: i32) -> i32 {
             if a > b {
                 a
@@ -139,19 +138,21 @@ fn test_control_flow() {
         }
         "#;
 
-    let result = parse_and_lower(code);
-    println!("{}", result.0);
-}
+        let result = parse_and_lower(code);
+        println!("{}", result.0);
+    }
 
-#[test]
-fn test_struct_usage() {
-    let code = r#"
-        record Point { x: f64, y: f64 } {
-            fn new(x: f64, y: f64): Self {
+    #[test]
+    fn test_struct_usage() {
+        let code = r#"
+        struct Point { x: f64, y: f64 }
+
+        impl Point {
+            fn new(x: f64, y: f64) -> Self {
                 Point { x, y }
             }
 
-            fn distance(this, other: Point): f64 {
+            fn distance(this, other: Point) -> f64 {
                 let dx: f64 = self.x - other.x;
                 let dy: f64 = self.y - other.y;
                 sqrt(dx * dx + dy * dy)
@@ -159,19 +160,19 @@ fn test_struct_usage() {
         }
 
         fn main() {
-            let p1 = Point.new(0.0, 0.0);
-            let p2 = Point { x: 3.0, y: 4.0 };
-            let d = p1.distance(p2);
+            let p1: Point = Point.new(0.0, 0.0);
+            let p2: Point = Point { x: 3.0, y: 4.0 };
+            let d: f64 = p1.distance(p2);
         }
         "#;
 
-    let result = parse_and_lower(code);
-    println!("{}", result.0);
-}
+        let result = parse_and_lower(code);
+        println!("{}", result.0);
+    }
 
-#[test]
-fn test_generic_functions() {
-    let code = r#"
+    #[test]
+    fn test_generic_functions() {
+        let code = r#"
         fn identity<T>(x: T): T {
             x
         }
@@ -186,13 +187,13 @@ fn test_generic_functions() {
         }
         "#;
 
-    let result = parse_and_lower(code);
-    println!("{}", result.0);
-}
+        let result = parse_and_lower(code);
+        println!("{}", result.0);
+    }
 
-#[test]
-fn test_pattern_matching() {
-    let code = r#"
+    #[test]
+    fn test_pattern_matching() {
+        let code = r#"
         enum Option<T> {
             Some(T),
             None
@@ -211,16 +212,16 @@ fn test_pattern_matching() {
         }
         "#;
 
-    let result = parse_and_lower(code);
-    println!("{}", result.0);
-}
+        let result = parse_and_lower(code);
+        println!("{}", result.0);
+    }
 
-#[test]
-fn test_error_handling() {
-    let code = r#"
+    #[test]
+    fn test_error_handling() {
+        let code = r#"
         enum Result<T, E> {
-            Ok(T),
-            Err(E)
+            Ok { value: T },
+            Err { error: E }
         }
 
         fn divide(a: i32, b: i32) -> Result<i32, String> {
@@ -239,6 +240,8 @@ fn test_error_handling() {
         }
         "#;
 
-    let result = parse_and_lower(code);
-    println!("{}", result.0);
+        let result = parse_and_lower(code);
+        println!("{}", result.0);
+    }
+
 }

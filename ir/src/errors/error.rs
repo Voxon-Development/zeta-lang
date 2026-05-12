@@ -105,25 +105,215 @@ where 'bump: 'a {
     },
 }
 
-#[derive(Debug, Clone, Error)]
-pub enum ParserError<'a> {
-    #[error("Tokenizer error: {0}")]
-    LexerError(StrId),
-
-    #[error("Unexpected token: expected {expected} but got {found} at {span}")]
-    UnexpectedToken { expected: TokenKind, found: TokenKind, span: SourceSpan<'a> },
-
-    #[error("Unexpected end of file.")]
-    UnexpectedEof,
-
-    #[error("Invalid function name: expected an identifier but got {name_type} at {location}")]
-    InvalidFunctionName {
-        name_type: TokenKind,
-        location: SourceSpan<'a>,
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParseErrorKind {
+    /// A specific token was expected but something else appeared.
+    UnexpectedToken {
+        expected: TokenKind,
+        found: TokenKind,
     },
 
-    #[error("Invalid identifier: expected text but got an empty identifier at {location}")]
-    EmptyIdent {
-        location: SourceSpan<'a>,
+    /// A set of tokens was expected (for better "expected one of …" messages).
+    UnexpectedTokenOneOf {
+        expected: Vec<TokenKind>,
+        found: TokenKind,
     },
+
+    /// Input ended before the grammar rule could complete.
+    UnexpectedEOF {
+        expected: Option<TokenKind>,
+    },
+
+    /// An expression could not be started from the current token.
+    InvalidExpression { found: TokenKind },
+
+    /// A type position contained a token that cannot begin a type.
+    InvalidType { found: TokenKind },
+
+    /// A pattern arm contained an unrecognisable token.
+    InvalidPattern { found: TokenKind },
+
+    /// Function name was missing or was not an identifier.
+    InvalidFunctionName { found: TokenKind },
+
+    /// An identifier token had empty text (lexer bug).
+    EmptyIdent,
+
+    /// The parser entered recovery and could not synchronise.
+    RecoveryFailure,
+
+    /// Custom / catch-all for parser infrastructure errors.
+    Internal { message: &'static str },
 }
+
+impl fmt::Display for ParseErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ParseErrorKind::UnexpectedToken { expected, found } =>
+                write!(f, "expected `{expected:?}`, found `{found:?}`"),
+            ParseErrorKind::UnexpectedTokenOneOf { expected, found } => {
+                write!(f, "expected one of [")?;
+                for (i, t) in expected.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "`{t:?}`")?;
+                }
+                write!(f, "], found `{found:?}`")
+            }
+            ParseErrorKind::UnexpectedEOF { expected: Some(e) } =>
+                write!(f, "unexpected end of file, expected `{e:?}`"),
+            ParseErrorKind::UnexpectedEOF { expected: None } =>
+                write!(f, "unexpected end of file"),
+            ParseErrorKind::InvalidExpression { found } =>
+                write!(f, "expected an expression, found `{found:?}`"),
+            ParseErrorKind::InvalidType { found } =>
+                write!(f, "expected a type, found `{found:?}`"),
+            ParseErrorKind::InvalidPattern { found } =>
+                write!(f, "expected a pattern, found `{found:?}`"),
+            ParseErrorKind::InvalidFunctionName { found } =>
+                write!(f, "expected a function name (identifier), found `{found:?}`"),
+            ParseErrorKind::EmptyIdent =>
+                write!(f, "identifier token has no text (lexer bug)"),
+            ParseErrorKind::RecoveryFailure =>
+                write!(f, "parser could not recover from previous errors"),
+            ParseErrorKind::Internal { message } =>
+                write!(f, "internal parser error: {message}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParseContext {
+    ParsingTopLevel,
+    ParsingModule,
+    ParsingStruct,
+    ParsingEnum,
+    ParsingImplBlock,
+    ParsingInterface,
+    ParsingMethod,
+    ParsingFunction,
+    ParsingFunctionParams,
+    ParsingReturnType,
+    ParsingType,
+    ParsingExpression,
+    ParsingPattern,
+    ParsingMatchArm,
+    ParsingBlock,
+    ParsingLetStatement,
+    ParsingIfStatement,
+    ParsingWhileStatement,
+    ParsingForStatement,
+    ParsingImport,
+}
+
+impl fmt::Display for ParseContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            ParseContext::ParsingTopLevel       => "top-level declaration",
+            ParseContext::ParsingModule         => "module declaration",
+            ParseContext::ParsingStruct         => "struct declaration",
+            ParseContext::ParsingEnum           => "enum declaration",
+            ParseContext::ParsingImplBlock      => "impl block",
+            ParseContext::ParsingInterface      => "interface declaration",
+            ParseContext::ParsingMethod         => "method declaration",
+            ParseContext::ParsingFunction       => "function declaration",
+            ParseContext::ParsingFunctionParams => "function parameters",
+            ParseContext::ParsingReturnType     => "return type",
+            ParseContext::ParsingType           => "type",
+            ParseContext::ParsingExpression     => "expression",
+            ParseContext::ParsingPattern        => "pattern",
+            ParseContext::ParsingMatchArm       => "match arm",
+            ParseContext::ParsingBlock          => "block",
+            ParseContext::ParsingLetStatement   => "let statement",
+            ParseContext::ParsingIfStatement    => "if statement",
+            ParseContext::ParsingWhileStatement => "while statement",
+            ParseContext::ParsingForStatement   => "for statement",
+            ParseContext::ParsingImport         => "import statement",
+        };
+        f.write_str(s)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DiagnosticError<'a> {
+    pub kind: ParseErrorKind,
+    pub span: SourceSpan<'a>,
+    /// Grammar-rule ancestry, innermost first (pushed by `with_context`).
+    pub context: Vec<ParseContext>,
+    /// Human-readable supplemental notes (e.g. "hint: add a closing brace").
+    pub notes: Vec<String>,
+}
+
+impl<'a> DiagnosticError<'a> {
+    pub fn new(kind: ParseErrorKind, span: SourceSpan<'a>) -> Self {
+        DiagnosticError {
+            kind,
+            span,
+            context: Vec::new(),
+            notes: Vec::new(),
+        }
+    }
+
+    pub fn with_note(mut self, note: impl Into<String>) -> Self {
+        self.notes.push(note.into());
+        self
+    }
+
+    pub fn unexpected_token(expected: TokenKind, found: TokenKind, span: SourceSpan<'a>) -> Self {
+        Self::new(ParseErrorKind::UnexpectedToken { expected, found }, span)
+    }
+
+    pub fn unexpected_eof(expected: Option<TokenKind>, span: SourceSpan<'a>) -> Self {
+        Self::new(ParseErrorKind::UnexpectedEOF { expected }, span)
+    }
+
+    pub fn invalid_expr(found: TokenKind, span: SourceSpan<'a>) -> Self {
+        Self::new(ParseErrorKind::InvalidExpression { found }, span)
+    }
+
+    pub fn empty_ident(span: SourceSpan<'a>) -> Self {
+        Self::new(ParseErrorKind::EmptyIdent, span)
+    }
+
+    pub fn invalid_function_name(found: TokenKind, span: SourceSpan<'a>) -> Self {
+        Self::new(ParseErrorKind::InvalidFunctionName { found }, span)
+    }
+
+    /// Render a human-readable single-line summary.
+    pub fn message(&self) -> String {
+        self.kind.to_string()
+    }
+
+    /// Render a multi-line diagnostic (context chain + notes).
+    pub fn pretty(&self) -> String {
+        let mut out = String::new();
+
+        out.push_str(&format!(
+            "error: {}\n --> {}:{}:{}\n",
+            self.kind,
+            self.span.file_name,
+            self.span.line,
+            self.span.column,
+        ));
+
+        if !self.context.is_empty() {
+            out.push_str("\nwhile parsing:\n");
+            for ctx in &self.context {
+                out.push_str(&format!("  {ctx}\n"));
+            }
+        }
+
+        for note in &self.notes {
+            out.push_str(&format!("\nnote: {note}\n"));
+        }
+
+        out
+    }
+}
+
+impl fmt::Display for DiagnosticError<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.pretty())
+    }
+}
+
+impl std::error::Error for DiagnosticError<'_> {}

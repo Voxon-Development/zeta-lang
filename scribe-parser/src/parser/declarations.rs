@@ -1,8 +1,5 @@
-use ir::ast::{
-    Block, ConstStmt, Field, FuncDecl, Generic, ImplDecl, InterfaceDecl, Param, StructDecl,
-    Visibility,
-};
-use ir::errors::error::ParserError;
+use ir::ast::{Block, ConstStmt, EnumDecl, EnumVariant, Field, FuncDecl, Generic, ImplDecl, InterfaceDecl, Param, PermitsExpr, Stmt, StructDecl, Visibility};
+use ir::errors::error::{DiagnosticError};
 use ir::tokens::TokenKind;
 use crate::parser::descent_parser::DescentParser;
 
@@ -17,7 +14,7 @@ where
     ///     y: i32,
     /// }
     /// ```
-    pub fn parse_struct_decl(&mut self, visibility: Visibility) -> Result<ir::ast::Stmt<'a, 'bump>, ParserError<'a>> {
+    pub fn parse_struct_decl(&mut self, visibility: Visibility) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         self.cursor.consume(TokenKind::Struct);
 
         let (name, _span) = self.cursor.expect_ident()?;
@@ -31,12 +28,14 @@ where
 
         let (params, body, constants, destructor) = if self.cursor.consume(TokenKind::Semicolon) {
             // Unit struct: `struct Foo;`
-            (None, &[], &[], None)
+            let consts: &[ConstStmt] = &[];
+            (None, &[], consts, None)
         } else if self.cursor.peek() == TokenKind::LParen {
             // Tuple struct: `struct Foo(i32, i32);`
             let tuple_fields = self.parse_tuple_struct_fields()?;
             self.cursor.expect(TokenKind::Semicolon)?;
-            (Some(tuple_fields), &[], &[], None)
+            let consts: &[ConstStmt] = &[];
+            (Some(tuple_fields), &[], consts, None)
         } else {
             // Regular struct with braces
             self.cursor.expect(TokenKind::LBrace)?;
@@ -139,7 +138,7 @@ where
     ///     fn draw(&this) { ... }
     /// }
     /// ```
-    pub fn parse_impl_decl(&mut self, visibility: Visibility) -> Result<ir::ast::Stmt<'a, 'bump>, ParserError<'a>> {
+    pub fn parse_impl_decl(&mut self, visibility: Visibility) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         self.cursor.consume(TokenKind::Impl);
 
         // Check for generic impl: impl<T> ...
@@ -197,7 +196,7 @@ where
         Ok(ir::ast::Stmt::ImplDecl(self.bump.alloc_value_immutable(impl_decl)))
     }
 
-    fn parse_tuple_struct_fields(&mut self) -> Result<&'bump [Param<'a, 'bump>], ParserError<'a>> {
+    fn parse_tuple_struct_fields(&mut self) -> Result<&'bump [Param<'a, 'bump>], DiagnosticError<'a>> {
         self.cursor.expect(TokenKind::LParen)?;
 
         let mut fields = Vec::new_in(self.bump);
@@ -235,7 +234,7 @@ where
         Ok(self.bump.alloc_slice_copy(&fields))
     }
 
-    fn parse_const_stmt(&mut self) -> Result<ConstStmt<'a, 'bump>, ParserError<'a>> {
+    fn parse_const_stmt(&mut self) -> Result<ConstStmt<'a, 'bump>, DiagnosticError<'a>> {
         self.cursor.consume(TokenKind::Const);
         let (name, _span) = self.cursor.expect_ident()?;
 
@@ -266,7 +265,7 @@ where
     ///     fn method(&this);
     /// }
     /// ```
-    pub fn parse_interface_decl(&mut self, visibility: Visibility, is_sealed: bool) -> Result<ir::ast::Stmt<'a, 'bump>, ParserError<'a>> {
+    pub fn parse_interface_decl(&mut self, visibility: Visibility, is_sealed: bool) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         self.cursor.consume(TokenKind::Interface);
 
         let (name, _span) = self.cursor.expect_ident()?;
@@ -322,10 +321,10 @@ where
             generics,
         };
 
-        Ok(ir::ast::Stmt::InterfaceDecl(self.bump.alloc_value_immutable(interface_decl)))
+        Ok(Stmt::InterfaceDecl(self.bump.alloc_value_immutable(interface_decl)))
     }
 
-    fn parse_permits_expr(&mut self) -> Result<&'bump ir::ast::PermitsExpr<'a, 'bump>, ParserError<'a>> {
+    fn parse_permits_expr(&mut self) -> Result<&'bump PermitsExpr<'a, 'bump>, DiagnosticError<'a>> {
         self.cursor.consume(TokenKind::Permits);
 
         let mut types = Vec::new_in(self.bump);
@@ -344,7 +343,7 @@ where
         }))
     }
 
-    pub fn parse_enum_decl(&mut self, visibility: Visibility) -> Result<Stmt<'a, 'bump>, ParserError<'a>> {
+    pub fn parse_enum_decl(&mut self, visibility: Visibility) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         self.cursor.consume(TokenKind::Enum);
         let (name, _span) = self.cursor.expect_ident()?;
         let generics = self.parse_generics()?;
@@ -368,7 +367,7 @@ where
     }
 
     /// Allows `VariantName` or `VariantName { first_field: type, second_field: type }`
-    fn parse_variant(&mut self) -> Result<EnumVariant<'a, 'bump>, ParserError<'a>> {
+    fn parse_variant(&mut self) -> Result<EnumVariant<'a, 'bump>, DiagnosticError<'a>> {
         let (name, _span) = self.cursor.expect_ident()?;
 
         if self.cursor.peek() != TokenKind::LBrace {

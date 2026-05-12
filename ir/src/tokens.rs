@@ -1,4 +1,4 @@
-use crate::errors::error::ParserError;
+use crate::errors::error::{DiagnosticError, ParseErrorKind};
 use crate::hir::StrId;
 use crate::span::SourceSpan;
 use std::fmt;
@@ -58,6 +58,7 @@ impl<'a> Cursor<'a> {
         self.peek() == TokenKind::EOF
     }
 
+    /// Returns the kind of the next non-comment token.
     #[inline]
     pub fn peek(&self) -> TokenKind {
         let mut idx = self.index;
@@ -70,6 +71,7 @@ impl<'a> Cursor<'a> {
         TokenKind::EOF
     }
 
+    /// Returns the next non-comment token (without advancing).
     #[inline]
     pub fn peek_token(&self) -> Token<'a> {
         let mut idx = self.index;
@@ -86,15 +88,37 @@ impl<'a> Cursor<'a> {
         }
     }
 
+    /// Peek at the nth token from the current position, skipping comments.
+    ///
+    /// `n = 0` is equivalent to `peek()`.
     #[inline]
     pub fn peek_n(&self, n: usize) -> TokenKind {
-        self.tokens[self.index + n].kind
+        let mut idx = self.index;
+        let mut skipped = 0;
+        while idx < self.tokens.len() {
+            match self.tokens[idx].kind {
+                TokenKind::LineComment | TokenKind::DocComment => idx += 1,
+                kind => {
+                    if skipped == n {
+                        return kind;
+                    }
+                    skipped += 1;
+                    idx += 1;
+                }
+            }
+        }
+        TokenKind::EOF
     }
 
+    /// Advance past the current non-comment token and any trailing comments.
     #[inline]
     pub fn advance(&mut self) {
-        self.index += 1;
-        // Skip over any comments that follow
+        // Move past the current token (which may itself be a comment if we are
+        // somehow positioned on one; `peek` skips them so this is defensive).
+        if self.index < self.tokens.len() {
+            self.index += 1;
+        }
+        // Skip any comment tokens that immediately follow.
         while self.index < self.tokens.len() {
             match self.tokens[self.index].kind {
                 TokenKind::LineComment | TokenKind::DocComment => self.index += 1,
@@ -113,6 +137,7 @@ impl<'a> Cursor<'a> {
         self.index = index;
     }
 
+    /// Return the current non-comment token and advance past it.
     #[inline]
     pub fn bump(&mut self) -> Token<'a> {
         let tok = self.peek_token();
@@ -120,6 +145,7 @@ impl<'a> Cursor<'a> {
         tok
     }
 
+    /// Advance and return `true` iff the next non-comment token matches `kind`.
     #[inline]
     pub fn consume(&mut self, kind: TokenKind) -> bool {
         if self.peek() == kind {
@@ -130,59 +156,95 @@ impl<'a> Cursor<'a> {
         }
     }
 
+    /// Advance past `kind` and return the consumed token, or return a
+    /// `DiagnosticError` if the next token does not match.
     #[inline]
-    pub fn expect(&mut self, kind: TokenKind) -> Result<Token<'a>, ParserError<'a>> {
-        if self.peek() == kind {
-            Ok(self.bump())
-        } else {
-            let tok = self.peek_token();
-            Err(ParserError::UnexpectedToken {
-                expected: kind,
-                found: tok.kind,
-                span: tok.span,
-            })
-        }
-    }
-
-    #[inline]
-    pub fn expect_ident(&mut self) -> Result<(StrId, SourceSpan<'a>), ParserError<'a>> {
-        self.skip_comments();
+    pub fn expect(&mut self, kind: TokenKind) -> Result<Token<'a>, DiagnosticError> {
         let tok = self.peek_token();
-        if tok.kind == TokenKind::Ident {
+        if tok.kind == kind {
             self.advance();
-            Ok((tok.text.expect("ident must have text"), tok.span))
+            Ok(tok)
         } else {
-            Err(ParserError::UnexpectedToken {
-                expected: TokenKind::Ident,
-                found: tok.kind,
+            Err(DiagnosticError {
+                kind: if tok.kind == TokenKind::EOF {
+                    ParseErrorKind::UnexpectedEOF { expected: Some(kind) }
+                } else {
+                    ParseErrorKind::UnexpectedToken { expected: kind, found: tok.kind }
+                },
                 span: tok.span,
+                context: vec![],
+                notes: vec![],
             })
         }
     }
 
-    /// Skip over comment tokens (LineComment and DocComment)
+    /// Advance past an identifier token and return `(StrId, SourceSpan)`, or
+    /// return a `DiagnosticError` if the next token is not an identifier.
+    ///
+    /// Comment tokens are already skipped by `peek_token`, so no extra
+    /// `skip_comments` call is needed here.
     #[inline]
-    pub fn skip_comments(&mut self) {
-        loop {
-            match self.peek() {
-                TokenKind::LineComment | TokenKind::DocComment => {
-                    self.advance();
-                }
-                _ => break,
+    pub fn expect_ident(&mut self) -> Result<(StrId, SourceSpan<'a>), DiagnosticError> {
+        let tok = self.peek_token();
+        match tok.kind {
+            TokenKind::Ident => {
+                let text = match tok.text {
+                    Some(t) if !t.is_empty() => t,
+                    _ => {
+                        return Err(DiagnosticError {
+                            kind: ParseErrorKind::EmptyIdent,
+                            span: tok.span,
+                            context: vec![],
+                            notes: vec![],
+                        })
+                    }
+                };
+                self.advance();
+                Ok((text, tok.span))
             }
+            TokenKind::EOF => Err(DiagnosticError {
+                kind: ParseErrorKind::UnexpectedEOF { expected: Some(TokenKind::Ident) },
+                span: tok.span,
+                context: vec![],
+                notes: vec![],
+            }),
+            _ => Err(DiagnosticError {
+                kind: ParseErrorKind::UnexpectedToken {
+                    expected: TokenKind::Ident,
+                    found: tok.kind,
+                },
+                span: tok.span,
+                context: vec![],
+                notes: vec![],
+            }),
         }
+    }
+
+    /// Skip comment tokens explicitly.
+    ///
+    /// This is a no-op in practice because `peek`, `peek_token`, `advance`,
+    /// and `bump` all skip comments automatically.  Kept for call-sites that
+    /// call it defensively; they can be cleaned up over time.
+    #[inline]
+    #[deprecated(note = "comments are already skipped by peek/advance; this call is a no-op")]
+    pub fn skip_comments(&mut self) {
+        // peek() / advance() already handle comment skipping; nothing to do.
     }
 }
+
+// ---------------------------------------------------------------------------
+// TokenKind
+// ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TokenKind {
     // ===== Identifiers & Literals =====
-    Ident,       // user identifiers
-    Number,      // numeric literals
-    Decimal,     // decimal literals
-    Hexadecimal, // hexadecimal literals
-    Binary,      // binary literals
-    String,      // string literals
+    Ident,
+    Number,
+    Decimal,
+    Hexadecimal,
+    Binary,
+    String,
     BooleanTrue,
     BooleanFalse,
     Null,
@@ -228,7 +290,7 @@ pub enum TokenKind {
     Void,
     Fn,
 
-    // ======== Types ========
+    // ===== Types =====
     U8,
     U16,
     U32,
@@ -248,70 +310,71 @@ pub enum TokenKind {
     Boolean,
 
     // ===== Punctuation =====
-    LParen,    // (
-    RParen,    // )
-    LBrace,    // {
-    RBrace,    // }
-    LBracket,  // [
-    RBracket,  // ]
-    Comma,     // ,
-    Dot,       // .
-    Semicolon, // ;
-    Colon,     // :
-    Question,  // ?
-    Arrow,     // ->
-    FatArrow,  // =>
-    Ellipsis,  // ...
-    DotDot,    // ..
-    DotDotLt,  // ..<
+    LParen,
+    RParen,
+    LBrace,
+    RBrace,
+    LBracket,
+    RBracket,
+    Comma,
+    Dot,
+    Semicolon,
+    Colon,
+    Question,
+    Arrow,
+    FatArrow,
+    Ellipsis,
+    DotDot,
+    DotDotLt,
 
     // ===== Operators =====
-    Assign,            // =
-    ColonAssign,       // :=
-    AddAssign,         // +=
-    SubAssign,         // -=
-    MulAssign,         // *=
-    DivAssign,         // /=
-    ModAssign,         // %=
-    ShlAssign,         // <<=
-    ShrAssign,         // >>=
-    UnsignedShrAssign, // >>>=
-    NotAssign,         // ~=
-    AndAssign,         // &=
-    OrAssign,          // |=
-    XorAssign,         // ^=
-    Eq,                // ==
-    Ne,                // ~=
-    Lt,                // <
-    Gt,                // >
-    Le,                // <=
-    Ge,                // >=
-    Add,               // +
-    Sub,               // -
-    Mul,               // *
-    Div,               // /
-    Mod,               // %
-    BitNot,            // ~
-    BitAnd,            // &
-    BitOr,             // |
-    BitXor,            // ^
-    Shl,               // <<
-    Shr,               // >>
-    UnsignedShr,       // >>>
+    Assign,
+    ColonAssign,
+    AddAssign,
+    SubAssign,
+    MulAssign,
+    DivAssign,
+    ModAssign,
+    ShlAssign,
+    ShrAssign,
+    UnsignedShrAssign,
+    NotAssign,
+    AndAssign,
+    OrAssign,
+    XorAssign,
+    Eq,
+    Ne,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    BitNot,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+    UnsignedShr,
 
     // ===== Logic Operators =====
-    AndAnd,     // &&
-    OrOr,       // ||
-    LogicalNot, // !
+    AndAnd,
+    OrOr,
+    LogicalNot,
 
-    // ===== Other special tokens =====
+    // ===== Other =====
     This,
-    Underscore, // _
+    Underscore,
 
     // ===== Comments =====
-    LineComment, // // ...
-    DocComment,  // /// ...
+    LineComment,
+    DocComment,
 
+    // ===== Special =====
     EOF,
     Unknown,
     Internal,
@@ -321,152 +384,140 @@ pub enum TokenKind {
 impl fmt::Display for TokenKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use TokenKind::*;
-
         let s = match self {
-            // ===== Identifiers & Literals =====
-            Ident => "ident",
-            Number => "number",
-            Decimal => "decimal",
+            Ident       => "ident",
+            Number      => "number",
+            Decimal     => "decimal",
             Hexadecimal => "hexadecimal",
-            Binary => "binary",
-            String => "string",
-            BooleanTrue => "true",
+            Binary      => "binary",
+            String      => "string",
+            BooleanTrue  => "true",
             BooleanFalse => "false",
-            Null => "null",
+            Null        => "null",
 
-            // ===== Keywords =====
-            If => "if",
-            Else => "else",
-            While => "while",
-            For => "for",
-            In => "in",
-            Return => "return",
-            Break => "break",
-            Continue => "continue",
-            Enum => "enum",
-            Struct => "struct",
+            If        => "if",
+            Else      => "else",
+            While     => "while",
+            For       => "for",
+            In        => "in",
+            Return    => "return",
+            Break     => "break",
+            Continue  => "continue",
+            Enum      => "enum",
+            Struct    => "struct",
             Interface => "interface",
-            Impl => "impl",
-            Import => "import",
-            Package => "package",
-            Type => "type",
-            Const => "const",
-            Mut => "mut",
-            Unsafe => "unsafe",
-            Inline => "inline",
-            Noinline => "noinline",
-            Sealed => "sealed",
-            Private => "private",
-            Module => "module",
-            Extern => "extern",
-            Static => "static",
-            Match => "match",
-            Case => "case",
-            Defer => "defer",
-            Effect => "effect",
-            Permits => "permits",
+            Impl      => "impl",
+            Import    => "import",
+            Package   => "package",
+            Type      => "type",
+            Const     => "const",
+            Mut       => "mut",
+            Unsafe    => "unsafe",
+            Inline    => "inline",
+            Noinline  => "noinline",
+            Sealed    => "sealed",
+            Private   => "private",
+            Module    => "module",
+            Extern    => "extern",
+            Static    => "static",
+            Match     => "match",
+            Case      => "case",
+            Defer     => "defer",
+            Effect    => "effect",
+            Permits   => "permits",
+            Statem    => "statem",
+            Trait     => "trait",
+            Where     => "where",
+            Uses      => "uses",
+            Requires  => "requires",
+            Ensures   => "ensures",
+            Let       => "let",
+            Void      => "void",
+            Fn        => "fn",
 
-            Statem => "statem",
-            Trait => "trait",
-            Where => "where",
-            Uses => "uses",
-            Requires => "requires",
-            Ensures => "ensures",
-            Let => "let",
-            Void => "void",
-            Fn => "fn",
-
-            // ===== Types =====
-            U8 => "u8",
-            U16 => "u16",
-            U32 => "u32",
-            U64 => "u64",
-            U128 => "u128",
-            I8 => "i8",
-            I16 => "i16",
-            I32 => "i32",
-            I64 => "i64",
-            I128 => "i128",
-            F32 => "f32",
-            F64 => "f64",
+            U8    => "u8",
+            U16   => "u16",
+            U32   => "u32",
+            U64   => "u64",
+            U128  => "u128",
+            I8    => "i8",
+            I16   => "i16",
+            I32   => "i32",
+            I64   => "i64",
+            I128  => "i128",
+            F32   => "f32",
+            F64   => "f64",
             Usize => "usize",
             Isize => "isize",
-            Char => "char",
-            Str => "str",
+            Char    => "char",
+            Str     => "str",
             Boolean => "boolean",
 
-            // ===== Punctuation =====
-            LParen => "(",
-            RParen => ")",
-            LBrace => "{",
-            RBrace => "}",
-            LBracket => "[",
-            RBracket => "]",
-            Comma => ",",
-            Dot => ".",
+            LParen    => "(",
+            RParen    => ")",
+            LBrace    => "{",
+            RBrace    => "}",
+            LBracket  => "[",
+            RBracket  => "]",
+            Comma     => ",",
+            Dot       => ".",
             Semicolon => ";",
-            Colon => ":",
-            Question => "?",
-            Arrow => "->",
-            FatArrow => "=>",
-            Ellipsis => "...",
-            DotDot => "..",
-            DotDotLt => "..<",
+            Colon     => ":",
+            Question  => "?",
+            Arrow     => "->",
+            FatArrow  => "=>",
+            Ellipsis  => "...",
+            DotDot    => "..",
+            DotDotLt  => "..<",
 
-            // ===== Operators =====
-            Assign => "=",
-            AddAssign => "+=",
-            SubAssign => "-=",
-            MulAssign => "*=",
-            DivAssign => "/=",
-            ModAssign => "%=",
-            ShlAssign => "<<=",
-            ShrAssign => ">>=",
+            Assign            => "=",
+            ColonAssign       => ":=",
+            AddAssign         => "+=",
+            SubAssign         => "-=",
+            MulAssign         => "*=",
+            DivAssign         => "/=",
+            ModAssign         => "%=",
+            ShlAssign         => "<<=",
+            ShrAssign         => ">>=",
             UnsignedShrAssign => ">>>=",
-            AndAssign => "&=",
-            OrAssign => "|=",
-            XorAssign => "^=",
-            Eq => "==",
-            Ne => "~=",
-            Lt => "<",
-            Gt => ">",
-            Le => "<=",
-            Ge => ">=",
-            Add => "+",
-            Sub => "-",
-            Mul => "*",
-            Div => "/",
-            Mod => "%",
-            BitNot => "~",
-            BitAnd => "&",
-            BitOr => "|",
-            BitXor => "^",
-            Shl => "<<",
-            Shr => ">>",
-            UnsignedShr => ">>>",
+            NotAssign         => "!=",
+            AndAssign         => "&=",
+            OrAssign          => "|=",
+            XorAssign         => "^=",
+            Eq                => "==",
+            Ne                => "~=",
+            Lt                => "<",
+            Gt                => ">",
+            Le                => "<=",
+            Ge                => ">=",
+            Add               => "+",
+            Sub               => "-",
+            Mul               => "*",
+            Div               => "/",
+            Mod               => "%",
+            BitNot            => "~",
+            BitAnd            => "&",
+            BitOr             => "|",
+            BitXor            => "^",
+            Shl               => "<<",
+            Shr               => ">>",
+            UnsignedShr       => ">>>",
 
-            // ===== Logic Operators =====
-            AndAnd => "&&",
-            OrOr => "||",
+            AndAnd     => "&&",
+            OrOr       => "||",
             LogicalNot => "!",
 
-            // ===== Other =====
-            This => "this",
+            This       => "this",
             Underscore => "_",
-            ColonAssign => "::=", // as requested
 
-            // ===== Comments =====
             LineComment => "//",
-            DocComment => "///",
+            DocComment  => "///",
 
-            // ===== Special =====
-            EOF => "eof",
-            Unknown => "unknown",
-            NotAssign => "!=",
+            EOF      => "eof",
+            Unknown  => "unknown",
             Internal => "internal",
             ColonColon => "::",
         };
-
         f.write_str(s)
     }
 }

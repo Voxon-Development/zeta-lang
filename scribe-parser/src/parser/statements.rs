@@ -12,18 +12,18 @@ impl<'a, 'bump> DescentParser<'a, 'bump>
 where
     'bump: 'a,
 {
-    pub fn parse_let_stmt(&mut self) -> Result<Stmt<'a, 'bump>, ParserError<'a>> {
+    pub fn parse_let_stmt(&mut self) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         self.parse_let_stmt_inner(false)
     }
 
-    pub fn parse_static_let_stmt(&mut self) -> Result<Stmt<'a, 'bump>, ParserError<'a>> {
+    pub fn parse_static_let_stmt(&mut self) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         self.parse_let_stmt_inner(true)
     }
 
     fn parse_let_stmt_inner(
         &mut self,
         is_static: bool,
-    ) -> Result<Stmt<'a, 'bump>, ParserError<'a>> {
+    ) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         self.cursor.consume(TokenKind::Let);
 
         let is_mut = self.cursor.consume(TokenKind::Mut);
@@ -50,7 +50,7 @@ where
         Ok(Stmt::Let(self.bump.alloc_value_immutable(let_stmt)))
     }
 
-    pub fn parse_shorthand_let_stmt(&mut self) -> Result<Stmt<'a, 'bump>, ParserError<'a>> {
+    pub fn parse_shorthand_let_stmt(&mut self) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         let (name, _span) = self.cursor.expect_ident()?;
         self.cursor.expect(TokenKind::ColonAssign)?;
         let value = self.parse_expr(0)?;
@@ -67,7 +67,7 @@ where
         Ok(Stmt::Let(self.bump.alloc_value_immutable(let_stmt)))
     }
 
-    pub fn parse_if_stmt(&mut self) -> Result<Stmt<'a, 'bump>, ParserError<'a>> {
+    pub fn parse_if_stmt(&mut self) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         self.cursor.consume(TokenKind::If);
         self.cursor.expect(TokenKind::LParen)?;
         let condition = self.parse_expr(0)?;
@@ -103,7 +103,7 @@ where
         Ok(Stmt::If(self.bump.alloc_value_immutable(if_stmt)))
     }
 
-    pub fn parse_while_stmt(&mut self) -> Result<Stmt<'a, 'bump>, ParserError<'a>> {
+    pub fn parse_while_stmt(&mut self) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         self.cursor.consume(TokenKind::While);
         self.cursor.expect(TokenKind::LParen)?;
         let condition = self.parse_expr(0)?;
@@ -119,7 +119,7 @@ where
         Ok(Stmt::While(self.bump.alloc_value_immutable(while_stmt)))
     }
 
-    pub fn parse_for_stmt(&mut self) -> Result<Stmt<'a, 'bump>, ParserError<'a>> {
+    pub fn parse_for_stmt(&mut self) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         self.cursor.consume(TokenKind::For);
         self.cursor.expect(TokenKind::LParen)?;
 
@@ -179,7 +179,7 @@ where
         Ok(Stmt::For(self.bump.alloc_value_immutable(for_stmt)))
     }
 
-    pub fn parse_return_stmt(&mut self) -> Result<Stmt<'a, 'bump>, ParserError<'a>> {
+    pub fn parse_return_stmt(&mut self) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         self.cursor.consume(TokenKind::Return);
         let value = if self.cursor.peek() != TokenKind::Semicolon {
             Some(self.bump.alloc_value_immutable(self.parse_expr(0)?))
@@ -192,7 +192,7 @@ where
         ))
     }
 
-    pub fn parse_expr_stmt(&mut self) -> Result<Stmt<'a, 'bump>, ParserError<'a>> {
+    pub fn parse_expr_stmt(&mut self) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         let expr = self.parse_expr(0)?;
         self.cursor.consume(TokenKind::Semicolon);
         Ok(Stmt::ExprStmt(self.bump.alloc_value_immutable(
@@ -202,7 +202,7 @@ where
         )))
     }
 
-    pub fn parse_defer_stmt(&mut self) -> Result<Stmt<'a, 'bump>, ParserError<'a>> {
+    pub fn parse_defer_stmt(&mut self) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         self.cursor.consume(TokenKind::Defer);
 
         let action = if self.cursor.peek() == TokenKind::LBrace {
@@ -219,7 +219,7 @@ where
         Ok(Stmt::Defer(self.bump.alloc_value_immutable(defer_stmt)))
     }
 
-    pub fn parse_match_stmt(&mut self) -> Result<Stmt<'a, 'bump>, ParserError<'a>> {
+    pub fn parse_match_stmt(&mut self) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         self.cursor.consume(TokenKind::Match);
 
         // Parse subject without allowing struct-init syntax (to avoid ambiguity with `{`)
@@ -277,7 +277,7 @@ where
         Ok(Stmt::Match(self.bump.alloc_value_immutable(match_stmt)))
     }
 
-    fn parse_pattern(&mut self) -> Result<Pattern<'bump>, ParserError<'a>> {
+    fn parse_pattern(&mut self) -> Result<Pattern<'bump>, DiagnosticError<'a>> {
         match self.cursor.peek() {
             // Wildcard: _
             TokenKind::Underscore => {
@@ -383,7 +383,7 @@ where
     }
 
     /// Parse `import foo.bar.Baz;`
-    pub fn parse_import(&mut self) -> Result<Stmt<'a, 'bump>, ParserError<'a>> {
+    pub fn parse_import(&mut self) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         self.cursor.consume(TokenKind::Import);
         let path = self.parse_path()?;
         self.cursor.consume(TokenKind::Semicolon);
@@ -393,7 +393,7 @@ where
     }
 
     /// Parse `package com.example.myapp;`
-    pub fn parse_package(&mut self) -> Result<Stmt<'a, 'bump>, ParserError<'a>> {
+    pub fn parse_package(&mut self) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         self.cursor.consume(TokenKind::Package);
         let path = self.parse_path()?;
         self.cursor.consume(TokenKind::Semicolon);
@@ -403,7 +403,7 @@ where
     }
 
     /// Parse a dot-separated identifier path: `foo`, `foo.bar`, `foo.bar.Baz`
-    fn parse_path(&mut self) -> Result<&'bump ir::ast::Path<'bump>, ParserError<'a>> {
+    fn parse_path(&mut self) -> Result<&'bump ir::ast::Path<'bump>, DiagnosticError<'a>> {
         let mut segments = Vec::new_in(self.bump);
         let (first, _) = self.cursor.expect_ident()?;
         segments.push(first);
@@ -426,7 +426,7 @@ where
     pub fn parse_module_decl(
         &mut self,
         visibility: Visibility,
-    ) -> Result<Stmt<'a, 'bump>, ParserError<'a>> {
+    ) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         let (name, _) = self.cursor.expect_ident()?;
         self.cursor.expect(TokenKind::LBrace)?;
 
@@ -443,7 +443,7 @@ where
         })))
     }
 
-    pub fn parse_block(&mut self) -> Result<Block<'a, 'bump>, ParserError<'a>> {
+    pub fn parse_block(&mut self) -> Result<Block<'a, 'bump>, DiagnosticError<'a>> {
         self.cursor.expect(TokenKind::LBrace)?;
 
         let mut stmts = Vec::new_in(self.bump);

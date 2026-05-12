@@ -7,7 +7,7 @@ impl<'a, 'bump> DescentParser<'a, 'bump>
 where
     'bump: 'a,
 {
-    pub fn parse_function_with_visibility(&mut self, visibility: Visibility) -> Result<Stmt<'a, 'bump>, ParserError<'a>> {
+    pub fn parse_function_with_visibility(&mut self, visibility: Visibility) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         let function_metadata = Self::get_func_metadata(&mut self.cursor, visibility)?;
         self.cursor.expect(TokenKind::Fn)?;
         let name_token = self.cursor.bump();
@@ -48,7 +48,7 @@ where
 
     /// Parse a function signature with optional body (for interfaces)
     /// Can end with either `;` (just signature) or `{ ... }` (with body)
-    pub fn parse_function_signature(&mut self, visibility: Visibility) -> Result<FuncDecl<'a, 'bump>, ParserError<'a>> {
+    pub fn parse_function_signature(&mut self, visibility: Visibility) -> Result<FuncDecl<'a, 'bump>, DiagnosticError<'a>> {
         let function_metadata = Self::get_func_metadata(&mut self.cursor, visibility)?;
         self.cursor.expect(TokenKind::Fn)?;
         let name_token = self.cursor.bump();
@@ -92,7 +92,7 @@ where
         })
     }
 
-    fn get_func_metadata(cursor: &mut Cursor<'a>, visibility: Visibility) -> Result<FuncModifiers, ParserError<'a>> {
+    fn get_func_metadata(cursor: &mut Cursor<'a>, visibility: Visibility) -> Result<FuncModifiers, DiagnosticError<'a>> {
         let mut inline_modifier = InlineModifier::None;
         let mut extern_modifier = ExternModifier::None;
         let mut func_safety = FuncSafety::Safe;

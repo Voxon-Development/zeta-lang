@@ -68,7 +68,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
 
     pub fn lower_module(
         &mut self,
-        stmts: Vec<Stmt<'a, 'bump>>,
+        stmts: Vec<ir::ast::Stmt<'a, 'bump>, &GrowableBump<'bump>>,
     ) -> HirModule<'a, 'bump> {
         self.collect_prototypes(&stmts);
         let (imports, items, pkg_name) = self.lower_function_bodies(stmts);
@@ -131,7 +131,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
 
     pub fn lower_function_bodies(
         &mut self,
-        stmts: Vec<Stmt<'a, 'bump>>,
+        stmts: Vec<ir::ast::Stmt<'a, '_>, &GrowableBump<'_>>,
     ) -> (Vec<Path<'bump>>, Vec<Hir<'a, 'bump>>, Option<StrId>) {
         let mut imports: Vec<Path<'bump>> = Vec::with_capacity(64);
         let mut items: Vec<Hir<'a, 'bump>> = Vec::with_capacity(64);
@@ -218,7 +218,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         }
     }
 
-    pub(super) fn lower_toplevel(&mut self, stmt: Stmt<'_, 'a>) -> Hir<'a, 'bump> {
+    pub(super) fn lower_toplevel(&mut self, stmt: Stmt<'a, 'bump>) -> Hir<'a, 'bump> {
         match stmt {
             Stmt::FuncDecl(f) => {
                 let func = self.lower_func_body_from_proto(*f);

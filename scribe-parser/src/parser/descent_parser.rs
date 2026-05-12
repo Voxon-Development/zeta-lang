@@ -1,12 +1,7 @@
 use ir::ast::{Expr, Generic, Stmt, Visibility};
-pub(crate) use ir::errors::error::ParserError;
-use ir::hir::StrId;
-use ir::span::SourceSpan;
-use ir::ssa_ir::BinOp;
-use std::error::Error;
-use std::fmt;
-use std::marker::PhantomData;
 use std::sync::Arc;
+use ir::diagnostics_context::ParserDiagnosticsContext;
+use ir::errors::error::DiagnosticError;
 use zetaruntime::arena::GrowableAtomicBump;
 use zetaruntime::bump::GrowableBump;
 use zetaruntime::string_pool::StringPool;
@@ -21,6 +16,7 @@ where
     pub(crate) cursor: Cursor<'a>,
     pub(crate) bump: &'bump GrowableBump<'bump>,
     pub(crate) string_pool: Arc<StringPool>,
+    pub(crate) diagnostics_context: ParserDiagnosticsContext<'a>,
 }
 
 impl<'a, 'bump> DescentParser<'a, 'bump>
@@ -31,11 +27,12 @@ where
         string_pool: Arc<StringPool>,
         bump: &'bump GrowableBump<'bump>,
         tokens: &'a Tokens<'a>,
-    ) -> Result<Vec<Stmt<'a, 'bump>, &'bump GrowableBump<'bump>>, ParserError<'a>> {
+    ) -> Result<Vec<Stmt<'a, 'bump>, &'bump GrowableBump<'bump>>, DiagnosticError<'a>> {
         let mut parser = DescentParser {
             cursor: Cursor::new(tokens, 0),
             string_pool,
             bump,
+            diagnostics_context: ParserDiagnosticsContext::new(true),
         };
 
         parser.parse_toplevel()
@@ -43,7 +40,7 @@ where
 
     fn parse_toplevel(
         &mut self,
-    ) -> Result<Vec<Stmt<'a, 'bump>, &'bump GrowableBump<'bump>>, ParserError<'a>> {
+    ) -> Result<Vec<Stmt<'a, 'bump>, &'bump GrowableBump<'bump>>, DiagnosticError<'a>> {
         let mut stmts = Vec::new_in(self.bump);
 
         while self.cursor.peek() != TokenKind::EOF {
@@ -56,7 +53,7 @@ where
     pub(crate) fn parse_stmt(
         &mut self,
         visibility: Visibility,
-    ) -> Result<Stmt<'a, 'bump>, ParserError<'a>> {
+    ) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         let kind = self.cursor.peek();
         match kind {
             TokenKind::Let => self.parse_let_stmt(),
@@ -112,6 +109,7 @@ where
             }
 
             TokenKind::Struct => self.parse_struct_decl(visibility),
+            TokenKind::Enum => self.parse_enum_decl(visibility),
             TokenKind::Impl => self.parse_impl_decl(visibility),
             TokenKind::Interface => self.parse_interface_decl(visibility, false),
             TokenKind::Sealed => {
@@ -177,7 +175,7 @@ pub fn parse_program<'a, 'bump>(
 /// Collects parser diagnostics (errors, warnings, notes) instead of panicking
 #[derive(Debug, Clone)]
 pub struct ParserDiagnostics<'a> {
-    pub errors: Vec<ParserError<'a>>,
+    pub errors: Vec<DiagnosticError<'a>>,
     pub warnings: Vec<String>,
 }
 
@@ -189,7 +187,7 @@ impl<'a> ParserDiagnostics<'a> {
         }
     }
 
-    pub fn add_error(&mut self, error: ParserError<'a>) {
+    pub fn add_error(&mut self, error: DiagnosticError<'a>) {
         self.errors.push(error);
     }
 

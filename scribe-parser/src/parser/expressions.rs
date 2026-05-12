@@ -11,7 +11,7 @@ impl<'a, 'bump> DescentParser<'a, 'bump>
 where
     'bump: 'a,
 {
-    pub fn parse_expr(&mut self, min_bp: u8) -> Result<Expr<'a, 'bump>, ParserError<'a>> {
+    pub fn parse_expr(&mut self, min_bp: u8) -> Result<Expr<'a, 'bump>, DiagnosticError<'a>> {
         Self::parse_expr_inner(&mut self.cursor, self.bump, min_bp, true)
     }
 
@@ -20,7 +20,7 @@ where
         bump: &'bump GrowableBump,
         min_bp: u8,
         allow_struct_init: bool,
-    ) -> Result<Expr<'a, 'bump>, ParserError<'a>> {
+    ) -> Result<Expr<'a, 'bump>, DiagnosticError<'a>> {
         let mut lhs: Expr<'a, 'bump> = Self::parse_prefix(cursor, bump)?;
 
         loop {
@@ -120,8 +120,10 @@ where
                     cursor.expect(TokenKind::RParen)?;
 
                     let callee = bump.alloc_value_immutable(lhs);
+                    // TODO: generics
                     lhs = Expr::Call {
                         callee,
+                        generic_args: &[],
                         arguments: bump.alloc_slice_copy(&args),
                         span: rparen_span,
                     };
@@ -216,7 +218,7 @@ where
     fn parse_prefix(
         cursor: &mut Cursor<'a>,
         bump: &'bump GrowableBump,
-    ) -> Result<Expr<'a, 'bump>, ParserError<'a>> {
+    ) -> Result<Expr<'a, 'bump>, DiagnosticError<'a>> {
         let tok = cursor.peek_token();
 
         match tok.kind {
