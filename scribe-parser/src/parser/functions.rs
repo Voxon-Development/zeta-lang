@@ -1,5 +1,5 @@
 use ir::ast::{Block, ExternModifier, FuncDecl, FuncModifiers, FuncSafety, InlineModifier, Stmt, Visibility};
-use ir::errors::error::ParserError;
+use ir::errors::error::{DiagnosticError, ParseErrorKind};
 use crate::parser::descent_parser::DescentParser;
 use ir::tokens::{Cursor, TokenKind};
 
@@ -14,14 +14,14 @@ where
         let name = match name_token.kind {
             TokenKind::Ident => {
                 match name_token.text {
-                    Some(empty) if empty.is_empty() => {
-                        return Err(ParserError::EmptyIdent { location: name_token.span })
+                    Some(text) if text.is_empty() => {
+                        return Err(DiagnosticError::new(ParseErrorKind::EmptyIdent, name_token.span))
                     }
                     Some(text) => text,
-                    None => return Err(ParserError::EmptyIdent { location: name_token.span })
+                    None => return Err(DiagnosticError::new(ParseErrorKind::EmptyIdent, name_token.span))
                 }
             }
-            _ => return Err(ParserError::InvalidFunctionName { name_type: name_token.kind, location: name_token.span })
+            _ => return Err(DiagnosticError::new(ParseErrorKind::InvalidFunctionName { found: name_token.kind }, name_token.span))
         };
 
         let generics = self.parse_generics()?;
@@ -56,13 +56,13 @@ where
             TokenKind::Ident => {
                 match name_token.text {
                     Some(empty) if empty.is_empty() => {
-                        return Err(ParserError::EmptyIdent { location: name_token.span })
+                        return Err(DiagnosticError::new(ParseErrorKind::EmptyIdent, name_token.span))
                     }
                     Some(text) => text,
-                    None => return Err(ParserError::EmptyIdent { location: name_token.span })
+                    None => return Err(DiagnosticError::new(ParseErrorKind::EmptyIdent, name_token.span))
                 }
             }
-            _ => return Err(ParserError::InvalidFunctionName { name_type: name_token.kind, location: name_token.span })
+            _ => return Err(DiagnosticError::new(ParseErrorKind::InvalidFunctionName { found: name_token.kind }, name_token.span))
         };
 
         let generics = self.parse_generics()?;
@@ -133,11 +133,13 @@ where
                             cursor.advance();
                             text
                         }
-                        _ => return Err(ParserError::UnexpectedToken {
-                            expected: TokenKind::Ident,
-                            found: tok.kind,
-                            span: tok.span,
-                        }),
+                        _ => return Err(DiagnosticError::new(
+                            ParseErrorKind::UnexpectedToken { 
+                                expected: TokenKind::Ident, 
+                                found: tok.kind 
+                            },
+                            tok.span
+                        )),
                     };
                     extern_modifier = ExternModifier::Abi(abi);
                 }

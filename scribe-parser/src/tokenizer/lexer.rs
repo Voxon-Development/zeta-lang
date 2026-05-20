@@ -153,7 +153,7 @@ impl Lexer {
 
         macro_rules! span {
             () => {
-                SourceSpan::new(file_name, pos, line)
+                SourceSpan::new(file_name, line, column)
             };
         }
 

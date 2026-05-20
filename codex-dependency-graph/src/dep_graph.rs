@@ -1005,7 +1005,7 @@ impl DepGraph {
                     }
                 }
             }
-            HirType::Pointer(inner) => {
+            HirType::SafePointer(inner) | HirType::UnsafePointer(inner) => {
                 // Recursively handle nested types
                 self.add_type_dependency(from_node, Some(inner), module_idx, pool);
             }

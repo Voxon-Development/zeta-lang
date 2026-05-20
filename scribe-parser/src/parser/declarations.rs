@@ -178,9 +178,19 @@ where
                 Visibility::Public
             };
 
-            let func = self.parse_function_with_visibility(method_vis)?;
-            if let ir::ast::Stmt::FuncDecl(func) = func {
-                methods.push(*func);
+            match self.parse_function_with_visibility(method_vis) {
+                Ok(func) => {
+                    if let ir::ast::Stmt::FuncDecl(func) = func {
+                        methods.push(*func);
+                    }
+                }
+                Err(e) => {
+                    self.diag.record(e);
+                    let stop = self.diag.synchronize(&mut self.cursor);
+                    if stop == TokenKind::RBrace || stop == TokenKind::EOF {
+                        break;
+                    }
+                }
             }
         }
 

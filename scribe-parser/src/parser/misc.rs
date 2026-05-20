@@ -1,9 +1,9 @@
 use crate::parser::descent_parser::DescentParser;
 use ir::ast::{Generic, NormalParam, Param, ThisParam, Type, TypeKind, Visibility};
-use ir::errors::error::DiagnosticError;
+use ir::errors::error::{DiagnosticError, ParseErrorKind};
 use ir::hir::StrId;
 use ir::span::SourceSpan;
-use ir::tokens::{Token, TokenKind};
+use ir::tokens::{Cursor, Token, TokenKind};
 use zetaruntime::bump::GrowableBump;
 
 impl<'a, 'bump> DescentParser<'a, 'bump>
@@ -87,12 +87,12 @@ where
             return Ok(Some(self.bump.alloc_slice_copy(&params)));
         }
 
-        loop {
+        while self.cursor.peek() != TokenKind::RParen && self.cursor.peek() != TokenKind::EOF {
             let mut is_mut = false;
 
             // Check for & or &mut at the start (reference parameter like &this or &mut self)
-            let mut is_aligned_ptr = false;
-            let mut is_ptr = false;
+            let mut is_safe_ptr = false;
+            let mut is_unsafe_ptr = false;
             let mut is_reference = false;
             let mut is_mut_reference = false;
 
@@ -107,10 +107,13 @@ where
                 }
                 TokenKind::Mul => {
                     self.cursor.advance();
-                    if self.cursor.peek() != TokenKind::Mul {
-                        is_aligned_ptr = true;
+                    // Check for [*]this (unsafe pointer)
+                    if self.cursor.peek() == TokenKind::RBracket {
+                        self.cursor.advance(); // consume ]
+                        is_unsafe_ptr = true;
                     } else {
-                        is_ptr = true;
+                        // *this (safe pointer)
+                        is_safe_ptr = true;
                     }
                 }
                 _ => {}
@@ -139,7 +142,7 @@ where
                 "this" => {
                     params.push(Param::This(self.bump.alloc_value_immutable(ThisParam {
                         is_mut,
-                        is_move: !is_reference && !is_mut_reference && !is_ptr && !is_aligned_ptr,
+                        is_move: !is_reference && !is_mut_reference && !is_unsafe_ptr && !is_safe_ptr,
                     })));
                 }
                 _ => {
@@ -163,7 +166,7 @@ where
                     params.push(Param::Normal(self.bump.alloc_value_immutable(
                         NormalParam {
                             is_mut,
-                            is_move: !is_reference && !is_ptr && !is_aligned_ptr,
+                            is_move: !is_reference && !is_unsafe_ptr && !is_safe_ptr,
                             name,
                             type_annotation: param_type,
                             visibility: Visibility::Public,
@@ -173,8 +176,23 @@ where
                 }
             }
 
-            if !self.cursor.consume(TokenKind::Comma) {
-                break;
+            match self.cursor.expect_or(TokenKind::Comma, TokenKind::RParen) {
+                Ok(t) if t.kind == TokenKind::RParen => {
+                    break;
+                }
+                Ok(_) => {
+                    // Happy path, continue
+                }
+                Err(error) => {
+                    self.diag.record(error);
+                    let kind = self.diag.synchronize(&mut self.cursor);
+                    if kind == TokenKind::LBrace || kind == TokenKind::RBrace || kind == TokenKind::RParen || kind == TokenKind::EOF {
+                        return Err(DiagnosticError::new(ParseErrorKind::UnexpectedTokens {
+                            expected: vec![TokenKind::RParen, TokenKind::Comma],
+                            found: kind,
+                        }, self.cursor.peek_token().span));
+                    }
+                }
             }
         }
 
@@ -201,22 +219,20 @@ where
                         }
                         _ => {
                             let tok = self.cursor.peek_token();
-                            return Err(ParserError::UnexpectedToken {
+                            return Err(DiagnosticError::new(ParseErrorKind::UnexpectedToken {
                                 expected: TokenKind::RBrace,
                                 found: tok.kind,
-                                span: tok.span,
-                            });
+                            }, tok.span));
                         }
                     }
                 }
                 // consume the `!`
                 let bang = self.cursor.peek_token();
                 if self.cursor.peek() != TokenKind::LogicalNot {
-                    return Err(ParserError::UnexpectedToken {
+                    return Err(DiagnosticError::new(ParseErrorKind::UnexpectedToken {
                         expected: TokenKind::LogicalNot,
-                        found: bang.kind,
-                        span: bang.span,
-                    });
+                        found: bang.kind
+                    }, bang.span));
                 }
                 self.cursor.advance();
                 true
@@ -276,18 +292,29 @@ where
             TokenKind::Underscore => return Ok(Type::infer()),
 
             TokenKind::Mul => {
-                // Check for **T (raw pointer) vs *T (aligned pointer)
-                let raw = if self.cursor.peek() == TokenKind::Mul {
-                    self.cursor.advance();
-                    true
-                } else {
-                    false
-                };
+                // *T is safe pointer (aligned, non-null)
                 let inner = self.parse_core_type()?;
                 let inner_ref = self.bump.alloc_value(inner);
-                TypeKind::Pointer {
+                TypeKind::SafePointer {
                     inner: inner_ref,
-                    raw,
+                }
+            }
+
+            TokenKind::LBracket => {
+                // Check for [*]T (unsafe pointer)
+                if self.cursor.peek() == TokenKind::Mul {
+                    self.cursor.advance(); // consume *
+                    self.cursor.expect(TokenKind::RBracket)?; // consume ]
+                    let inner = self.parse_core_type()?;
+                    let inner_ref = self.bump.alloc_value(inner);
+                    TypeKind::UnsafePointer {
+                        inner: inner_ref,
+                    }
+                } else {
+                    return Err(DiagnosticError::new(ParseErrorKind::UnexpectedToken {
+                        expected: TokenKind::Mul,
+                        found: self.cursor.peek_token().kind,
+                    }, self.cursor.peek_token().span));
                 }
             }
 
@@ -320,7 +347,7 @@ where
             TokenKind::Ident => {
                 let name = tok
                     .text
-                    .ok_or_else(|| ParserError::EmptyIdent { location: tok.span })?;
+                    .ok_or_else(|| DiagnosticError::new(ParseErrorKind::EmptyIdent, tok.span))?;
 
                 let generics = if self.cursor.peek() == TokenKind::Lt {
                     self.cursor.advance();
@@ -337,11 +364,10 @@ where
                             }
                             _ => {
                                 let t = self.cursor.peek_token();
-                                return Err(ParserError::UnexpectedToken {
+                                return Err(DiagnosticError::new(ParseErrorKind::UnexpectedToken {
                                     expected: TokenKind::Gt,
-                                    found: t.kind,
-                                    span: t.span,
-                                });
+                                    found: t.kind
+                                }, t.span));
                             }
                         }
                     }
@@ -354,11 +380,10 @@ where
             }
 
             _ => {
-                return Err(ParserError::UnexpectedToken {
+                return Err(DiagnosticError::new(ParseErrorKind::UnexpectedToken {
                     expected: TokenKind::Ident,
-                    found: tok.kind,
-                    span: tok.span,
-                });
+                    found: tok.kind
+                }, tok.span));
             }
         };
 

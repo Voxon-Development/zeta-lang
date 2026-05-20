@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
 use engraver_assembly_emit::cranelift::cranelift_backend::EmitError;
-use ir::errors::error::ParserError;
+use ir::errors::error::{DiagnosticError};
 use ir::hir::HirModule;
 use scribe_parser::parser::{ParserDiagnostics};
 use zetaruntime::arena::GrowableAtomicBump;

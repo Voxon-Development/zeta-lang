@@ -2,7 +2,7 @@ use crate::parser::descent_parser::DescentParser;
 use ir::tokens::{Cursor, TokenKind};
 use ir::{
     ast::{Expr, Op},
-    errors::error::ParserError,
+    errors::error::{DiagnosticError, ParseErrorKind},
     span::SourceSpan,
 };
 use zetaruntime::bump::GrowableBump;
@@ -17,7 +17,7 @@ where
 
     pub fn parse_expr_inner(
         cursor: &mut Cursor<'a>,
-        bump: &'bump GrowableBump,
+        bump: &'bump GrowableBump<'bump>,
         min_bp: u8,
         allow_struct_init: bool,
     ) -> Result<Expr<'a, 'bump>, DiagnosticError<'a>> {
@@ -345,11 +345,13 @@ where
                 })
             }
 
-            _ => Err(ParserError::UnexpectedToken {
-                expected: TokenKind::Ident,
-                found: tok.kind,
-                span: tok.span,
-            }),
+            _ => Err(DiagnosticError::new(
+                ParseErrorKind::UnexpectedToken { 
+                    expected: TokenKind::Ident, 
+                    found: tok.kind 
+                },
+                tok.span
+            )),
         }
     }
 }

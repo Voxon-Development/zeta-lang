@@ -239,7 +239,8 @@ where
     Struct(StrId, &'bump [HirType<'a, 'bump>]),
     Interface(StrId, &'bump [HirType<'a, 'bump>]),
     Enum(StrId, &'bump [HirType<'a, 'bump>]),
-    Pointer(&'a HirType<'a, 'bump>),
+    SafePointer(&'a HirType<'a, 'bump>),
+    UnsafePointer(&'a HirType<'a, 'bump>),
     Lambda {
         params: &'bump [HirType<'a, 'bump>],
         return_type: &'a HirType<'a, 'bump>,
@@ -511,7 +512,8 @@ where
             HirType::Void => write!(f, "void"),
             HirType::This => write!(f, "this"),
             HirType::Null => write!(f, "null"),
-            HirType::Pointer(inner) => write!(f, "*{}", inner),
+            HirType::SafePointer(inner) => write!(f, "*{}", inner),
+            HirType::UnsafePointer(inner) => write!(f, "[*]{}", inner),
         }
     }
 }
@@ -520,22 +522,55 @@ impl<'a, 'bump> HirType<'a, 'bump>
 where
     'bump: 'a,
 {
-    /// Creates a new pointer type that points to the given type
-    pub fn ptr_to(inner: &'a HirType<'a, 'bump>) -> Self {
-        HirType::Pointer(inner)
+    /// Creates a new safe pointer type that points to the given type (*T)
+    pub fn safe_ptr_to(inner: &'a HirType<'a, 'bump>) -> Self {
+        HirType::SafePointer(inner)
     }
 
-    /// Returns true if this is a pointer type
+    /// Creates a new unsafe pointer type that points to the given type ([*]T)
+    pub fn unsafe_ptr_to(inner: &'a HirType<'a, 'bump>) -> Self {
+        HirType::UnsafePointer(inner)
+    }
+
+    /// Returns true if this is a safe pointer type
+    pub fn is_safe_pointer(&self) -> bool {
+        matches!(self, HirType::SafePointer(_))
+    }
+
+    /// Returns true if this is an unsafe pointer type
+    pub fn is_unsafe_pointer(&self) -> bool {
+        matches!(self, HirType::UnsafePointer(_))
+    }
+
+    /// Returns true if this is any pointer type (safe or unsafe)
     pub fn is_pointer(&self) -> bool {
-        matches!(self, HirType::Pointer(_))
+        matches!(self, HirType::SafePointer(_) | HirType::UnsafePointer(_))
     }
 
-    /// If this is a pointer type, returns the inner type. Otherwise returns None.
-    pub fn as_pointer(&self) -> Option<&'a HirType<'a, 'bump>> {
-        if let HirType::Pointer(inner) = self {
+    /// If this is a safe pointer type, returns the inner type. Otherwise returns None.
+    pub fn as_safe_pointer(&self) -> Option<&'a HirType<'a, 'bump>> {
+        if let HirType::SafePointer(inner) = self {
             Some(inner)
         } else {
             None
+        }
+    }
+
+    /// If this is an unsafe pointer type, returns the inner type. Otherwise returns None.
+    pub fn as_unsafe_pointer(&self) -> Option<&'a HirType<'a, 'bump>> {
+        if let HirType::UnsafePointer(inner) = self {
+            Some(inner)
+        } else {
+            None
+        }
+    }
+
+    /// If this is any pointer type, returns the inner type. Otherwise returns None.
+    pub fn as_pointer(&self) -> Option<&'a HirType<'a, 'bump>> {
+        match self {
+            HirType::SafePointer(inner) => Some(inner),
+            HirType::UnsafePointer(inner) => Some(inner),
+            _ => None,
         }
     }
 

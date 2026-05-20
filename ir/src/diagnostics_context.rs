@@ -74,6 +74,10 @@ impl<'a> ParserDiagnosticsContext<'a> {
         &self.warnings
     }
 
+    pub fn into_diagnostics(self) -> (Vec<DiagnosticError<'a>>, Vec<DiagnosticWarning<'a>>) {
+        (self.errors, self.warnings)
+    }
+
     // -----------------------------------------------------------------------
     // Context stack
     // -----------------------------------------------------------------------
@@ -126,6 +130,12 @@ impl<'a> ParserDiagnosticsContext<'a> {
     /// Returns the `TokenKind` we stopped at so the caller can decide whether
     /// to consume it (e.g. consume `}`) or leave it (e.g. leave `fn`).
     pub fn synchronize(&self, cursor: &mut Cursor<'a>) -> TokenKind {
+        // Always consume at least one token so the caller can't get stuck
+        // re-entering recovery on the same position forever.
+        if cursor.peek() != TokenKind::EOF {
+            cursor.advance();
+        }
+
         loop {
             let kind = cursor.peek();
             if Self::is_sync_token(kind) {

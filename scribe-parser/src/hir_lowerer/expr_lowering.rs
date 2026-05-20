@@ -423,13 +423,16 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             HirExpr::Boolean(_) => HirType::Boolean,
             HirExpr::String(_) => HirType::String,
 
-            HirExpr::Ident(name) => self
-                .ctx
-                .variable_types
-                .borrow()
-                .get(name)
-                .cloned()
-                .unwrap_or_else(|| panic!("unknown identifier {:?}", name)),
+            HirExpr::Ident(name) => {
+                println!("lowering ident to variable: {name}");
+                self
+                    .ctx
+                    .variable_types
+                    .borrow()
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| panic!("unknown identifier {:?}", name))
+            },
 
             HirExpr::Binary {
                 left, op, right, ..

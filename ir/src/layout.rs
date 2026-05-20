@@ -117,16 +117,14 @@ pub fn layout_of_hir(ty: &HirType, target: TargetInfo) -> Result<Layout, LayoutE
         }),
         
         // Pointers are always ptr_bytes in size
-        HirType::Pointer(inner) => {
+        HirType::SafePointer(inner) | HirType::UnsafePointer(inner) => {
             let inner_layout = layout_of_hir(inner, target)?;
-            Ok(Layout { 
+            Ok(Layout {
                 size: inner_layout.size,
                 align: inner_layout.align
             })
         },
         
-        // For class/enum/interface, we'll treat them as opaque pointers for now
-        // In a full implementation, you would look up the actual type definition
         HirType::Struct(_, _) |
         HirType::Interface(_, _) | 
         HirType::Enum(_, _) => {

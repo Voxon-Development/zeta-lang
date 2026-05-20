@@ -35,8 +35,7 @@ mod tests {
                         let ty = let_stmt.type_annotation;
                         assert!(!ty.nullable);
                         match ty.kind {
-                            TypeKind::Pointer { raw, .. } => {
-                                assert!(!raw, "*i32 should be aligned (raw=false)");
+                            TypeKind::SafePointer { .. } => {
                             }
                             _ => panic!("Expected Pointer type"),
                         }
@@ -60,8 +59,7 @@ mod tests {
                         let ty = let_stmt.type_annotation;
                         assert!(ty.nullable);
                         match ty.kind {
-                            TypeKind::Pointer { raw, .. } => {
-                                assert!(!raw, "*i32? should be aligned (raw=false)");
+                            TypeKind::SafePointer { .. } => {
                             }
                             _ => panic!("Expected Pointer type"),
                         }
@@ -85,8 +83,7 @@ mod tests {
                         let ty = let_stmt.type_annotation;
                         assert!(!ty.nullable);
                         match ty.kind {
-                            TypeKind::Pointer { raw, .. } => {
-                                assert!(raw, "**i32 should be raw (raw=true)");
+                            TypeKind::SafePointer { .. } => {
                             }
                             _ => panic!("Expected Pointer type"),
                         }
@@ -110,8 +107,7 @@ mod tests {
                         let ty = let_stmt.type_annotation;
                         assert!(ty.nullable);
                         match ty.kind {
-                            TypeKind::Pointer { raw, .. } => {
-                                assert!(raw, "**i32? should be raw (raw=true)");
+                            TypeKind::SafePointer { .. } => {
                             }
                             _ => panic!("Expected Pointer type"),
                         }

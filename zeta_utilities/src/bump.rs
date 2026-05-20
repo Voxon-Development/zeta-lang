@@ -108,6 +108,7 @@ impl<'bump> Drop for Bump<'bump> {
     }
 }
 
+#[derive(Debug)]
 struct Chunk {
     ptr: NonNull<u8>,
     capacity: usize,
@@ -159,7 +160,7 @@ impl Drop for Chunk {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct GrowableBump<'bump> {
     chunks: Rc<RefCell<Vec<Chunk>>>,
     align: usize,

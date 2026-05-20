@@ -704,9 +704,11 @@ where
     UF64,
     Void,
     Infer,
-    Pointer {
+    SafePointer {
         inner: &'a Type<'a, 'bump>,
-        raw: bool, // true for **T (raw C pointer), false for *T (aligned, non-null)
+    },
+    UnsafePointer {
+        inner: &'a Type<'a, 'bump>,
     },
     Lambda {
         params: &'bump [Type<'a, 'bump>],
@@ -942,13 +944,8 @@ impl<'a, 'bump> Display for Type<'a, 'bump> {
             TypeKind::Char => f.write_str("char"),
             TypeKind::This => f.write_str("this"),
             TypeKind::Infer => f.write_str("_"),
-            TypeKind::Pointer { inner, raw } => {
-                if *raw {
-                    write!(f, "**{}", inner)
-                } else {
-                    write!(f, "*{}", inner)
-                }
-            }
+            TypeKind::SafePointer { inner } => write!(f, "*{}", inner),
+            TypeKind::UnsafePointer { inner } => write!(f, "[*]{}", inner),
         }?;
 
         if self.nullable {

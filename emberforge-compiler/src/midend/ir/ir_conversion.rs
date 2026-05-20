@@ -39,7 +39,7 @@ pub fn lower_type_hir(ty: &HirType) -> SsaType {
         | HirType::Enum(name, args) =>
             SsaType::User(*name, args.iter().map(lower_type_hir).collect()),
         HirType::Void => SsaType::Void,
-        HirType::Pointer(inner) => SsaType::Pointer(Box::new(lower_type_hir(inner))),
+        HirType::SafePointer(inner) | HirType::UnsafePointer(inner) => SsaType::Pointer(Box::new(lower_type_hir(inner))),
         HirType::Lambda { params, return_type, .. } => {
             let param_types: Vec<SsaType> = params.iter().map(lower_type_hir).collect();
             let ret_type = lower_type_hir(return_type);

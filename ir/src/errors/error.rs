@@ -113,6 +113,12 @@ pub enum ParseErrorKind {
         found: TokenKind,
     },
 
+    /// A specific token was expected but something else appeared.
+    UnexpectedTokens {
+        expected: Vec<TokenKind>,
+        found: TokenKind,
+    },
+
     /// A set of tokens was expected (for better "expected one of …" messages).
     UnexpectedTokenOneOf {
         expected: Vec<TokenKind>,
@@ -144,18 +150,20 @@ pub enum ParseErrorKind {
 
     /// Custom / catch-all for parser infrastructure errors.
     Internal { message: &'static str },
+    
+    ExpectedTypeAnnotation,
 }
 
 impl fmt::Display for ParseErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ParseErrorKind::UnexpectedToken { expected, found } =>
-                write!(f, "expected `{expected:?}`, found `{found:?}`"),
+                write!(f, "expected `{expected}`, found `{found}`"),
             ParseErrorKind::UnexpectedTokenOneOf { expected, found } => {
                 write!(f, "expected one of [")?;
                 for (i, t) in expected.iter().enumerate() {
                     if i > 0 { write!(f, ", ")?; }
-                    write!(f, "`{t:?}`")?;
+                    write!(f, "`{t}`")?;
                 }
                 write!(f, "], found `{found:?}`")
             }
@@ -177,6 +185,15 @@ impl fmt::Display for ParseErrorKind {
                 write!(f, "parser could not recover from previous errors"),
             ParseErrorKind::Internal { message } =>
                 write!(f, "internal parser error: {message}"),
+            ParseErrorKind::UnexpectedTokens { expected, found } => {
+                write!(f, "expected one of [")?;
+                for (i, t) in expected.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "`{t}`")?;
+                }
+                write!(f, "], found `{found:?}`")
+            }
+            ParseErrorKind::ExpectedTypeAnnotation => write!(f, "expected a type annotation"),
         }
     }
 }

@@ -159,7 +159,7 @@ impl<'a> Cursor<'a> {
     /// Advance past `kind` and return the consumed token, or return a
     /// `DiagnosticError` if the next token does not match.
     #[inline]
-    pub fn expect(&mut self, kind: TokenKind) -> Result<Token<'a>, DiagnosticError> {
+    pub fn expect(&mut self, kind: TokenKind) -> Result<Token<'a>, DiagnosticError<'a>> {
         let tok = self.peek_token();
         if tok.kind == kind {
             self.advance();
@@ -178,13 +178,35 @@ impl<'a> Cursor<'a> {
         }
     }
 
+    /// Advance past `kind` and return the consumed token, or return a
+    /// `DiagnosticError` if the next token does not match.
+    #[inline]
+    pub fn expect_or(&mut self, kind: TokenKind, or: TokenKind) -> Result<Token<'a>, DiagnosticError<'a>> {
+        let tok = self.peek_token();
+        if tok.kind == kind || tok.kind == or {
+            self.advance();
+            Ok(tok)
+        } else {
+            Err(DiagnosticError {
+                kind: if tok.kind == TokenKind::EOF {
+                    ParseErrorKind::UnexpectedEOF { expected: Some(kind) }
+                } else {
+                    ParseErrorKind::UnexpectedTokens { expected: vec![kind, or], found: tok.kind }
+                },
+                span: tok.span,
+                context: vec![],
+                notes: vec![],
+            })
+        }
+    }
+
     /// Advance past an identifier token and return `(StrId, SourceSpan)`, or
     /// return a `DiagnosticError` if the next token is not an identifier.
     ///
     /// Comment tokens are already skipped by `peek_token`, so no extra
     /// `skip_comments` call is needed here.
     #[inline]
-    pub fn expect_ident(&mut self) -> Result<(StrId, SourceSpan<'a>), DiagnosticError> {
+    pub fn expect_ident(&mut self) -> Result<(StrId, SourceSpan<'a>), DiagnosticError<'a>> {
         let tok = self.peek_token();
         match tok.kind {
             TokenKind::Ident => {
@@ -218,17 +240,6 @@ impl<'a> Cursor<'a> {
                 notes: vec![],
             }),
         }
-    }
-
-    /// Skip comment tokens explicitly.
-    ///
-    /// This is a no-op in practice because `peek`, `peek_token`, `advance`,
-    /// and `bump` all skip comments automatically.  Kept for call-sites that
-    /// call it defensively; they can be cleaned up over time.
-    #[inline]
-    #[deprecated(note = "comments are already skipped by peek/advance; this call is a no-op")]
-    pub fn skip_comments(&mut self) {
-        // peek() / advance() already handle comment skipping; nothing to do.
     }
 }
 

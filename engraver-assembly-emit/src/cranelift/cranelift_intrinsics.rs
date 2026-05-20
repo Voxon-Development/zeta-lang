@@ -373,7 +373,8 @@ fn ptr_store(args: &[Value], ret_hir_types: &&[HirType], builder: &mut FunctionB
     if !ret_hir_types.is_empty() {
         let val_ty = builder.func.dfg.value_type(val);
         let expected_ty = match ret_hir_types[0] {
-            HirType::Pointer(_) => ptr_ty,
+            HirType::SafePointer(_) => ptr_ty,
+            HirType::UnsafePointer(_) => ptr_ty,
             _ => super::clif_type(&clif_type_of(&ret_hir_types[0])),
         };
 

@@ -4,7 +4,7 @@ use ir::ast::{
     InternalExprStmt, LetStmt, MatchArm, MatchStmt, ModuleDecl, PackageStmt, Pattern, ReturnStmt,
     Stmt, Type, Visibility, WhileStmt,
 };
-use ir::errors::error::ParserError;
+use ir::errors::error::{DiagnosticError, ParseErrorKind};
 use ir::hir::StrId;
 use ir::tokens::TokenKind;
 
@@ -32,11 +32,28 @@ where
         let type_annotation = if self.cursor.consume(TokenKind::Colon) {
             self.parse_type()?
         } else {
+            self.diag.record(DiagnosticError::new(ParseErrorKind::ExpectedTypeAnnotation, self.cursor.peek_token().span));
+            let kind = self.diag.synchronize(&mut self.cursor);
+            if kind == TokenKind::EOF {
+                return Err(DiagnosticError::new(ParseErrorKind::UnexpectedEOF { expected: None }, self.cursor.peek_token().span));
+            }
+
             Type::infer()
         };
 
         self.cursor.expect(TokenKind::Assign)?;
-        let value = self.parse_expr(0)?;
+        let value = match self.parse_expr(0) {
+            Ok(value) => value,
+            Err(e) => {
+                self.diag.record(e);
+                let kind = self.diag.synchronize(&mut self.cursor);
+                return if kind == TokenKind::EOF {
+                    Err(DiagnosticError::new(ParseErrorKind::UnexpectedEOF { expected: None }, self.cursor.peek_token().span))
+                } else {
+                    Err(DiagnosticError::new(ParseErrorKind::InvalidExpression { found: kind }, self.cursor.peek_token().span))
+                }
+            }
+        };
         self.cursor.consume(TokenKind::Semicolon);
 
         let let_stmt = LetStmt {
@@ -223,7 +240,7 @@ where
         self.cursor.consume(TokenKind::Match);
 
         // Parse subject without allowing struct-init syntax (to avoid ambiguity with `{`)
-        let expr = Self::parse_expr_inner(&mut self.cursor, self.bump, 0, false)?;
+        let expr: Expr<'a, 'bump> = Self::parse_expr_inner(&mut self.cursor, self.bump, 0, false)?;
 
         self.cursor.expect(TokenKind::LBrace)?;
 
@@ -373,11 +390,13 @@ where
 
             other => {
                 let tok = self.cursor.peek_token();
-                Err(ir::errors::error::ParserError::UnexpectedToken {
-                    expected: TokenKind::Ident,
-                    found: other,
-                    span: tok.span,
-                })
+                Err(DiagnosticError::new(
+                    ParseErrorKind::UnexpectedToken {
+                        expected: TokenKind::Ident,
+                        found: other,
+                    },
+                    tok.span,
+                ))
             }
         }
     }
@@ -448,7 +467,18 @@ where
 
         let mut stmts = Vec::new_in(self.bump);
         while self.cursor.peek() != TokenKind::RBrace && self.cursor.peek() != TokenKind::EOF {
-            stmts.push(self.parse_stmt(ir::ast::Visibility::Public)?);
+            match self.parse_stmt(Visibility::Public) {
+                Ok(s) => stmts.push(s),
+                Err(e) => {
+                    self.diag.record(e);
+                    let stop = self.diag.synchronize(&mut self.cursor);
+                    // If synchronize landed on `}` or EOF, stop looping
+                    // DON'T consume the `}` here, let expect() below do it.
+                    if stop == TokenKind::RBrace || stop == TokenKind::EOF {
+                        break;
+                    }
+                }
+            }
         }
 
         self.cursor.expect(TokenKind::RBrace)?;
