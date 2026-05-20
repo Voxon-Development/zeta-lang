@@ -1,10 +1,10 @@
 package zeta
 
-extern "intrinsic" fn sizeof<T>(): usize;
-extern "intrinsic" fn alignof<T>(): usize;
+extern "intrinsic" fn sizeof<T>() -> usize;
+extern "intrinsic" fn alignof<T>() -> usize;
 
-extern "intrinsic" fn stack_alloc<T, const N: usize>(): *T;
+extern "intrinsic" fn stack_alloc<T, const N: usize>() -> *T;
 
 extern "intrinsic" fn stack_alloc_zeroed<T, const N: usize>();
 
-extern "intrinsic" fn assume_non_null<T>(p: *T): T;
+extern "intrinsic" fn assume_non_null<T>(p: *T) -> T;
