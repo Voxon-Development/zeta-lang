@@ -91,7 +91,7 @@ A memory-safe, systems programming languages, to be made in a new generation of 
     
 ---
 
-### # Contributing
+### Contributing
 
 We’re excited you want to contribute to Zeta-Lang! By joining our community of developers, you’ll help shape a high-performance, memory-safe, and fearless concurrency language.
 
@@ -113,7 +113,7 @@ We welcome contributions of **all sizes**, from fixing typos to implementing maj
 
 ---
 
-### # License
+### License
 
 Zeta-Lang is licensed under the **GNU General Public License v3.0 (GPL-3.0)**.
 
