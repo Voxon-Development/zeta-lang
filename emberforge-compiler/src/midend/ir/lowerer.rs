@@ -1,7 +1,7 @@
 use crate::midend::ir::block_data::CurrentBlockData;
 use crate::midend::ir::expr_lowerer::MirExprLowerer;
 use crate::midend::ir::ir_conversion::lower_type_hir;
-use ir::hir::{HirStruct, HirExpr, HirFunc, HirParam, HirStmt, HirType, StrId};
+use ir::hir::{HirExpr, HirFunc, HirParam, HirStmt, HirStruct, HirType, StrId, ThisPassingKind};
 use ir::ir_hasher::FxHashBuilder;
 use ir::ssa_ir::{BasicBlock, BlockId, Function, Instruction, Operand, SsaType, Value};
 use smallvec::SmallVec;
@@ -29,7 +29,9 @@ pub struct FunctionLowerer<'a, 'bump> {
 }
 
 impl<'a, 'bump> FunctionLowerer<'a, 'bump>
-where 'bump: 'a {
+where
+    'bump: 'a,
+{
     pub fn new(
         hir_fn: &HirFunc<'a, 'bump>,
         funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
@@ -50,7 +52,19 @@ where 'bump: 'a {
         classes: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
         context: Arc<StringPool>,
     ) -> Result<Self, std::alloc::AllocError> {
-        Self::new_internal(hir_fn, None, funcs, class_field_offsets, class_method_slots, class_mangled_map, class_vtable_slots, interface_id_map, interface_method_slots, classes, context)
+        Self::new_internal(
+            hir_fn,
+            None,
+            funcs,
+            class_field_offsets,
+            class_method_slots,
+            class_mangled_map,
+            class_vtable_slots,
+            interface_id_map,
+            interface_method_slots,
+            classes,
+            context,
+        )
     }
 
     pub fn new_with_class(
@@ -74,7 +88,19 @@ where 'bump: 'a {
         classes: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
         context: Arc<StringPool>,
     ) -> Result<Self, std::alloc::AllocError> {
-        Self::new_internal(hir_fn, Some(class_name), funcs, class_field_offsets, class_method_slots, class_mangled_map, class_vtable_slots, interface_id_map, interface_method_slots, classes, context)
+        Self::new_internal(
+            hir_fn,
+            Some(class_name),
+            funcs,
+            class_field_offsets,
+            class_method_slots,
+            class_mangled_map,
+            class_vtable_slots,
+            interface_id_map,
+            interface_method_slots,
+            classes,
+            context,
+        )
     }
 
     fn new_internal(
@@ -102,7 +128,7 @@ where 'bump: 'a {
         let func_name = if let Some(class_name) = class_context {
             let class_str = context.resolve_string(&class_name);
             let method_str = context.resolve_string(&hir_fn.name);
-            let mangled = format!("{}::{}", class_str, method_str);
+            let mangled = format!("{}_{}", class_str, method_str);
             StrId(context.intern(&mangled))
         } else {
             hir_fn.name.clone()
@@ -124,7 +150,15 @@ where 'bump: 'a {
         let mut value_types = HashMap::with_hasher(FxHashBuilder);
         if let Some(params) = hir_fn.params {
             // allocate params
-            Self::insert_existing_params_with_class(context.clone(), &mut func, &mut next_value, &mut var_map, &mut value_types, params, class_context);
+            Self::insert_existing_params_with_class(
+                context.clone(),
+                &mut func,
+                &mut next_value,
+                &mut var_map,
+                &mut value_types,
+                params,
+                class_context,
+            );
         }
 
         // create entry block
@@ -136,13 +170,8 @@ where 'bump: 'a {
             instructions: Vec::new(),
         });
 
-        let current_block_data: CurrentBlockData = CurrentBlockData::new(
-            func,
-            entry_bb,
-            next_value,
-            next_block,
-            value_types,
-        );
+        let current_block_data: CurrentBlockData =
+            CurrentBlockData::new(func, entry_bb, next_value, next_block, value_types);
 
         Ok(Self {
             current_block_data,
@@ -167,22 +196,39 @@ where 'bump: 'a {
         var_map: &mut HashMap<StrId, Value, FxHashBuilder>,
         value_types: &mut HashMap<Value, SsaType, FxHashBuilder>,
         params: &[HirParam],
-        class_context: Option<StrId>)
-    {
+        _class_context: Option<StrId>,
+    ) {
         for p in params {
             let v = Value(*next_value);
             *next_value += 1;
 
-            let (name, param_type) = match *p {
-                HirParam::Normal { name, param_type } => (name, param_type),
-                HirParam::This => {
-                    (StrId(context.intern("this")), HirType::This)
+            match *p {
+                HirParam::This { kind } => {
+                    let name = StrId(context.intern("this"));
+                    // For ref/ptr passing kinds, `this` arrives as a pointer (i64 address).
+                    // For move/move-mut, it arrives as an inline struct value, but since our
+                    // ABI already passes structs as stack-allocated pointers everywhere, we
+                    // always use Pointer here. The difference is only semantic (mutability).
+                    let inner_ty = if let Some(cn) = _class_context {
+                        SsaType::User(cn, vec![])
+                    } else {
+                        SsaType::Dyn
+                    };
+                    let ty = match kind {
+                        ThisPassingKind::Move | ThisPassingKind::MoveMut => inner_ty,
+                        _ => SsaType::Pointer(Box::new(inner_ty)),
+                    };
+                    func.params.push((v, ty.clone()));
+                    value_types.insert(v, ty);
+                    var_map.insert(name, v);
                 }
-            };
-            let ty: SsaType = lower_type_hir(&param_type);
-            func.params.push((v, ty.clone()));
-            value_types.insert(v, ty);
-            var_map.insert(name.into(), v);
+                HirParam::Normal { name, param_type } => {
+                    let ty = lower_type_hir(&param_type);
+                    func.params.push((v, ty.clone()));
+                    value_types.insert(v, ty);
+                    var_map.insert(name, v);
+                }
+            }
         }
     }
 
@@ -194,7 +240,7 @@ where 'bump: 'a {
                         self.lower_stmt(stmt);
                     }
                 }
-                _ => panic!()
+                _ => panic!(),
             }
         }
     }
@@ -221,17 +267,17 @@ where 'bump: 'a {
 
     fn allow_lowering_expr(&mut self, value: &HirExpr<'a, 'bump>) -> Value {
         let mut el = MirExprLowerer::new(
-               &mut self.current_block_data,
-               &self.funcs,
-               &mut self.var_map,
-               self.context.clone(),
-               &self.class_field_offsets,
-               &self.class_method_slots,
-               &self.class_mangled_map,
-               &self.class_vtable_slots,
-               &self.interface_id_map,
-               &self.interface_method_slots,
-               &self.classes,
+            &mut self.current_block_data,
+            &self.funcs,
+            &mut self.var_map,
+            self.context.clone(),
+            &self.class_field_offsets,
+            &self.class_method_slots,
+            &self.class_mangled_map,
+            &self.class_vtable_slots,
+            &self.interface_id_map,
+            &self.interface_method_slots,
+            &self.classes,
         );
         el.lower_expr(value)
     }

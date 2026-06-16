@@ -1,75 +1,59 @@
-use ir::ast::{Block, ExternModifier, FuncDecl, FuncModifiers, FuncSafety, InlineModifier, Stmt, Visibility};
-use ir::errors::error::{DiagnosticError, ParseErrorKind};
 use crate::parser::descent_parser::DescentParser;
+use ir::ast::{
+    ExternModifier, FuncDecl, FuncModifiers, FuncSafety, InlineModifier, Stmt, ThrowsDecl, Type,
+    Visibility,
+};
+use ir::errors::error::{DiagnosticError, ParseErrorKind};
 use ir::tokens::{Cursor, TokenKind};
 
 impl<'a, 'bump> DescentParser<'a, 'bump>
 where
     'bump: 'a,
 {
-    pub fn parse_function_with_visibility(&mut self, visibility: Visibility) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
-        let function_metadata = Self::get_func_metadata(&mut self.cursor, visibility)?;
-        self.cursor.expect(TokenKind::Fn)?;
-        let name_token = self.cursor.bump();
-        let name = match name_token.kind {
-            TokenKind::Ident => {
-                match name_token.text {
-                    Some(text) if text.is_empty() => {
-                        return Err(DiagnosticError::new(ParseErrorKind::EmptyIdent, name_token.span))
-                    }
-                    Some(text) => text,
-                    None => return Err(DiagnosticError::new(ParseErrorKind::EmptyIdent, name_token.span))
-                }
-            }
-            _ => return Err(DiagnosticError::new(ParseErrorKind::InvalidFunctionName { found: name_token.kind }, name_token.span))
-        };
-
-        let generics = self.parse_generics()?;
-        let params = self.parse_params()?;
-
-        let return_type = if self.cursor.consume(TokenKind::Arrow) {
-            Some(self.parse_type()?)
-        } else {
-            None
-        };
-
-        let body = self.parse_block()?;
-
-        let func = FuncDecl {
-            function_metadata,
-            name,
-            generics,
-            params,
-            return_type,
-            body: Some(self.bump.alloc_value_immutable(body)),
-        };
-        Ok(Stmt::FuncDecl(self.bump.alloc_value_immutable(func)))
-    }
-
     /// Parse a function signature with optional body (for interfaces)
     /// Can end with either `;` (just signature) or `{ ... }` (with body)
-    pub fn parse_function_signature(&mut self, visibility: Visibility) -> Result<FuncDecl<'a, 'bump>, DiagnosticError<'a>> {
+    pub fn parse_function_signature(
+        &mut self,
+        visibility: Visibility,
+    ) -> Result<FuncDecl<'a, 'bump>, DiagnosticError<'a>> {
         let function_metadata = Self::get_func_metadata(&mut self.cursor, visibility)?;
-        self.cursor.expect(TokenKind::Fn)?;
+        let fn_token = self.cursor.expect(TokenKind::Fn)?;
+
         let name_token = self.cursor.bump();
         let name = match name_token.kind {
-            TokenKind::Ident => {
-                match name_token.text {
-                    Some(empty) if empty.is_empty() => {
-                        return Err(DiagnosticError::new(ParseErrorKind::EmptyIdent, name_token.span))
-                    }
-                    Some(text) => text,
-                    None => return Err(DiagnosticError::new(ParseErrorKind::EmptyIdent, name_token.span))
+            TokenKind::Ident => match name_token.text {
+                Some(text) if text.is_empty() => {
+                    return Err(DiagnosticError::new(
+                        ParseErrorKind::EmptyIdent,
+                        name_token.span,
+                    ));
                 }
+                Some(text) => text,
+                None => {
+                    return Err(DiagnosticError::new(
+                        ParseErrorKind::EmptyIdent,
+                        name_token.span,
+                    ));
+                }
+            },
+            _ => {
+                return Err(DiagnosticError::new(
+                    ParseErrorKind::InvalidFunctionName {
+                        found: name_token.kind,
+                    },
+                    name_token.span,
+                ));
             }
-            _ => return Err(DiagnosticError::new(ParseErrorKind::InvalidFunctionName { found: name_token.kind }, name_token.span))
         };
 
         let generics = self.parse_generics()?;
+
         let params = self.parse_params()?;
 
+        let throws = self.parse_throws()?;
+
         let return_type = if self.cursor.consume(TokenKind::Arrow) {
-            Some(self.parse_type()?)
+            self.parse_return_type()
         } else {
             None
         };
@@ -82,17 +66,54 @@ where
             Some(self.bump.alloc_value_immutable(block))
         };
 
-        Ok(FuncDecl {
+        let func_decl = FuncDecl {
             function_metadata,
             name,
             generics,
             params,
             return_type,
+            throws,
             body,
-        })
+            span: fn_token.span,
+        };
+
+        Ok(func_decl)
     }
 
-    fn get_func_metadata(cursor: &mut Cursor<'a>, visibility: Visibility) -> Result<FuncModifiers, DiagnosticError<'a>> {
+    fn parse_return_type(&mut self) -> Option<Type<'a, 'bump>> {
+        // Only attempt to parse a return type if the next token can begin one.
+        // Without this guard, `parse_core_type` would unconditionally `bump()`
+        // and consume `{` or `;`, turning e.g. a bare `void` keyword into
+        // TypeKind::Struct { name: "void", .. } when the lexer emits it as a keyword.
+        match self.cursor.peek() {
+            TokenKind::Semicolon | TokenKind::LBrace | TokenKind::EOF => None,
+            _ => self.parse_type().ok(),
+        }
+    }
+
+    pub fn parse_function_with_visibility(
+        &mut self,
+        visibility: Visibility,
+    ) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
+        let func = self.parse_function_signature(visibility)?;
+
+        let is_extern = !matches!(func.function_metadata.extern_modifier, ExternModifier::None);
+
+        // Non-extern functions must have a body
+        if func.body.is_none() && !is_extern {
+            return Err(DiagnosticError::new(
+                ParseErrorKind::ExpectedBlock,
+                self.cursor.peek_token().span,
+            ));
+        }
+
+        Ok(Stmt::FuncDecl(self.bump.alloc_value_immutable(func)))
+    }
+
+    fn get_func_metadata(
+        cursor: &mut Cursor<'a>,
+        visibility: Visibility,
+    ) -> Result<FuncModifiers, DiagnosticError<'a>> {
         let mut inline_modifier = InlineModifier::None;
         let mut extern_modifier = ExternModifier::None;
         let mut func_safety = FuncSafety::Safe;
@@ -121,27 +142,9 @@ where
                 }
                 TokenKind::Extern => {
                     cursor.advance();
-                    let tok = cursor.peek_token();
-                    let abi = match tok.kind {
-                        TokenKind::Ident => {
-                            let text = tok.text.expect("ident must have text");
-                            cursor.advance();
-                            text
-                        }
-                        TokenKind::String => {
-                            let text = tok.text.expect("string must have text");
-                            cursor.advance();
-                            text
-                        }
-                        _ => return Err(DiagnosticError::new(
-                            ParseErrorKind::UnexpectedToken { 
-                                expected: TokenKind::Ident, 
-                                found: tok.kind 
-                            },
-                            tok.span
-                        )),
-                    };
-                    extern_modifier = ExternModifier::Abi(abi);
+                    cursor.expect(TokenKind::LParen)?;
+                    extern_modifier = ExternModifier::Abi(cursor.expect_ident()?.0);
+                    cursor.expect(TokenKind::RParen)?;
                 }
                 TokenKind::Unsafe => {
                     if func_safety == FuncSafety::Unsafe {
@@ -158,7 +161,26 @@ where
             visibility,
             extern_modifier,
             inline_modifier,
-            func_safety
+            func_safety,
         })
+    }
+
+    fn parse_throws(&mut self) -> Result<Option<ThrowsDecl<'a, 'bump>>, DiagnosticError<'a>> {
+        let throws_token = self.cursor.peek_token();
+        if throws_token.kind != TokenKind::Throws {
+            return Ok(None);
+        };
+
+        self.cursor.advance();
+
+        let error_type = match self.cursor.peek() {
+            TokenKind::Semicolon | TokenKind::LBrace => None,
+            _ => Some(self.parse_type()?),
+        };
+
+        Ok(Some(ThrowsDecl {
+            error_type,
+            span: throws_token.span,
+        }))
     }
 }

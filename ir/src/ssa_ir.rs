@@ -1,6 +1,6 @@
-use std::collections::HashMap;
-use crate::hir::{HirStruct, HirEnum, HirInterface, StrId};
+use crate::hir::{HirEnum, HirInterface, HirStruct, StrId};
 use crate::ir_hasher::FxHashBuilder;
+use std::collections::HashMap;
 
 impl SsaType {
     /// Creates a new pointer type that points to the given type
@@ -53,30 +53,30 @@ pub enum SsaType {
     U128,
     F32,
     F64,
-    ISize,  // Signed pointer-sized integer
-    USize,  // Unsigned pointer-sized integer
+    ISize, // Signed pointer-sized integer
+    USize, // Unsigned pointer-sized integer
     Null,
 
     // Special types
     Bool,
-    String,  // Fat pointer to string data
-    Void,    // Unit type, zero size
-    
+    String, // Fat pointer to string data
+    Void,   // Unit type, zero size
+
     // Composite types
-    User(StrId, Vec<SsaType>),  // User-defined type with generic parameters
-    Enum(Vec<SsaType>),         // Tagged union of types
-    Tuple(Vec<SsaType>),        // Fixed-size collection of heterogeneous types
-    
+    User(StrId, Vec<SsaType>), // User-defined type with generic parameters
+    Enum(Vec<SsaType>),        // Tagged union of types
+    Tuple(Vec<SsaType>),       // Fixed-size collection of heterogeneous types
+
     // Pointer types
-    Pointer(Box<SsaType>),      // Pointer to another type
-    
+    Pointer(Box<SsaType>), // Pointer to another type
+
     // Dynamically sized types
-    Dyn,     // Trait object (fat pointer)
-    Slice,   // Slice (fat pointer)
+    Dyn,   // Trait object (fat pointer)
+    Slice, // Slice (fat pointer)
 }
 
-use smallvec::SmallVec;
 use crate::ast::FuncModifiers;
+use smallvec::SmallVec;
 
 #[derive(Debug, Clone)]
 pub enum Instruction {
@@ -111,16 +111,16 @@ pub enum Instruction {
     /// Direct class method call (resolved at compile time)
     ClassCall {
         dest: Option<Value>,
-        object: Value,          // `this` pointer
-        method_id: usize,       // method index
+        object: Value,    // `this` pointer
+        method_id: usize, // method index
         args: SmallVec<Operand, 8>,
     },
 
     /// Virtual/interface call through vtable
     InterfaceDispatch {
         dest: Option<Value>,
-        object: Value,          // interface reference
-        method_slot: usize,     // vtable slot
+        object: Value,      // interface reference
+        method_slot: usize, // vtable slot
         args: SmallVec<Operand, 8>,
     },
 
@@ -132,14 +132,22 @@ pub enum Instruction {
     },
 
     /// Stack allocation (SSA-local)
-    Alloc {
+    StackAlloc {
         dest: Value,
         ty: SsaType,
         count: usize, // number of elements if array
     },
 
-    StoreField { base: Operand, offset: usize, value: Operand },
-    LoadField { dest: Value, base: Operand, offset: usize },
+    StoreField {
+        base: Operand,
+        offset: usize,
+        value: Operand,
+    },
+    LoadField {
+        dest: Value,
+        base: Operand,
+        offset: usize,
+    },
 
     /// Interpolation (string concatenation)
     Interpolate {
@@ -159,7 +167,9 @@ pub enum Instruction {
         arms: SmallVec<(StrId, BlockId), 8>, // usually <=8 arms
     },
 
-    Jump { target: BlockId },
+    Jump {
+        target: BlockId,
+    },
 
     Branch {
         cond: Operand,
@@ -167,10 +177,15 @@ pub enum Instruction {
         else_bb: BlockId,
     },
 
-    Ret { value: Option<Operand> },
-    Const { dest: Value, ty: SsaType, value: Operand },
+    Ret {
+        value: Option<Operand>,
+    },
+    Const {
+        dest: Value,
+        ty: SsaType,
+        value: Operand,
+    },
 }
-
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum InterpolationOperand {
@@ -222,7 +237,9 @@ pub struct InterfaceLayout {
 
 #[derive(Debug, Clone, Default)]
 pub struct Module<'a, 'bump>
-where 'bump: 'a {
+where
+    'bump: 'a,
+{
     pub functions: HashMap<StrId, Function, FxHashBuilder>,
     pub classes: HashMap<StrId, HirStruct<'a, 'bump>, FxHashBuilder>,
     pub interfaces: HashMap<StrId, HirInterface<'a, 'bump>, FxHashBuilder>,
@@ -242,7 +259,6 @@ pub enum Type {
     // possibly more like Float, Struct, etc.
 }
 
-
 impl<'a, 'bump> Module<'a, 'bump> {
     pub fn new() -> Module<'a, 'bump> {
         Module::default()
@@ -251,7 +267,16 @@ impl<'a, 'bump> Module<'a, 'bump> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
-    Add, Sub, Mul, Div, Eq, Ne, Lt, Le, Gt, Ge,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
     Mod,
     BitAnd,
     BitOr,
@@ -265,8 +290,8 @@ pub fn inst_is_terminator(inst: &Instruction) -> bool {
     matches!(
         inst,
         Instruction::Jump { .. }
-        | Instruction::Branch { .. }
-        | Instruction::Ret { .. }
-        | Instruction::MatchEnum { .. } // you lower this to br_table (terminator)
+            | Instruction::Branch { .. }
+            | Instruction::Ret { .. }
+            | Instruction::MatchEnum { .. } // you lower this to br_table (terminator)
     )
 }

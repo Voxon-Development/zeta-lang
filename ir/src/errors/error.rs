@@ -1,22 +1,23 @@
-use std::error::Error;
-use std::fmt;
-use std::fmt::{Debug};
-use thiserror::Error;
-use crate::ast::{Expr, Type, TypeKind};
+use crate::ast::{Expr, Type};
 use crate::hir::StrId;
 use crate::span::SourceSpan;
 use crate::tokens::TokenKind;
+use std::fmt;
+use std::fmt::Debug;
+use thiserror::Error;
 
 // Represents a type-checking error with detailed diagnostic information.
 #[derive(Debug, Error, Clone)]
 pub enum TypeError<'a, 'bump>
-where 'bump: 'a {
+where
+    'bump: 'a,
+{
     // Two types could not be unified.
     // Example: trying to assign a string to an integer variable.
     #[error("Type mismatch: expected {expected} but found {found} at {location}")]
     Mismatch {
-        expected: Type<'a, 'bump>,    // The type we expected (e.g. int)
-        found: Type<'a, 'bump>,       // The type we actually got (e.g. string)
+        expected: Type<'a, 'bump>, // The type we expected (e.g. int)
+        found: Type<'a, 'bump>,    // The type we actually got (e.g. string)
         location: SourceSpan<'a>,
     },
 
@@ -45,7 +46,9 @@ where 'bump: 'a {
     },
 
     // A function call was made with incorrect argument types or count.
-    #[error("Invalid function call: {function} expected {expected_params:?} but got {found_params:?} at {location}")]
+    #[error(
+        "Invalid function call: {function} expected {expected_params:?} but got {found_params:?} at {location}"
+    )]
     InvalidFunctionCall {
         function: StrId,
         expected_params: &'bump [Type<'a, 'bump>],
@@ -55,9 +58,7 @@ where 'bump: 'a {
 
     // A function call or usage to a non-existing function
     #[error("No function called {function} was found")]
-    MissingFunction {
-        function: StrId
-    },
+    MissingFunction { function: StrId },
 
     // A trait method was called on a type that does not implement it.
     #[error("Type {target_type} does not implement trait {trait_name} at {location}")]
@@ -96,7 +97,7 @@ where 'bump: 'a {
         field_name: StrId,
         location: SourceSpan<'a>,
     },
-    
+
     #[error("No such field called {method_name} for type {type_name} at {location}")]
     NoSuchMethod {
         type_name: StrId,
@@ -131,16 +132,24 @@ pub enum ParseErrorKind {
     },
 
     /// An expression could not be started from the current token.
-    InvalidExpression { found: TokenKind },
+    InvalidExpression {
+        found: TokenKind,
+    },
 
     /// A type position contained a token that cannot begin a type.
-    InvalidType { found: TokenKind },
+    InvalidType {
+        found: TokenKind,
+    },
 
     /// A pattern arm contained an unrecognisable token.
-    InvalidPattern { found: TokenKind },
+    InvalidPattern {
+        found: TokenKind,
+    },
 
     /// Function name was missing or was not an identifier.
-    InvalidFunctionName { found: TokenKind },
+    InvalidFunctionName {
+        found: TokenKind,
+    },
 
     /// An identifier token had empty text (lexer bug).
     EmptyIdent,
@@ -149,51 +158,72 @@ pub enum ParseErrorKind {
     RecoveryFailure,
 
     /// Custom / catch-all for parser infrastructure errors.
-    Internal { message: &'static str },
-    
+    Internal {
+        message: &'static str,
+    },
+
     ExpectedTypeAnnotation,
+
+    ExpectedBlock,
+    ExpectedTypeAfterThrows,
 }
 
 impl fmt::Display for ParseErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ParseErrorKind::UnexpectedToken { expected, found } =>
-                write!(f, "expected `{expected}`, found `{found}`"),
+            ParseErrorKind::UnexpectedToken { expected, found } => {
+                write!(f, "expected `{expected}`, found `{found}`")
+            }
             ParseErrorKind::UnexpectedTokenOneOf { expected, found } => {
                 write!(f, "expected one of [")?;
                 for (i, t) in expected.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "`{t}`")?;
                 }
                 write!(f, "], found `{found:?}`")
             }
-            ParseErrorKind::UnexpectedEOF { expected: Some(e) } =>
-                write!(f, "unexpected end of file, expected `{e:?}`"),
-            ParseErrorKind::UnexpectedEOF { expected: None } =>
-                write!(f, "unexpected end of file"),
-            ParseErrorKind::InvalidExpression { found } =>
-                write!(f, "expected an expression, found `{found:?}`"),
-            ParseErrorKind::InvalidType { found } =>
-                write!(f, "expected a type, found `{found:?}`"),
-            ParseErrorKind::InvalidPattern { found } =>
-                write!(f, "expected a pattern, found `{found:?}`"),
-            ParseErrorKind::InvalidFunctionName { found } =>
-                write!(f, "expected a function name (identifier), found `{found:?}`"),
-            ParseErrorKind::EmptyIdent =>
-                write!(f, "identifier token has no text (lexer bug)"),
-            ParseErrorKind::RecoveryFailure =>
-                write!(f, "parser could not recover from previous errors"),
-            ParseErrorKind::Internal { message } =>
-                write!(f, "internal parser error: {message}"),
+            ParseErrorKind::UnexpectedEOF { expected: Some(e) } => {
+                write!(f, "unexpected end of file, expected `{e:?}`")
+            }
+            ParseErrorKind::UnexpectedEOF { expected: None } => write!(f, "unexpected end of file"),
+            ParseErrorKind::InvalidExpression { found } => {
+                write!(f, "expected an expression, found `{found:?}`")
+            }
+            ParseErrorKind::InvalidType { found } => {
+                write!(f, "expected a type, found `{found:?}`")
+            }
+            ParseErrorKind::InvalidPattern { found } => {
+                write!(f, "expected a pattern, found `{found:?}`")
+            }
+            ParseErrorKind::InvalidFunctionName { found } => write!(
+                f,
+                "expected a function name (identifier), found `{found:?}`"
+            ),
+            ParseErrorKind::EmptyIdent => write!(f, "identifier token has no text (lexer bug)"),
+            ParseErrorKind::RecoveryFailure => {
+                write!(f, "parser could not recover from previous errors")
+            }
+            ParseErrorKind::Internal { message } => write!(f, "internal parser error: {message}"),
             ParseErrorKind::UnexpectedTokens { expected, found } => {
                 write!(f, "expected one of [")?;
                 for (i, t) in expected.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "`{t}`")?;
                 }
                 write!(f, "], found `{found:?}`")
             }
             ParseErrorKind::ExpectedTypeAnnotation => write!(f, "expected a type annotation"),
+            ParseErrorKind::ExpectedBlock => write!(f, "expected a block"),
+            ParseErrorKind::ExpectedTypeAfterThrows => {
+                write!(
+                    f,
+                    "Expected a type after keyword `throws` in function signature"
+                )
+            }
         }
     }
 }
@@ -225,26 +255,26 @@ pub enum ParseContext {
 impl fmt::Display for ParseContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            ParseContext::ParsingTopLevel       => "top-level declaration",
-            ParseContext::ParsingModule         => "module declaration",
-            ParseContext::ParsingStruct         => "struct declaration",
-            ParseContext::ParsingEnum           => "enum declaration",
-            ParseContext::ParsingImplBlock      => "impl block",
-            ParseContext::ParsingInterface      => "interface declaration",
-            ParseContext::ParsingMethod         => "method declaration",
-            ParseContext::ParsingFunction       => "function declaration",
+            ParseContext::ParsingTopLevel => "top-level declaration",
+            ParseContext::ParsingModule => "module declaration",
+            ParseContext::ParsingStruct => "struct declaration",
+            ParseContext::ParsingEnum => "enum declaration",
+            ParseContext::ParsingImplBlock => "impl block",
+            ParseContext::ParsingInterface => "interface declaration",
+            ParseContext::ParsingMethod => "method declaration",
+            ParseContext::ParsingFunction => "function declaration",
             ParseContext::ParsingFunctionParams => "function parameters",
-            ParseContext::ParsingReturnType     => "return type",
-            ParseContext::ParsingType           => "type",
-            ParseContext::ParsingExpression     => "expression",
-            ParseContext::ParsingPattern        => "pattern",
-            ParseContext::ParsingMatchArm       => "match arm",
-            ParseContext::ParsingBlock          => "block",
-            ParseContext::ParsingLetStatement   => "let statement",
-            ParseContext::ParsingIfStatement    => "if statement",
+            ParseContext::ParsingReturnType => "return type",
+            ParseContext::ParsingType => "type",
+            ParseContext::ParsingExpression => "expression",
+            ParseContext::ParsingPattern => "pattern",
+            ParseContext::ParsingMatchArm => "match arm",
+            ParseContext::ParsingBlock => "block",
+            ParseContext::ParsingLetStatement => "let statement",
+            ParseContext::ParsingIfStatement => "if statement",
             ParseContext::ParsingWhileStatement => "while statement",
-            ParseContext::ParsingForStatement   => "for statement",
-            ParseContext::ParsingImport         => "import statement",
+            ParseContext::ParsingForStatement => "for statement",
+            ParseContext::ParsingImport => "import statement",
         };
         f.write_str(s)
     }
@@ -279,6 +309,10 @@ impl<'a> DiagnosticError<'a> {
         Self::new(ParseErrorKind::UnexpectedToken { expected, found }, span)
     }
 
+    pub fn expected_type_after_throws(span: SourceSpan<'a>) -> Self {
+        Self::new(ParseErrorKind::ExpectedTypeAfterThrows, span)
+    }
+
     pub fn unexpected_eof(expected: Option<TokenKind>, span: SourceSpan<'a>) -> Self {
         Self::new(ParseErrorKind::UnexpectedEOF { expected }, span)
     }
@@ -306,10 +340,7 @@ impl<'a> DiagnosticError<'a> {
 
         out.push_str(&format!(
             "error: {}\n --> {}:{}:{}\n",
-            self.kind,
-            self.span.file_name,
-            self.span.line,
-            self.span.column,
+            self.kind, self.span.file_name, self.span.line, self.span.column,
         ));
 
         if !self.context.is_empty() {

@@ -1,0 +1,233 @@
+(*  Top-level  *)
+
+program         ::= stmt* EOF
+
+stmt            ::= package_stmt
+                  | import_stmt
+                  | module_decl
+                  | visibility_prefix? (
+                        func_decl
+                      | struct_decl
+                      | impl_decl
+                      | interface_decl
+                      | enum_decl
+                      | let_stmt
+                      | static_let_stmt
+                  )
+                  | if_stmt
+                  | while_stmt
+                  | for_stmt
+                  | match_stmt
+                  | defer_stmt
+                  | return_stmt
+                  | break_stmt
+                  | continue_stmt
+                  | shorthand_let_stmt
+                  | expr_stmt
+
+visibility_prefix ::= "private" | "module" | "package"
+
+
+(*  Package & Import  *)
+
+package_stmt    ::= "package" path ";"
+import_stmt     ::= "import"  path ";"
+
+path            ::= IDENT ("." IDENT)*
+
+
+(*  Module  *)
+
+module_decl     ::= visibility? "module" IDENT "{" stmt* "}"
+
+
+(*  Functions  *)
+
+func_decl       ::= func_modifiers "fn" IDENT generics? params return_type? ( block | ";" )
+
+(* A regular (non-interface) function must have a body *)
+regular_func    ::= func_modifiers "fn" IDENT generics? params return_type? block
+
+func_modifiers  ::= inline_modifier? extern_modifier? safety_modifier? comptime_modifier?
+
+inline_modifier ::= "inline" | "noinline"
+extern_modifier ::= "extern" ( IDENT | STRING )
+safety_modifier ::= "unsafe"
+comptime_modifier ::= "comptime"
+
+params          ::= "(" param_list? ")"
+param_list      ::= param ("," param)*
+
+param           ::= this_param | normal_param
+
+this_param      ::= ref_qual? mut_qual? "this"
+ref_qual        ::= "&" | "&" "mut" | "*" | "[" "*" "]"
+                 (* & = immutable ref, &mut = mutable ref, * = safe ptr, [*] = unsafe ptr *)
+mut_qual        ::= "mut"
+
+normal_param    ::= (comptime_modifier? | (ref_qual? "mut"?)) IDENT ":" type ("=" expr)?
+
+return_type     ::= type
+
+
+(*  Generics  *)
+
+generics        ::= "<" generic_param ("," generic_param)* ">"
+
+generic_param   ::= ("const" | "static")? IDENT (":" type (("," | "+") type)*)?
+
+
+(*  Types  *)
+
+type            ::= error_prefix? core_type nullable_suffix?
+
+error_prefix    ::= "{" IDENT ("," IDENT)* "}" "!"
+                  | IDENT "!"            (* single error type shorthand *)
+
+nullable_suffix ::= "?"
+
+core_type       ::= primitive_type
+                  | "this"
+                  | "_"                    (* infer / placeholder *)
+                  | "*"  core_type         (* safe pointer  *)
+                  | "[" "*" "]" core_type  (* unsafe pointer *)
+                  | "[" + NUMBER? + "]" core_type (* array *)
+                  | "fn" "(" type_list? ")" ("->" core_type)?   (* lambda / fn pointer *)
+                  | IDENT ("<" type ("," type)* ">")?            (* named / generic struct *)
+
+primitive_type  ::= "u8"  | "u16"  | "u32"  | "u64"  | "u128"
+                  | "i8"  | "i16"  | "i32"  | "i64"  | "i128"
+                  | "f32" | "f64"
+                  | "bool" | "char" | "str" | "void"
+
+type_list       ::= type ("," type)*
+
+
+(*  Struct  *)
+
+struct_decl     ::= "struct" IDENT generics?
+                    ( ";"                              (* unit struct      *)
+                    | tuple_struct_body ";"            (* tuple struct     *)
+                    | brace_struct_body                (* regular struct   *)
+                    )
+
+tuple_struct_body ::= "(" (visibility_prefix? type ("," visibility_prefix? type)*)? ")"
+
+brace_struct_body ::= "{" struct_member* "}"
+
+struct_member   ::= destructor_def
+                  | const_stmt
+                  | struct_field
+
+destructor_def  ::= "&" "this" block
+
+struct_field    ::= visibility_prefix? IDENT ":" type ","?
+
+const_stmt      ::= "const" IDENT (":" type)? "=" expr ";"
+
+
+(*  Impl  *)
+
+impl_decl       ::= "impl" generics? IDENT ("for" IDENT)? "{" impl_method* "}"
+
+impl_method     ::= visibility_prefix? regular_func
+
+
+(*  Interface (trait)  *)
+
+interface_decl  ::= "sealed"? "interface" IDENT generics? permits_clause? "{" interface_member* "}"
+
+permits_clause  ::= "permits" type ("," type)*
+
+interface_member ::= visibility_prefix? func_decl   (* can end with `;` or have body *)
+
+
+(*  Enum  *)
+
+enum_decl       ::= "enum" IDENT generics? "{" (variant ("," variant)*)? "}"
+
+variant         ::= IDENT ( "{" field ("," field)* "}" )?
+
+field           ::= visibility_prefix? IDENT ":" type
+
+
+(*  Statements  *)
+
+let_stmt            ::= "let" "mut"? IDENT (":" type)? "=" expr ";"
+static_let_stmt     ::= "static" "let" "mut"? IDENT (":" type)? "=" expr ";"
+shorthand_let_stmt  ::= IDENT ":=" expr ";"?
+
+if_stmt         ::= "if" "(" expr ")" block ( "else" ( if_stmt | block ) )?
+
+while_stmt      ::= "while" "(" expr ")" block
+
+for_stmt        ::= "for" "(" for_init? ";" expr? ";" expr? ")" block
+for_init        ::= "let" "mut"? IDENT (":" type)? "=" expr
+
+return_stmt     ::= "return" expr? ";"
+
+defer_stmt      ::= "defer" ( block | expr_stmt )
+
+match_stmt      ::= "match" expr "{" match_arm* "}"
+match_arm       ::= "case" pattern ("if" expr)? "->" ( block | expr_stmt ) ","?
+
+expr_stmt       ::= expr ";"?
+break_stmt       ::= "break" ";"
+continue_stmt       ::= "continue" ";"
+
+block           ::= "{" stmt* "}"
+
+
+(*  Patterns  *)
+
+pattern         ::= "_"                                        (* wildcard  *)
+                  | NUMBER                                     (* integer   *)
+                  | STRING                                     (* string    *)
+                  | "true" | "false"                           (* boolean   *)
+                  | IDENT "(" (pattern ("," pattern)*)? ")"   (* enum variant with bindings *)
+                  | IDENT                                      (* identifier binding *)
+                  | "(" (pattern ("," pattern)*)? ")"         (* tuple     *)
+                  | "[" (pattern ("," pattern)*)? "]"         (* array     *)
+
+
+(*  Expressions  *)
+
+expr            ::= prefix_expr (infix_op expr)*
+                  | expr postfix
+
+prefix_expr     ::= NUMBER | DECIMAL | STRING | "true" | "false" | "null" | CHAR
+                  | IDENT
+                  | "(" expr ")"
+                  | "-"   expr
+                  | "!"   expr
+                  | "~"   expr
+                  | "&"   expr          (* address-of / reference *)
+                  | "*"   expr          (* dereference prefix *)
+
+infix_op        ::= (* arithmetic *)   "+" | "-" | "*" | "/" | "%"
+                  | (* bitwise   *)    "&" | "|" | "^" | "<<" | ">>"
+                  | (* comparison *)   "==" | "!=" | "<" | "<=" | ">" | ">="
+                  | (* logical   *)    "&&" | "||"
+                  | (* assignment *)   "=" | "+=" | "-=" | "*=" | "/=" | "%="
+                                     | "<<=" | ">>=" | "&=" | "|=" | "^="
+                  | (* range     *)    ".." | "..<"
+
+postfix         ::= "(" arg_list? ")"                          (* call          *)
+                  | "." IDENT                                   (* field access  *)
+                  | ".*"                                        (* pointer deref *)
+                  | "[" expr "]"                               (* index         *)
+                  | "{" struct_init_fields "}"                 (* struct init — only after Ident lhs *)
+
+arg_list        ::= expr ("," expr)*
+
+struct_init_fields ::= struct_init_field ("," struct_init_field)*
+struct_init_field  ::= IDENT (":" expr)?    (* shorthand if no colon *)
+
+
+(*  Terminals  *)
+
+IDENT           ::= [a-zA-Z_][a-zA-Z0-9_]*
+NUMBER          ::= [0-9]+
+DECIMAL         ::= [0-9]+ "." [0-9]+
+STRING          ::= '"' [^"]* '"'
+CHAR            ::= "'" . "'"

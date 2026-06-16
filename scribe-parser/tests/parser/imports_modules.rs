@@ -17,10 +17,6 @@ mod tests {
         parse_program(src, "<test>", ctx_clone, bump).statements
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // import statement tests
-    // ═══════════════════════════════════════════════════════════════════════
-
     #[test]
     fn test_import_single_segment() {
         let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
@@ -70,10 +66,6 @@ mod tests {
         assert!(matches!(stmts[1], Stmt::Import(_)));
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // package statement tests
-    // ═══════════════════════════════════════════════════════════════════════
-
     #[test]
     fn test_package_single_segment() {
         let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
@@ -122,10 +114,6 @@ mod tests {
             "HirModule name should be the package path"
         );
     }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // module declaration tests
-    // ═══════════════════════════════════════════════════════════════════════
 
     #[test]
     fn test_module_decl_empty() {
@@ -227,10 +215,6 @@ mod tests {
             other => panic!("expected Module, got {:?}", other),
         }
     }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // combined: package + imports + module in same file
-    // ═══════════════════════════════════════════════════════════════════════
 
     #[test]
     fn test_package_import_and_module_together() {

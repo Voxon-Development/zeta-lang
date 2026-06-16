@@ -1,12 +1,10 @@
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use ir::ast::{
-        ForKind, LetStmt, Stmt, Type, TypeKind, Visibility,
-    };
+    use ir::ast::{ForKind, Stmt, TypeKind};
     use scribe_parser::parser::parse_program;
-    use zetaruntime::bump::GrowableBump;
+    use std::sync::Arc;
     use zetaruntime::arena::GrowableAtomicBump;
+    use zetaruntime::bump::GrowableBump;
     use zetaruntime::string_pool::StringPool;
 
     fn parse<'a, 'bump>(
@@ -21,14 +19,8 @@ mod tests {
 
     // Helper to get first statement
     macro_rules! first_stmt {
-        ($stmts:expr) => {{
-            $stmts.into_iter().next().expect("no statements")
-        }};
+        ($stmts:expr) => {{ $stmts.into_iter().next().expect("no statements") }};
     }
-
-    // ═════════════════════════════════════════════════════════════════════════
-    // Let Statement Tests
-    // ═════════════════════════════════════════════════════════════════════════
 
     #[test]
     fn test_let_simple() {
@@ -89,10 +81,6 @@ mod tests {
         }
     }
 
-    // ═════════════════════════════════════════════════════════════════════════
-    // Shorthand Let (:=) Tests
-    // ═════════════════════════════════════════════════════════════════════════
-
     #[test]
     fn test_shorthand_let() {
         let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
@@ -112,10 +100,6 @@ mod tests {
             _ => panic!("Expected FuncDecl"),
         }
     }
-
-    // ═════════════════════════════════════════════════════════════════════════
-    // If Statement Tests
-    // ═════════════════════════════════════════════════════════════════════════
 
     #[test]
     fn test_if_simple() {
@@ -139,7 +123,10 @@ mod tests {
     #[test]
     fn test_if_else() {
         let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
-        let stmts = parse("fn main() { if (x > 0) { let a = 1; } else { let b = 2; } }", bump);
+        let stmts = parse(
+            "fn main() { if (x > 0) { let a = 1; } else { let b = 2; } }",
+            bump,
+        );
         match first_stmt!(stmts) {
             Stmt::FuncDecl(f) => {
                 let body = f.body.unwrap();
@@ -158,7 +145,10 @@ mod tests {
     #[test]
     fn test_if_else_if() {
         let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
-        let stmts = parse("fn main() { if (x > 0) { let a = 1; } else if (x < 0) { let b = 2; } else { let c = 3; } }", bump);
+        let stmts = parse(
+            "fn main() { if (x > 0) { let a = 1; } else if (x < 0) { let b = 2; } else { let c = 3; } }",
+            bump,
+        );
         match first_stmt!(stmts) {
             Stmt::FuncDecl(f) => {
                 let body = f.body.unwrap();
@@ -173,10 +163,6 @@ mod tests {
             _ => panic!("Expected FuncDecl"),
         }
     }
-
-    // ═════════════════════════════════════════════════════════════════════════
-    // While Loop Tests
-    // ═════════════════════════════════════════════════════════════════════════
 
     #[test]
     fn test_while_simple() {
@@ -214,21 +200,24 @@ mod tests {
         }
     }
 
-    // ═════════════════════════════════════════════════════════════════════════
-    // For Loop (C-style) Tests
-    // ═════════════════════════════════════════════════════════════════════════
-
     #[test]
     fn test_for_c_style_full() {
         let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
-        let stmts = parse("fn main() { for (let i = 0; i < 10; i += 1) { let x = i; } }", bump);
+        let stmts = parse(
+            "fn main() { for (let i = 0; i < 10; i += 1) { let x = i; } }",
+            bump,
+        );
         match first_stmt!(stmts) {
             Stmt::FuncDecl(f) => {
                 let body = f.body.unwrap();
                 match body.block[0] {
                     Stmt::For(for_stmt) => {
                         match for_stmt.kind {
-                            ForKind::CStyle { let_stmt, condition, increment } => {
+                            ForKind::CStyle {
+                                let_stmt,
+                                condition,
+                                increment,
+                            } => {
                                 assert!(let_stmt.is_some());
                                 assert!(condition.is_some());
                                 assert!(increment.is_some());
@@ -254,16 +243,18 @@ mod tests {
             Stmt::FuncDecl(f) => {
                 let body = f.body.unwrap();
                 match body.block[0] {
-                    Stmt::For(for_stmt) => {
-                        match for_stmt.kind {
-                            ForKind::CStyle { let_stmt, condition, increment } => {
-                                assert!(let_stmt.is_none());
-                                assert!(condition.is_some());
-                                assert!(increment.is_some());
-                            }
-                            _ => panic!("Expected CStyle for loop"),
+                    Stmt::For(for_stmt) => match for_stmt.kind {
+                        ForKind::CStyle {
+                            let_stmt,
+                            condition,
+                            increment,
+                        } => {
+                            assert!(let_stmt.is_none());
+                            assert!(condition.is_some());
+                            assert!(increment.is_some());
                         }
-                    }
+                        _ => panic!("Expected CStyle for loop"),
+                    },
                     _ => panic!("Expected For"),
                 }
             }
@@ -279,16 +270,18 @@ mod tests {
             Stmt::FuncDecl(f) => {
                 let body = f.body.unwrap();
                 match body.block[0] {
-                    Stmt::For(for_stmt) => {
-                        match for_stmt.kind {
-                            ForKind::CStyle { let_stmt, condition, increment } => {
-                                assert!(let_stmt.is_some());
-                                assert!(condition.is_none());
-                                assert!(increment.is_some());
-                            }
-                            _ => panic!("Expected CStyle for loop"),
+                    Stmt::For(for_stmt) => match for_stmt.kind {
+                        ForKind::CStyle {
+                            let_stmt,
+                            condition,
+                            increment,
+                        } => {
+                            assert!(let_stmt.is_some());
+                            assert!(condition.is_none());
+                            assert!(increment.is_some());
                         }
-                    }
+                        _ => panic!("Expected CStyle for loop"),
+                    },
                     _ => panic!("Expected For"),
                 }
             }
@@ -304,16 +297,18 @@ mod tests {
             Stmt::FuncDecl(f) => {
                 let body = f.body.unwrap();
                 match body.block[0] {
-                    Stmt::For(for_stmt) => {
-                        match for_stmt.kind {
-                            ForKind::CStyle { let_stmt, condition, increment } => {
-                                assert!(let_stmt.is_some());
-                                assert!(condition.is_some());
-                                assert!(increment.is_none());
-                            }
-                            _ => panic!("Expected CStyle for loop"),
+                    Stmt::For(for_stmt) => match for_stmt.kind {
+                        ForKind::CStyle {
+                            let_stmt,
+                            condition,
+                            increment,
+                        } => {
+                            assert!(let_stmt.is_some());
+                            assert!(condition.is_some());
+                            assert!(increment.is_none());
                         }
-                    }
+                        _ => panic!("Expected CStyle for loop"),
+                    },
                     _ => panic!("Expected For"),
                 }
             }
@@ -329,16 +324,14 @@ mod tests {
             Stmt::FuncDecl(f) => {
                 let body = f.body.unwrap();
                 match body.block[0] {
-                    Stmt::For(for_stmt) => {
-                        match for_stmt.kind {
-                            ForKind::CStyle { let_stmt, .. } => {
-                                let ls = let_stmt.expect("expected let stmt");
-                                assert!(ls.mutable);
-                                assert_eq!(ls.ident.as_str(), "i");
-                            }
-                            _ => panic!("Expected CStyle for loop"),
+                    Stmt::For(for_stmt) => match for_stmt.kind {
+                        ForKind::CStyle { let_stmt, .. } => {
+                            let ls = let_stmt.expect("expected let stmt");
+                            assert!(ls.mutable);
+                            assert_eq!(ls.ident.as_str(), "i");
                         }
-                    }
+                        _ => panic!("Expected CStyle for loop"),
+                    },
                     _ => panic!("Expected For"),
                 }
             }

@@ -1,10 +1,10 @@
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use ir::ast::{Stmt, Visibility, TypeKind};
+    use ir::ast::{Stmt, Visibility};
     use scribe_parser::parser::parse_program;
-    use zetaruntime::bump::GrowableBump;
+    use std::sync::Arc;
     use zetaruntime::arena::GrowableAtomicBump;
+    use zetaruntime::bump::GrowableBump;
     use zetaruntime::string_pool::StringPool;
 
     fn parse<'a, 'bump>(
@@ -18,14 +18,8 @@ mod tests {
     }
 
     macro_rules! first_stmt {
-        ($stmts:expr) => {{
-            $stmts.into_iter().next().expect("no statements")
-        }};
+        ($stmts:expr) => {{ $stmts.into_iter().next().expect("no statements") }};
     }
-
-    // ═════════════════════════════════════════════════════════════════════════
-    // Struct Tests
-    // ═════════════════════════════════════════════════════════════════════════
 
     #[test]
     fn test_struct_simple() {
@@ -115,7 +109,8 @@ mod tests {
     #[test]
     fn test_struct_with_methods() {
         let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
-        let stmts = parse(r#"
+        let stmts = parse(
+            r#"
             struct Point {
                 x: i32,
                 y: i32,
@@ -130,7 +125,9 @@ mod tests {
                     return x + y;
                 }
             }
-        "#, bump);
+        "#,
+            bump,
+        );
 
         // Check struct
         let mut iter = stmts.into_iter();
@@ -156,10 +153,6 @@ mod tests {
         }
     }
 
-    // ═════════════════════════════════════════════════════════════════════════
-    // Interface (Trait) Tests
-    // ═════════════════════════════════════════════════════════════════════════
-
     #[test]
     fn test_interface_simple() {
         let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
@@ -179,12 +172,15 @@ mod tests {
     #[test]
     fn test_interface_multiple_methods() {
         let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
-        let stmts = parse(r#"
+        let stmts = parse(
+            r#"
             interface Comparable {
                 fn compare(&this, other: i32) -> i32;
                 fn equals(&this, other: i32) -> bool;
             }
-        "#, bump);
+        "#,
+            bump,
+        );
         match first_stmt!(stmts) {
             Stmt::InterfaceDecl(i) => {
                 assert_eq!(i.name.as_str(), "Comparable");
@@ -212,7 +208,10 @@ mod tests {
     #[test]
     fn test_interface_sealed() {
         let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
-        let stmts = parse("sealed interface SealedTrait permits A, B, C { fn method(&this); }", bump);
+        let stmts = parse(
+            "sealed interface SealedTrait permits A, B, C { fn method(&this); }",
+            bump,
+        );
         match first_stmt!(stmts) {
             Stmt::InterfaceDecl(i) => {
                 assert_eq!(i.name.as_str(), "SealedTrait");

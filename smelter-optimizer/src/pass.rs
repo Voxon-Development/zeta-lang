@@ -1,6 +1,6 @@
+use ir::ir_hasher::FxHashBuilder;
 use ir::ssa_ir::{BinOp, Function, Instruction, Module, Operand, SsaType, Value};
 use std::collections::{HashMap, HashSet};
-use ir::ir_hasher::FxHashBuilder;
 
 // A trait for optimization passes over SSA IR
 pub trait SsaPass {
@@ -44,9 +44,6 @@ impl SsaPass for OptimizationPass {
     }
 }
 
-// =========================
-// Pass manager
-// =========================
 #[derive(Default)]
 pub struct PassManager {
     passes: Vec<OptimizationPass>,
@@ -54,7 +51,12 @@ pub struct PassManager {
 }
 
 impl PassManager {
-    pub fn new() -> Self { Self { passes: Vec::new(), max_iterations: 6 } }
+    pub fn new() -> Self {
+        Self {
+            passes: Vec::new(),
+            max_iterations: 6,
+        }
+    }
 
     pub fn with_default_pipeline() -> Self {
         // A reasonable default order
@@ -66,7 +68,9 @@ impl PassManager {
         pm
     }
 
-    pub fn add_pass(&mut self, pass: OptimizationPass) { self.passes.push(pass); }
+    pub fn add_pass(&mut self, pass: OptimizationPass) {
+        self.passes.push(pass);
+    }
 
     // Run passes to a fixpoint (or until max_iterations)
     pub fn run(&self, module: &mut Module) -> usize {
@@ -76,17 +80,17 @@ impl PassManager {
             for pass in &self.passes {
                 let changed = pass.run(module);
                 any_change |= changed;
-                if changed { total_changes += 1; }
+                if changed {
+                    total_changes += 1;
+                }
             }
-            if !any_change { break; }
+            if !any_change {
+                break;
+            }
         }
         total_changes
     }
 }
-
-// =========================
-// Pass implementations
-// =========================
 
 fn const_folding(module: &mut Module) -> bool {
     let mut changed = false;
@@ -95,11 +99,21 @@ fn const_folding(module: &mut Module) -> bool {
         for block in func.blocks.iter_mut() {
             for inst in block.instructions.iter_mut() {
                 match inst {
-                    Instruction::Binary { dest, op, left, right } => {
+                    Instruction::Binary {
+                        dest,
+                        op,
+                        left,
+                        right,
+                    } => {
                         if let (Some(lc), Some(rc)) = (as_const(left), as_const(right)) {
                             if let Some(folded) = fold_binop(*op, lc, rc) {
-                                let ty = func.value_types.get(dest).cloned().unwrap_or(SsaType::I64);
-                                *inst = Instruction::Const { dest: *dest, ty, value: folded };
+                                let ty =
+                                    func.value_types.get(dest).cloned().unwrap_or(SsaType::I64);
+                                *inst = Instruction::Const {
+                                    dest: *dest,
+                                    ty,
+                                    value: folded,
+                                };
                                 changed = true;
                             }
                         }
@@ -128,8 +142,20 @@ fn fold_binop(op: BinOp, left: Operand, right: Operand) -> Option<Operand> {
                 Add => a.wrapping_add(b),
                 Sub => a.wrapping_sub(b),
                 Mul => a.wrapping_mul(b),
-                Div => if b == 0 { return None } else { a.wrapping_div(b) },
-                Mod => if b == 0 { return None } else { a.wrapping_rem(b) },
+                Div => {
+                    if b == 0 {
+                        return None;
+                    } else {
+                        a.wrapping_div(b)
+                    }
+                }
+                Mod => {
+                    if b == 0 {
+                        return None;
+                    } else {
+                        a.wrapping_rem(b)
+                    }
+                }
                 Eq => return Some(Operand::ConstBool(a == b)),
                 Ne => return Some(Operand::ConstBool(a != b)),
                 Lt => return Some(Operand::ConstBool(a < b)),
@@ -166,19 +192,30 @@ fn dead_code_elimination(module: &mut Module) -> bool {
                     Instruction::Binary { dest, .. } => used.contains(dest),
                     Instruction::Unary { dest, .. } => used.contains(dest),
                     Instruction::Phi { dest, .. } => used.contains(dest),
-                    Instruction::Call { dest, .. } => dest.is_some() && used.contains(&dest.unwrap()) || has_side_effects(&inst),
+                    Instruction::Call { dest, .. } => {
+                        dest.is_some() && used.contains(&dest.unwrap()) || has_side_effects(&inst)
+                    }
                     Instruction::Interpolate { dest, .. } => used.contains(dest),
                     Instruction::EnumConstruct { dest, .. } => used.contains(dest),
                     Instruction::MatchEnum { .. } => true, // control flow
-                    Instruction::Jump { .. } | Instruction::Branch { .. } | Instruction::Ret { .. } => true,
+                    Instruction::Jump { .. }
+                    | Instruction::Branch { .. }
+                    | Instruction::Ret { .. } => true,
                     Instruction::Const { dest, .. } => used.contains(dest),
-                    Instruction::ClassCall { dest, .. } | Instruction::InterfaceDispatch { dest, .. } => dest.map(|d| used.contains(&d)).unwrap_or(true) || has_side_effects(&inst),
+                    Instruction::ClassCall { dest, .. }
+                    | Instruction::InterfaceDispatch { dest, .. } => {
+                        dest.map(|d| used.contains(&d)).unwrap_or(true) || has_side_effects(&inst)
+                    }
                     Instruction::UpcastToInterface { dest, .. } => used.contains(dest),
-                    Instruction::Alloc { dest, .. } => used.contains(dest),
+                    Instruction::StackAlloc { dest, .. } => used.contains(dest),
                     Instruction::StoreField { .. } => true, // side effect
                     Instruction::LoadField { dest, .. } => used.contains(dest),
                 };
-                if keep { new_insts.push(inst); } else { changed = true; }
+                if keep {
+                    new_insts.push(inst);
+                } else {
+                    changed = true;
+                }
             }
             block.instructions = new_insts;
         }
@@ -190,7 +227,9 @@ fn dead_code_elimination(module: &mut Module) -> bool {
 fn has_side_effects(inst: &Instruction) -> bool {
     match inst {
         Instruction::StoreField { .. } => true,
-        Instruction::Call { .. } | Instruction::ClassCall { .. } | Instruction::InterfaceDispatch { .. } => {
+        Instruction::Call { .. }
+        | Instruction::ClassCall { .. }
+        | Instruction::InterfaceDispatch { .. } => {
             // Be conservative: assume calls have side effects
             true
         }
@@ -201,7 +240,9 @@ fn has_side_effects(inst: &Instruction) -> bool {
 fn compute_used_values(func: &Function) -> HashSet<Value> {
     let mut used: HashSet<Value> = HashSet::new();
 
-    func.blocks.iter().flat_map(|block| block.instructions.iter())
+    func.blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
         .for_each(|inst| compute_used_value(&mut used, inst));
 
     used
@@ -216,22 +257,35 @@ fn compute_used_value(mut used: &mut HashSet<Value>, inst: &Instruction) {
         Instruction::Unary { operand, .. } => {
             collect_val(operand, &mut used);
         }
-        Instruction::Phi { incoming: incomings, .. } => {
+        Instruction::Phi {
+            incoming: incomings,
+            ..
+        } => {
             for (_, v) in incomings {
                 used.insert(*v);
             }
         }
-        Instruction::Call { dest: _, func, args } => {
+        Instruction::Call {
+            dest: _,
+            func,
+            args,
+        } => {
             collect_val(func, &mut used);
-            for a in args { collect_val(a, &mut used); }
+            for a in args {
+                collect_val(a, &mut used);
+            }
         }
         Instruction::Interpolate { parts, .. } => {
             for p in parts {
-                if let ir::ssa_ir::InterpolationOperand::Value(v) = p { used.insert(*v); }
+                if let ir::ssa_ir::InterpolationOperand::Value(v) = p {
+                    used.insert(*v);
+                }
             }
         }
         Instruction::EnumConstruct { args, .. } => {
-            for a in args { collect_val(a, &mut used); }
+            for a in args {
+                collect_val(a, &mut used);
+            }
         }
         Instruction::MatchEnum { value, .. } => {
             used.insert(*value);
@@ -240,15 +294,21 @@ fn compute_used_value(mut used: &mut HashSet<Value>, inst: &Instruction) {
             collect_val(cond, &mut used);
         }
         Instruction::Ret { value } => {
-            if let Some(v) = value { collect_val(v, &mut used); }
+            if let Some(v) = value {
+                collect_val(v, &mut used);
+            }
         }
         Instruction::ClassCall { object, args, .. } => {
             used.insert(*object);
-            for a in args { collect_val(a, &mut used); }
+            for a in args {
+                collect_val(a, &mut used);
+            }
         }
         Instruction::InterfaceDispatch { object, args, .. } => {
             used.insert(*object);
-            for a in args { collect_val(a, &mut used); }
+            for a in args {
+                collect_val(a, &mut used);
+            }
         }
         Instruction::UpcastToInterface { object, .. } => {
             used.insert(*object);
@@ -262,12 +322,14 @@ fn compute_used_value(mut used: &mut HashSet<Value>, inst: &Instruction) {
         }
         Instruction::Jump { .. } => {}
         Instruction::Const { .. } => {}
-        Instruction::Alloc { .. } => {}
+        Instruction::StackAlloc { .. } => {}
     }
 }
 
 fn collect_val(op: &Operand, used: &mut HashSet<Value>) {
-    if let Operand::Value(v) = op { used.insert(*v); }
+    if let Operand::Value(v) = op {
+        used.insert(*v);
+    }
 }
 
 fn copy_propagation(module: &mut Module) -> bool {
@@ -291,38 +353,84 @@ fn build_const_map(func: &Function) -> HashMap<Value, Operand, FxHashBuilder> {
     let mut map = HashMap::with_hasher(FxHashBuilder);
     for block in &func.blocks {
         for inst in &block.instructions {
-            if let Instruction::Const { dest, value, .. } = inst { map.insert(*dest, value.clone()); }
+            if let Instruction::Const { dest, value, .. } = inst {
+                map.insert(*dest, value.clone());
+            }
         }
     }
     map
 }
 
-fn rewrite_operands_with_consts(inst: &mut Instruction, const_map: &HashMap<Value, Operand, FxHashBuilder>) -> bool {
+fn rewrite_operands_with_consts(
+    inst: &mut Instruction,
+    const_map: &HashMap<Value, Operand, FxHashBuilder>,
+) -> bool {
     let mut changed = false;
     let mut subst = |op: &mut Operand| {
         if let Operand::Value(v) = op {
-            if let Some(k) = const_map.get(v) { *op = k.clone(); changed = true; }
+            if let Some(k) = const_map.get(v) {
+                *op = k.clone();
+                changed = true;
+            }
         }
     };
 
     match inst {
-        Instruction::Binary { left, right, .. } => { subst(left); subst(right); }
-        Instruction::Unary { operand, .. } => { subst(operand); }
+        Instruction::Binary { left, right, .. } => {
+            subst(left);
+            subst(right);
+        }
+        Instruction::Unary { operand, .. } => {
+            subst(operand);
+        }
         Instruction::Phi { .. } => {}
-        Instruction::Call { func, args, .. } => { subst(func); for a in args { subst(a); } }
+        Instruction::Call { func, args, .. } => {
+            subst(func);
+            for a in args {
+                subst(a);
+            }
+        }
         Instruction::Interpolate { .. } => {}
-        Instruction::EnumConstruct { args, .. } => { for a in args { subst(a); } }
+        Instruction::EnumConstruct { args, .. } => {
+            for a in args {
+                subst(a);
+            }
+        }
         Instruction::MatchEnum { .. } => {}
         Instruction::Jump { .. } => {}
-        Instruction::Branch { cond, .. } => { subst(cond); }
-        Instruction::Ret { value } => { if let Some(v) = value { subst(v); } }
+        Instruction::Branch { cond, .. } => {
+            subst(cond);
+        }
+        Instruction::Ret { value } => {
+            if let Some(v) = value {
+                subst(v);
+            }
+        }
         Instruction::Const { .. } => {}
-        Instruction::ClassCall { object: _, args, .. } => { /* object is a Value, not Operand; can't rewrite */ for a in args { subst(a); } }
-        Instruction::InterfaceDispatch { object: _, args, .. } => { for a in args { subst(a); } }
+        Instruction::ClassCall {
+            object: _, args, ..
+        } => {
+            /* object is a Value, not Operand; can't rewrite */
+            for a in args {
+                subst(a);
+            }
+        }
+        Instruction::InterfaceDispatch {
+            object: _, args, ..
+        } => {
+            for a in args {
+                subst(a);
+            }
+        }
         Instruction::UpcastToInterface { .. } => {}
-        Instruction::Alloc { .. } => {}
-        Instruction::StoreField { base, value, .. } => { subst(base); subst(value); }
-        Instruction::LoadField { base, .. } => { subst(base); }
+        Instruction::StackAlloc { .. } => {}
+        Instruction::StoreField { base, value, .. } => {
+            subst(base);
+            subst(value);
+        }
+        Instruction::LoadField { base, .. } => {
+            subst(base);
+        }
     }
 
     changed

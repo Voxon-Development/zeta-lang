@@ -35,10 +35,8 @@ mod tests {
         let mut graph = DepGraph::new();
         graph.phase_a_create_nodes(&modules);
 
-        // Should have created 1 module node
         assert_eq!(graph.nodes().len(), 1);
 
-        // Module node should be created
         let module_node = graph.lookup_item_node(0, 0, "module");
         assert!(module_node.is_none()); // Module nodes aren't registered by item_index
     }
@@ -509,10 +507,6 @@ mod tests {
         assert!(debug_str.contains("test_module"));
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // Module / package / import integration tests
-    // ═══════════════════════════════════════════════════════════════════════
-
     #[test]
     fn test_register_package_sets_hierarchy() {
         let pool = create_test_pool();
@@ -623,13 +617,9 @@ mod tests {
         );
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // HirStmt::Defer dependency-walk tests
-    // ═══════════════════════════════════════════════════════════════════════
-
     #[test]
     fn test_walk_stmt_defer_does_not_panic() {
-        use ir::hir::{HirExpr, HirStmt, HirType};
+        use ir::hir::{HirExpr, HirStmt};
 
         let pool = create_test_pool();
         let mut graph = DepGraph::new();
@@ -684,15 +674,11 @@ mod tests {
         graph.walk_stmt_for_deps_pub(&defer_stmt, from_node, 0, &pool);
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // ModuleCollectionBuilder tests
-    // ═══════════════════════════════════════════════════════════════════════
-
     #[test]
     fn test_module_collection_builder_collects_func_and_struct() {
         use crate::module_collection_builder::ModuleBuilder;
         use ir::ast::{ExternModifier, FuncModifiers, FuncSafety, InlineModifier, Visibility};
-        use ir::hir::{Hir, HirEnum, HirFunc, HirInterface, HirStruct, HirType};
+        use ir::hir::{Hir, HirFunc, HirStruct, HirType};
 
         let pool = create_test_pool();
         let func_name = StrId(pool.intern("my_func"));
@@ -725,7 +711,6 @@ mod tests {
             interfaces: None,
             methods: None,
             constants: None,
-            destructor: None,
         });
 
         let items: Vec<Hir> = vec![Hir::Func(func_ref), Hir::Struct(struct_ref)];
@@ -753,7 +738,7 @@ mod tests {
     fn test_module_collection_builder_collects_interface_and_enum() {
         use crate::module_collection_builder::ModuleBuilder;
         use ir::ast::Visibility;
-        use ir::hir::{Hir, HirEnum, HirEnumVariant, HirInterface};
+        use ir::hir::{Hir, HirEnum, HirInterface};
 
         let pool = create_test_pool();
         let iface_name = StrId(pool.intern("Drawable"));

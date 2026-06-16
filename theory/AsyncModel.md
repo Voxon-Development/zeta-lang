@@ -2,7 +2,7 @@ In this article, we will explore the Zeta's asynchronous model and how it:
 - Avoids async infection such as in Rust and JS
 - Uphold high performance and throughput guarantees
 - Add safety features to async programming such as scheduler misuse detection and suspension hazards
-- Enables the compiler to interact with the asynchronous runtime for suspension and (OS-dependent via monomorphization) blocking 
+- Enables the compiler to interact with the asynchronous runtime for suspension.
 - Is not locked to a specific runtime or async model (Such as Go, where 90% of the time you're thinking in goroutines, or JS/Dart where you're thinking in async/await)
 - Depending on the sense, even improve ergonomics over async/await (especially over Rust)
 
@@ -482,9 +482,7 @@ Erlang goes its own way with concurrency. On BEAM, each process has its own heap
 
 # Zeta's approach V1
 
-TODO
-
-Zeta takes a different approach, it can't just rely on stackful coroutines, and it can't just use async/await due to both issues, so instead of reasoning about a function based on whether it's `async` or not like in the following example
+Zeta takes a different approach, it can't just rely purely on stackful coroutines, and it can't just use async/await due to both issues, so instead of reasoning about a function based on whether it's `async` or not like in the following example:
 ```rust
 async fn read_file(name: &str) -> Result<String, std::io::Error> {
      // ...
@@ -499,7 +497,7 @@ fn main() -> Result<(), std::io::Error> {
 We actually don't need to reason about whether a function is `async` or not, we can model it this way:
 > `suspend` is used and it models the execution yield probability
 
-In other words:
+In other words
 > `suspend` means the function may yield execution
 
 So let's write some equivalent zeta code:
@@ -535,6 +533,7 @@ Suspension is the act of yielding execution to any other resource, it can be cau
 - Waiting on a channel
 - Sometimes lock contention
 - Cooperative scheduling (Such as java's `Thread.yield()`)
+- Async APIs such as epoll and io_uring
 
 The difference between suspension and blocking is that when a thread is suspended, it is not blocked, it is just temporarily stopped and can be resumed later, but when a thread is blocked, the scheduler can ***reuse*** the thread it's on.
 
@@ -554,24 +553,37 @@ fn main() -> zeta::io::Error!void {
 }
 ```
 
-Did you notice something? `read_file` is `suspend`, but `main` is not, because `read_file` might yield execution, but in the main thread and the main thread is not a worker thread, there's no way to resume it, so it just blocks.
+Did you notice something? `read_file` is `suspend`, but `main` is not,  
+because `read_file` might yield execution, but in the main thread,  
+and the main thread is not a worker thread,  
+there's no way to resume it, so it just blocks.
 
-This is great, this means we can have the functions that work the same way without "duplicating" the code (or at least the signatures) for sync and async.
+This is great, this means we can have the functions that work the same way,  
+without "duplicating" the code (or at least the signatures) for sync and async.
 
 ## "I have a lot of questions"
+
 Let's answer all of them.
 
-### "What about the runtime? There needs to be a runtime for asynchronous execution as such."
+### "What about the runtime? There needs to be a runtime for asynchronous execution."
 
 The runtime should be a controlled and opt-in environment (similar to that of Rust)
 
 ```zeta
-@zeta::scheduler_runtime::Activate(VirtualExecutor)  // documented to activate the runtime for that executor
+// Once this is started, it just starts a thread pool and executor,
+// and offloads it to static memory, so if it was called AGAIN
+// then it is almost entirely free
+static let virtual_executor: VirtualExecutor = VirtualExecutor::start();
+
 fn main() -> zeta::io::Error!void {
-    content := try await read_file("file.txt");
-    println(content);
+    content := virtual_executor.spawn(suspend fn() -> void {
+        try await read_file("file.txt")
+    });
+    std::out.println(content.join());
 }
 ```
+
+For a low-level language, it feels wrong to hide executors like this
 
 ### How does this interact with FFI calls?
 Bindings.
@@ -659,7 +671,7 @@ interface Executor {
     const MAX_CONCURRENCY: ?usize;
     
     /// Initialize the executor
-    fn init(this);
+    fn start();
 
     /// Returns Future<T> where T is inferred from what the task returns
     /// not awaited here, just scheduled
@@ -728,7 +740,7 @@ impl Executor for InterruptExecutor {
     const IS_REENTRANT: bool = true;
     const MAX_CONCURRENCY: ?usize = 1;
 
-    fn init() { ... }
+    fn start(this) { ... }
     // nosuspend propagates to tasks as well, compiler enforces this
     nosuspend fn spawn(task: nosuspend fn() -> T) -> Future<T> { ... }
     nosuspend fn block_on(task: nosuspend fn() -> void) -> void { ... }
@@ -743,11 +755,11 @@ static let interrupt_executor: InterruptExecutor = InterruptExecutor::init();
 fn handle_interrupt() -> void {
     // COMPILER ERROR: InterruptExecutor.CAN_SUSPEND = false
     // but read_file is a suspend fn
-    content := interrupt_executor.spawn({
+    content := interrupt_executor.spawn(nosuspend fn() -> void {
         try await read_file("file.txt")
     });
     
-    interrupt_executor.spawn({
+    interrupt_executor.spawn(nosuspend fn() -> void {
         single_threaded_task();
     });
 }
@@ -802,6 +814,232 @@ async fn do_work() {
     drop(guard);
 }
 ```
+
+The deadlock potential of holding guard across some_io().await is completely different between these two mains. In the single threaded case it's almost certainly a deadlock. In the multi threaded case it might be fine. The compiler sees identical code in both cases and says nothing.
+```rust
+// You also can't reason about WHY something suspends
+// all of these look identical to the compiler at the suspension level
+some_io().await;                // suspending for I/O readiness
+channel.recv().await;           // suspending waiting on a channel  
+mutex.lock().await;             // suspending on lock contention
+tokio::task::yield_now().await; // explicitly yielding cooperatively
+
+// And there's no way to declare "this function must never suspend"
+// you can write nosuspend conceptually but the language has no way to enforce it
+fn definitely_not_suspending() {
+    // nothing stops someone from calling this from async context
+    // and nothing stops this from calling async code via block_on
+    // which may panic at runtime if already inside a runtime
+    tokio::runtime::Handle::current().block_on(some_async_fn());
+}
+```
+
+Additionally, even if we basically just rename `suspend` to `async`, `suspend` is still more honest in general:
+```zeta
+// suspend is honest
+suspend fn read_file(name: &str) -> zeta::io::Error!String {
+    // I might yield, that's all I'm saying
+    // the dispatcher decides what that means
+    // the caller doesn't need to change
+    // no state machine, no future, no polling
+}
+
+// async would be a lie
+async fn read_file(name: &str) -> zeta::io::Error!String {
+    // implies: I run concurrently
+    // implies: I return a Future<String> not a String
+    // implies: you need an executor to drive me
+    // implies: caller must be async too
+    // none of this is true in the model
+}
+```
+
+Even if you manage to remove the necessity of `async` from `fn` functions and you can use `async fn` functions in `fn` functions, you basically just recreated my model, but best case scenario is that it is less honest in general (a lock suspension is not async for example, trying to reason about it with the same model but `suspend` is named `async` would be misleading), worst case scenario is that you don't even have the same guarantees as this model.
+
+### Real world application of Zeta's Async Model
+
+Let's "rewrite" the Rust HTTP Server code in Zeta, assuming all the libraries do exist: (This is a rough sketch and may not accurately reflect real zeta Syntax)
+
+```zeta
+struct AppState {
+    counter: Arc<VirtualMutex<u64>>,
+    tx: mpsc::Sender<Job>,
+}
+
+struct Job {
+    value: u64,
+    respond: mpsc::Sender<u64>,
+}
+
+static let virtual_executor: VirtualExecutor = VirtualExecutor::start();
+
+fn main() -> zeta::io::Error!void {
+    counter := Arc::new(VirtualMutex::new(0));
+    (tx, rx) := mpsc::channel<Job>(100);
+
+    state := AppState {
+        counter: counter.clone(),
+        tx,
+    };
+
+    virtual_executor.spawn(suspend fn() -> void {
+        await worker(rx, counter);
+    });
+
+    app := Router::new()
+        .route("/", get(handler))
+        .route("/update", get(update))
+        .with_state(state);
+
+    try await axum::serve(
+        try await TcpListener::bind("127.0.0.1:3000"),
+        app,
+    );
+}
+
+suspend fn worker(
+    rx: mpsc::Receiver<Job>,
+    state: Arc<VirtualMutex<u64>>,
+) -> void {
+    while let Some(job) = try await rx.recv() {
+        guard := try await state.lock(); // acquires lock
+        *guard += job.value;
+        await sleep(Duration::from_millis(200));
+        result := *guard;
+        try await job.respond.send(result);
+        // guard dropped here
+    }
+}
+
+suspend fn handler(state: AppState) -> zeta::io::Error!String {
+    (resp_tx, resp_rx) := mpsc::channel(1);
+
+    // guard is acquired and held
+    guard := try await state.counter.lock();
+    value := *guard;
+
+    try await state.tx.send(Job {
+        value,
+        respond: resp_tx,
+    });
+
+    // COMPILER ERROR: suspension cycle detected
+    //
+    // handler holds: state.counter (VirtualMutex)
+    //   -> suspended at: resp_rx.recv()
+    //      waiting for: worker to send on job.respond
+    //
+    // worker:
+    //   -> suspended at: state.counter.lock()
+    //      waiting for: handler to release state.counter
+    //
+    // handler cannot resume until worker sends
+    // worker cannot resume until handler releases the lock
+    // neither can make progress
+    //
+    // suspension cycle: handler -> worker -> handler
+    result := try await resp_rx.recv();
+
+    *guard = result;
+    return "ok";
+}
+
+suspend fn update(state: AppState) -> zeta::io::Error!String {
+    guard := try await state.counter.lock();
+
+    // no cycle here, sleep does not depend on any lock
+    // held by another suspended task
+    // compiler sees no suspension cycle, this is fine
+    await sleep(Duration::from_millis(100));
+
+    *guard += 10;
+    return "updated";
+}
+```
+
+This is almost the same example as the Rust code, The intentional deadlock is in `handler` and it would never compile, let's break it down and see how the theoretical Zeta compiler would catch it:
+#### Step 1: Lock liveness tracking
+
+The compiler tracks guard as a live lock on state.counter from acquisition to drop:
+```zeta
+guard := try await state.counter.lock(); // lock live from here
+// ...
+result := try await resp_rx.recv();      // suspension point while lock is live
+// ...
+*guard = result;
+// guard dropped here, lock released
+```
+
+`VirtualMutex.HOLD_ACROSS_SUSPEND = ALLOWED` so holding across a suspension point is not an error by itself. The compiler doesn't stop here.
+
+#### Step 2: Suspension dependency graph
+
+Because `await` is an explicit acknowledgment marker, the compiler knows exactly where each task suspends and what it is waiting on:
+```
+handler suspends at resp_rx.recv()
+  -> unblocked by: worker sending on job.respond
+  -> condition: worker must reach job.respond.send()
+
+worker suspends at state.counter.lock()
+  -> unblocked by: handler releasing state.counter
+  -> condition: handler must drop guard
+```
+
+#### Step 3: Cycle detection
+
+The handler progress requires that `worker` sends job.response, meanwhile the worker progress requires that `handler` releases state.counter, and handler will release the lock only after resp_rx.recv() returns, and resp_rx.recv() returns only after worker sends job.respond
+
+This is how the cycle works.
+
+#### Step 4: Why update is fine
+```zeta
+suspend fn update(state: AppState) -> zeta::io::Error!String {
+    guard := try await state.counter.lock();
+    await sleep(Duration::from_millis(100)); // suspension point
+    *guard += 10;
+    return "updated";
+}
+```
+
+The compiler checks: what does sleep depend on? Nothing that depends on state.counter. There is no task suspended waiting for update to release its lock while update is sleeping. The suspension graph has no cycle here so it compiles cleanly.
+
+### Limitations of this Asynchronous Model
+I have explained why this async-model is great, but I haven't explained the disadvantages (over modern research and maybe even current solutions):
+
+#### Inapplicable for stackless coroutines (unless adjusted)
+The language doesn't produce state machines, even though it has explicit awaits which can help reason about it to the scheduler and compiler, it's just a regular function call that doesn't produce magic.
+
+#### Has the limitations of Stackful coroutines
+This can include memory overhead, etc.
+
+#### It doesn't reason about blocking code well
+This is mostly for reasoning about suspension from locks, and benefitting syscalls like io_uring, etc, but when blocking appears then it falls under that limitation (as suspension is different than blocking, whereas suspension may stop the code but the scheduler can just park it and other tasks run fine, while blocking will block the whole OS thread). Can this be reasoned about via monomorphization? We'll see.
+
+#### Only statically analyzable deadlocks and cycles can be proven
+Let's say you have this function pointer:
+```zeta
+suspend fn handler(state: AppState) -> zeta::io::Error!String {
+    guard := try await state.counter.lock();
+    
+    // cycle is through a function pointer or trait object
+    // compiler cannot see what this actually calls at runtime
+    try await (state.callback)();
+}
+```
+
+Well, you can't know which pointer this goes to, so the compiler would need to go out of the way to ignore this, or execute this under `unsafe`
+
+#### FFI and stdlib should be disciplined about the first `suspend` points
+If there are no `suspend` points, the language can't reason about any suspension
+
+Similarly, The compiler is blind about the async-safety and guarantees coming from FFI calls (like Rust is blind to the memory guarantees coming from FFI calls), so we must be disciplined like we saw in the previous FFI examples we have shown.
+
+### The end
+This is how Zeta will track suspensions, and we established that:
+- No state machines are implemented (zeta is biased towards stack**full** coroutines), which may improve compile times and debuggability
+- The performance is as fast as the scheduler will allow (The compile doesn't produce any magic)
+- The code can scale as you don't need to duplicate the code
+- The code can be safely validated by the compiler directly with minimal additions to lowering and the type system, without a separate (dynamic/static) external tool like Rust and Go
 
 #### Sources:
 - [Diving deep into Goroutines](https://vaibhavahuja.github.io/understanding-goroutines)

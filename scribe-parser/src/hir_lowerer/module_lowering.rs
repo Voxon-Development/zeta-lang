@@ -1,74 +1,16 @@
 use super::context::HirLowerer;
-use crate::hir_lowerer::lower_visibility;
-use ir::ast;
 use ir::ast::Stmt;
 use ir::ast::{FuncDecl, Path};
 use ir::hir::HirFunc;
 use ir::hir::HirFuncProto;
-use ir::hir::HirGeneric;
 use ir::hir::{Hir, HirModule, HirStmt, StrId};
 use ir::hir::{HirParam, HirType};
 use zetaruntime::bump::GrowableBump;
 
 impl<'a, 'bump> HirLowerer<'a, 'bump> {
-    // ===============================
-    // Module Lowering
-    // ===============================
-    /*pub fn lower_module(
-        &mut self,
-        stmts: Vec<Stmt<'a, '_>, &'_ GrowableBump>,
-    ) -> HirModule<'a, 'bump> {
-        let mut items: Vec<Hir<'a, 'bump>> = Vec::new();
-        let mut imports: Vec<Path<'bump>> = Vec::new();
-
-        for stmt in stmts {
-            match stmt {
-                // Handle Import statements - add to imports list for dependency tracking
-                Stmt::Import(import_stmt) => {
-                    imports.push(*import_stmt.path);
-                    // Import statements are tracked but don't generate HIR items
-                    // They will be used by the dependency graph for module resolution
-                }
-                // Handle Package statements - similar to imports but for package declarations
-                Stmt::Package(package_stmt) => {
-                    // Package statements define the current module's package
-                    // Store as module metadata (could be used for namespace resolution)
-                    let _ = package_stmt.path;
-                    // Package statements are metadata, not HIR items
-                }
-                // All other statements are lowered normally
-                other => {
-                    let item = self.lower_toplevel(other);
-                    match &item {
-                        Hir::Func(f) => {
-                            self.ctx.functions.borrow_mut().insert(f.name, **f);
-                        }
-                        Hir::Struct(c) => {
-                            self.ctx.classes.borrow_mut().insert(c.name, **c);
-                        }
-                        Hir::Interface(i) => {
-                            self.ctx.interfaces.borrow_mut().insert(i.name, **i);
-                        }
-                        _ => {}
-                    }
-                    items.push(item);
-                }
-            }
-        }
-
-        let items_slice = self.ctx.bump.alloc_slice(&items);
-        let imports_slice = self.ctx.bump.alloc_slice(&imports);
-
-        HirModule {
-            name: StrId(self.ctx.context.intern("root")),
-            imports: imports_slice,
-            items: items_slice,
-        }
-    }*/
-
     pub fn lower_module(
         &mut self,
-        stmts: Vec<ir::ast::Stmt<'a, 'bump>, &GrowableBump<'bump>>,
+        stmts: Vec<Stmt<'a, 'bump>, &GrowableBump<'bump>>,
     ) -> HirModule<'a, 'bump> {
         self.collect_prototypes(&stmts);
         let (imports, items, pkg_name) = self.lower_function_bodies(stmts);
@@ -132,8 +74,8 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     pub fn lower_function_bodies(
         &mut self,
         stmts: Vec<ir::ast::Stmt<'a, '_>, &GrowableBump<'_>>,
-    ) -> (Vec<Path<'bump>>, Vec<Hir<'a, 'bump>>, Option<StrId>) {
-        let mut imports: Vec<Path<'bump>> = Vec::with_capacity(64);
+    ) -> (Vec<Path<'a, 'bump>>, Vec<Hir<'a, 'bump>>, Option<StrId>) {
+        let mut imports: Vec<Path<'a, 'bump>> = Vec::with_capacity(64);
         let mut items: Vec<Hir<'a, 'bump>> = Vec::with_capacity(64);
         let mut pkg_name: Option<StrId> = None;
 

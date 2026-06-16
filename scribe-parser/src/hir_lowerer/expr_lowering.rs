@@ -9,9 +9,6 @@ use ir::span::SourceSpan;
 use std::collections::HashMap;
 
 impl<'a, 'bump> HirLowerer<'a, 'bump> {
-    // ===============================
-    // Expression Lowering
-    // ===============================
     pub(super) fn lower_expr(&self, expr: &Expr<'a, 'bump>) -> HirExpr<'a, 'bump> {
         match expr {
             Expr::Null { .. } => HirExpr::Null,
@@ -24,10 +21,8 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 // If there are generic args, handle monomorphization
                 if !generic_args.is_empty() {
                     if let Expr::Ident { name, .. } = callee {
-                        let hir_types: Vec<HirType> = generic_args
-                            .iter()
-                            .map(|t| self.lower_type(t))
-                            .collect();
+                        let hir_types: Vec<HirType> =
+                            generic_args.iter().map(|t| self.lower_type(t)).collect();
 
                         // Try to find and monomorphize the function
                         let func_opt = self.ctx.functions.borrow().get(&name).cloned();
@@ -41,7 +36,9 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                                 }
                             }
 
-                            if let Some(mono_name) = self.mono.monomorphize_function(&func, &substitutions) {
+                            if let Some(mono_name) =
+                                self.mono.monomorphize_function(&func, &substitutions)
+                            {
                                 // Call the monomorphized version
                                 let args_vec: Vec<HirExpr> =
                                     arguments.iter().map(|a| self.lower_expr(a)).collect();
@@ -76,12 +73,12 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             Expr::String { value, .. } => HirExpr::String(*value),
             Expr::Boolean { value, .. } => HirExpr::Boolean(*value),
             Expr::Ident { name, .. } => HirExpr::Ident(*name),
-            Expr::GenericIdent { name, generic_args, .. } => {
+            Expr::GenericIdent {
+                name, generic_args, ..
+            } => {
                 // Look up the generic struct/function and monomorphize it
-                let hir_types: Vec<HirType> = generic_args
-                    .iter()
-                    .map(|t| self.lower_type(t))
-                    .collect();
+                let hir_types: Vec<HirType> =
+                    generic_args.iter().map(|t| self.lower_type(t)).collect();
 
                 // Try to find a generic function with this name
                 let func_opt = self.ctx.functions.borrow().get(name).cloned();
@@ -97,7 +94,8 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                     }
 
                     // Monomorphize and return the new function name
-                    if let Some(mono_name) = self.mono.monomorphize_function(&func, &substitutions) {
+                    if let Some(mono_name) = self.mono.monomorphize_function(&func, &substitutions)
+                    {
                         return HirExpr::Ident(mono_name);
                     }
                 }
@@ -199,7 +197,11 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 HirExpr::Number(*value as i64)
             }
 
-            Expr::FieldInit { ident, expr, span } => {
+            Expr::FieldInit {
+                ident: _,
+                expr,
+                span,
+            } => {
                 // TODO
                 // FieldInit is used in struct initialization and should be lowered to a simple expression
                 // The field name is tracked separately in RecordInit, so we just lower the expression
@@ -210,7 +212,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 }
             }
 
-            Expr::If { if_stmt, span } => {
+            Expr::If { if_stmt: _, span } => {
                 // TODO
                 // Lower if statement as an expression
                 // For now, convert if expression to an empty expression list
@@ -221,7 +223,10 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 }
             }
 
-            Expr::Match { match_stmt: _match_stmt, span } => {
+            Expr::Match {
+                match_stmt: _match_stmt,
+                span,
+            } => {
                 // TODO
                 // Lower match statement as an expression
                 // This is a placeholder - proper match-expression support would need HIR changes
@@ -246,7 +251,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
 
             Expr::ArrayIndex { expr, index, span } => {
                 let array_expr = self.lower_expr(expr);
-                let index_expr = self.lower_expr(index);
+                let _index_expr = self.lower_expr(index);
 
                 // Array indexing is represented as a Get operation
                 // This is a simplification - proper array support would need HIR changes
@@ -259,13 +264,14 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
 
             Expr::ElseExpr {
                 expr,
-                pattern,
-                span,
+                pattern: _,
+                span: _,
             } => {
                 // TODO: Implement error/nullable pattern matching lowering
                 // For now, just lower the expression and ignore the pattern
                 self.lower_expr(expr)
             }
+            Expr::This { span } => HirExpr::This { span: *span },
         }
     }
 
@@ -410,12 +416,13 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             Op::LogicalNot => Operator::LogicalNot,
             Op::Range => Operator::Add, // Placeholder: Range will be handled specially
             Op::RangeExcl => Operator::Add, // Placeholder: RangeExcl will be handled specially
+            Op::DerefUnsafe => Operator::DerefUnsafe,
+            Op::Deref => Operator::Deref,
+            Op::Ref => Operator::Ref,
+            Op::RefMut => Operator::RefMut,
         }
     }
 
-    // ===============================
-    // Type Inference
-    // ===============================
     pub fn infer_type(&self, expr: &HirExpr<'a, 'bump>) -> HirType<'a, 'bump> {
         match expr {
             HirExpr::Number(_) => HirType::I32,
@@ -425,14 +432,13 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
 
             HirExpr::Ident(name) => {
                 println!("lowering ident to variable: {name}");
-                self
-                    .ctx
+                self.ctx
                     .variable_types
                     .borrow()
                     .get(name)
                     .cloned()
                     .unwrap_or_else(|| panic!("unknown identifier {:?}", name))
-            },
+            }
 
             HirExpr::Binary {
                 left, op, right, ..
@@ -791,9 +797,6 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         }
     }
 
-    // ===============================
-    // Type Lowering
-    // ===============================
     pub(super) fn lower_type(&self, t: &Type) -> HirType<'a, 'bump> {
         match &t.kind {
             ir::ast::TypeKind::I32 => HirType::I32,

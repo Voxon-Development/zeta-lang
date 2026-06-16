@@ -1,7 +1,7 @@
 use crate::midend::ir::block_data::CurrentBlockData;
 use crate::midend::ir::ir_conversion::{assign_op_to_bin_op, lower_operator_bin, lower_type_hir};
 use crate::midend::ir::optimized_string_buffering;
-use ir::hir::{AssignmentOperator, HirStruct, HirExpr, HirType, Operator, StrId};
+use ir::hir::{AssignmentOperator, HirExpr, HirStruct, HirType, Operator, StrId};
 use ir::ir_hasher::FxHashBuilder;
 use ir::ssa_ir::{Function, Instruction, Operand, SsaType, Value};
 use smallvec::SmallVec;
@@ -22,10 +22,8 @@ pub struct MirExprLowerer<'el, 'a, 'cx, 'bump> {
     pub funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
     pub class_field_offsets:
         &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
-    pub class_method_slots:
-        &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
-    pub class_mangled_map:
-        &'a HashMap<StrId, HashMap<StrId, StrId, FxHashBuilder>, FxHashBuilder>,
+    pub class_method_slots: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
+    pub class_mangled_map: &'a HashMap<StrId, HashMap<StrId, StrId, FxHashBuilder>, FxHashBuilder>,
     pub class_vtable_slots: &'a HashMap<StrId, Vec<StrId>, FxHashBuilder>,
     pub interface_id_map: &'a HashMap<StrId, usize, FxHashBuilder>,
     pub interface_method_slots:
@@ -36,7 +34,9 @@ pub struct MirExprLowerer<'el, 'a, 'cx, 'bump> {
 }
 
 impl<'el, 'a, 'cx, 'bump> MirExprLowerer<'el, 'a, 'cx, 'bump>
-where 'bump: 'a {
+where
+    'bump: 'a,
+{
     #[inline(always)]
     pub fn new(
         current_block_data: &'el mut CurrentBlockData,
@@ -103,22 +103,41 @@ where 'bump: 'a {
         }
     }
 
-    pub fn lower_expr(&mut self, expr: &HirExpr<'a, '_>) -> Value {
+    pub fn lower_expr(&mut self, expr: &HirExpr<'a, 'bump>) -> Value {
         match expr {
             HirExpr::Null => self.lower_expr_null(),
             HirExpr::Number(n) => self.lower_expr_number(*n),
 
-            HirExpr::Binary { left, op, right, span: _ } => self.lower_expr_binary(left, op, right),
+            HirExpr::Binary {
+                left,
+                op,
+                right,
+                span: _,
+            } => self.lower_expr_binary(left, op, right),
 
             HirExpr::Ident(name) => *self.var_map.get(name).unwrap_or_else(|| {
-                panic!("lower_expr: variable {:?} referenced before definition", name)
+                panic!(
+                    "lower_expr: variable {:?} referenced before definition",
+                    name
+                )
             }),
 
-            HirExpr::StructInit { name, args, span: _ } => self.lower_class_init(name, args),
+            HirExpr::StructInit {
+                name,
+                args,
+                span: _,
+            } => self.lower_class_init(name, args),
 
-            HirExpr::FieldAccess { object, field, span: _ } | HirExpr::Get { object, field, span: _ } => {
-                self.lower_field_access(object, *field)
+            HirExpr::FieldAccess {
+                object,
+                field,
+                span: _,
             }
+            | HirExpr::Get {
+                object,
+                field,
+                span: _,
+            } => self.lower_field_access(object, *field),
 
             HirExpr::Call { callee, args } => self.lower_call(callee, args),
 
@@ -128,9 +147,12 @@ where 'bump: 'a {
                 interface,
             } => self.lower_interface_call(callee, args, *interface),
 
-            HirExpr::Assignment { target, op, value, span: _ } => {
-                self.lower_expr_assignment(target, *op, value)
-            }
+            HirExpr::Assignment {
+                target,
+                op,
+                value,
+                span: _,
+            } => self.lower_expr_assignment(target, *op, value),
 
             HirExpr::String(s) => {
                 let v = self.current_block_data.fresh_value();
@@ -139,7 +161,9 @@ where 'bump: 'a {
                     ty: SsaType::String,
                     value: Operand::ConstString(*s),
                 });
-                self.current_block_data.value_types.insert(v, SsaType::String);
+                self.current_block_data
+                    .value_types
+                    .insert(v, SsaType::String);
                 v
             }
 
@@ -183,11 +207,17 @@ where 'bump: 'a {
                     ty: SsaType::String,
                     value: Operand::ConstString(StrId(empty_str)),
                 });
-                self.current_block_data.value_types.insert(v, SsaType::String);
+                self.current_block_data
+                    .value_types
+                    .insert(v, SsaType::String);
                 v
             }
 
-            HirExpr::EnumInit { enum_name, variant, args } => {
+            HirExpr::EnumInit {
+                enum_name,
+                variant: _,
+                args,
+            } => {
                 let v = self.current_block_data.fresh_value();
 
                 let mut arg_values: Vec<Value> = Vec::with_capacity(args.len());
@@ -195,13 +225,15 @@ where 'bump: 'a {
                     arg_values.push(self.lower_expr(arg));
                 }
 
-                self.emit(Instruction::Alloc {
+                self.emit(Instruction::StackAlloc {
                     dest: v,
                     ty: SsaType::User(*enum_name, vec![]),
                     count: 0,
                 });
 
-                self.current_block_data.value_types.insert(v, SsaType::User(*enum_name, vec![]));
+                self.current_block_data
+                    .value_types
+                    .insert(v, SsaType::User(*enum_name, vec![]));
                 v
             }
 
@@ -219,7 +251,12 @@ where 'bump: 'a {
                 }
             }
 
-            HirExpr::Comparison { left, op, right, span: _ } => {
+            HirExpr::Comparison {
+                left,
+                op,
+                right,
+                span: _,
+            } => {
                 let l = self.lower_expr(left);
                 let r = self.lower_expr(right);
                 let v = self.current_block_data.fresh_value();
@@ -231,25 +268,38 @@ where 'bump: 'a {
                 });
                 self.current_block_data.value_types.insert(v, SsaType::I64);
                 v
-            },
-            &HirExpr::Deref { .. } => todo!()
+            }
+            HirExpr::Deref { .. } => todo!(),
+            HirExpr::This { .. } => {
+                let this_name = StrId(self.context.intern("this"));
+                *self.var_map.get(&this_name).unwrap_or_else(|| {
+                    panic!("lower_expr: `this` referenced but not found in var_map — are we inside a method?")
+                })
+            }
         }
     }
 
     fn lower_expr_assignment(
         &mut self,
-        target: &HirExpr<'a, '_>,
+        target: &HirExpr<'a, 'bump>,
         op: AssignmentOperator,
-        value: &HirExpr<'_, 'a>,
+        value: &HirExpr<'a, 'bump>,
     ) -> Value {
         let rhs = self.lower_expr(value);
 
         match target {
             HirExpr::Ident(name) => self.handle_ident(op, rhs, *name),
 
-            HirExpr::FieldAccess { object, field, span: _ } | HirExpr::Get { object, field, span: _ } => {
-                self.handle_field_access(op, rhs, object, *field)
+            HirExpr::FieldAccess {
+                object,
+                field,
+                span: _,
             }
+            | HirExpr::Get {
+                object,
+                field,
+                span: _,
+            } => self.handle_field_access(op, rhs, object, *field),
 
             _ => unimplemented!("Assignment target {:?} not yet supported", target),
         }
@@ -263,7 +313,10 @@ where 'bump: 'a {
 
     fn handle_ident(&mut self, op: AssignmentOperator, rhs: Value, name: StrId) -> Value {
         let var_val = *self.var_map.get(&name).unwrap_or_else(|| {
-            panic!("handle_ident: variable {:?} referenced before definition", name)
+            panic!(
+                "handle_ident: variable {:?} referenced before definition",
+                name
+            )
         });
 
         let result = match op {
@@ -288,7 +341,10 @@ where 'bump: 'a {
                     right: Operand::Value(rhs),
                 });
 
-                let result_ty = self.current_block_data.value_types.get(&var_val)
+                let result_ty = self
+                    .current_block_data
+                    .value_types
+                    .get(&var_val)
                     .cloned()
                     .or_else(|| self.current_block_data.value_types.get(&rhs).cloned())
                     .unwrap_or(SsaType::I64);
@@ -307,7 +363,7 @@ where 'bump: 'a {
         &mut self,
         op: AssignmentOperator,
         rhs: Value,
-        object: &HirExpr<'a, '_>,
+        object: &HirExpr<'a, 'bump>,
         field: StrId,
     ) -> Value {
         let obj_val = self.lower_expr(object);
@@ -339,7 +395,10 @@ where 'bump: 'a {
                     right: Operand::Value(rhs),
                 });
 
-                let res_ty = self.current_block_data.value_types.get(&current)
+                let res_ty = self
+                    .current_block_data
+                    .value_types
+                    .get(&current)
                     .cloned()
                     .unwrap_or(SsaType::I64);
 
@@ -370,7 +429,12 @@ where 'bump: 'a {
         v
     }
 
-    fn lower_expr_binary(&mut self, left: &HirExpr<'_, 'a>, op: &Operator, right: &HirExpr<'a, '_>) -> Value {
+    fn lower_expr_binary(
+        &mut self,
+        left: &HirExpr<'a, 'bump>,
+        op: &Operator,
+        right: &HirExpr<'a, 'bump>,
+    ) -> Value {
         let l = self.lower_expr(left);
         let r = self.lower_expr(right);
         let v = self.current_block_data.fresh_value();
@@ -384,7 +448,7 @@ where 'bump: 'a {
         v
     }
 
-    fn lower_class_init(&mut self, name: &HirExpr, args: &[HirExpr<'a, '_>]) -> Value {
+    fn lower_class_init(&mut self, name: &HirExpr, args: &[HirExpr<'a, 'bump>]) -> Value {
         let class_name = match name {
             HirExpr::Ident(n) => n.clone(),
             other => panic!("ClassInit name must be identifier; got {:?}", other),
@@ -396,7 +460,10 @@ where 'bump: 'a {
         let mut types: Vec<SsaType> = Vec::with_capacity(args.len());
         for arg in args {
             let v = self.lower_expr(arg);
-            let ty = self.current_block_data.value_types.get(&v)
+            let ty = self
+                .current_block_data
+                .value_types
+                .get(&v)
                 .cloned()
                 .unwrap_or(SsaType::I32);
 
@@ -404,7 +471,7 @@ where 'bump: 'a {
             types.push(ty);
         }
 
-        self.emit(Instruction::Alloc {
+        self.emit(Instruction::StackAlloc {
             dest: obj,
             ty: SsaType::User(class_name, types.clone()),
             count: 0,
@@ -429,8 +496,7 @@ where 'bump: 'a {
             .unwrap_or_else(|| {
                 panic!(
                     "Unknown class {} when initializing",
-                    self.context
-                        .resolve_string(&*class_name)
+                    self.context.resolve_string(&*class_name)
                 )
             });
 
@@ -458,10 +524,8 @@ where 'bump: 'a {
             return;
         }
 
-        let vtable_name = optimized_string_buffering::make_vtable_name(
-            class_name,
-            self.context.clone(),
-        );
+        let vtable_name =
+            optimized_string_buffering::make_vtable_name(class_name, self.context.clone());
         self.emit(Instruction::StoreField {
             base: Operand::Value(obj),
             offset: 0usize,
@@ -469,19 +533,27 @@ where 'bump: 'a {
         });
     }
 
-    fn lower_field_access(&mut self, object: &HirExpr<'a, '_>, field: StrId) -> Value {
-        let obj_val = self.lower_expr(object);
+    fn lower_field_access(&mut self, object: &HirExpr<'a, 'bump>, field: StrId) -> Value {
+        let obj_val = self.lower_expr_as_receiver(object);
 
+        // Unwrap one pointer indirection if needed (for &this / *this fields)
         let cls_name = match self.current_block_data.value_types.get(&obj_val) {
-            Some(SsaType::User(name, _args)) => {
-                let resolved = self.context.resolve_string(&name);
-                if let Some(inner_value_name) = resolved.split("_").last() {
+            Some(SsaType::User(name, _)) => {
+                let resolved = self.context.resolve_string(name);
+                StrId(
+                    self.context
+                        .intern(resolved.split('_').last().unwrap_or(resolved)),
+                )
+            }
+            Some(SsaType::Pointer(inner)) => {
+                if let SsaType::User(name, _) = inner.as_ref() {
+                    let resolved = self.context.resolve_string(name);
                     StrId(
                         self.context
-                            .intern(inner_value_name),
+                            .intern(resolved.split('_').last().unwrap_or(resolved)),
                     )
                 } else {
-                    panic!("Could not determine object's class for FieldAccess.")
+                    panic!("FieldAccess through pointer to non-User type: {:?}", inner)
                 }
             }
             other => panic!(
@@ -509,15 +581,13 @@ where 'bump: 'a {
         if let Some(hir_class) = self.classes.get(&cls_name) {
             if let Some(hir_field) = hir_class.fields.iter().find(|f| f.name == field) {
                 let field_type = lower_type_hir(&hir_field.field_type);
-                self.current_block_data
-                    .value_types
-                    .insert(dest, field_type);
+                self.current_block_data.value_types.insert(dest, field_type);
             }
         }
         dest
     }
 
-    fn lower_call(&mut self, callee: &HirExpr<'_, 'a>, args: &[HirExpr<'a, '_>]) -> Value {
+    fn lower_call(&mut self, callee: &HirExpr<'a, 'bump>, args: &[HirExpr<'a, 'bump>]) -> Value {
         match callee {
             HirExpr::Ident(fname) => {
                 let arg_ops: SmallVec<Operand, 8> = args
@@ -532,24 +602,23 @@ where 'bump: 'a {
                     args: arg_ops,
                 });
 
-                if let Some(f) = self.funcs.get(fname) {
-                    #[allow(unused_variables)]
-                    let ret_ty = None::<SsaType>;
-                    if let Some(rt) = ret_ty {
-                        self.current_block_data.value_types.insert(dest, rt);
-                    } else {
-                        self.current_block_data.value_types.insert(dest, SsaType::I64);
-                    }
-                } else {
-                    self.current_block_data.value_types.insert(dest, SsaType::I64);
-                }
+                self.current_block_data
+                    .value_types
+                    .insert(dest, SsaType::I64);
 
                 dest
             }
 
-            HirExpr::FieldAccess { object, field, span: _ } | HirExpr::Get { object, field, span: _ } => {
-                self.lower_method_call(object, *field, args)
+            HirExpr::FieldAccess {
+                object,
+                field,
+                span: _,
             }
+            | HirExpr::Get {
+                object,
+                field,
+                span: _,
+            } => self.lower_method_call(object, *field, args),
 
             other => unimplemented!(
                 "Non-identifier callee not yet supported in Call: {:?}",
@@ -558,7 +627,12 @@ where 'bump: 'a {
         }
     }
 
-    fn lower_method_call(&mut self, object: &HirExpr<'a, '_>, field: StrId, args: &[HirExpr<'_, 'a>]) -> Value {
+    fn lower_method_call(
+        &mut self,
+        object: &HirExpr<'a, 'bump>,
+        field: StrId,
+        args: &[HirExpr<'a, 'bump>],
+    ) -> Value {
         if let HirExpr::Ident(scope_name) = object {
             if !self.var_map.contains_key(scope_name) {
                 let mut operands: SmallVec<Operand, 8> = SmallVec::new();
@@ -566,9 +640,7 @@ where 'bump: 'a {
                     operands.push(Operand::Value(self.lower_expr(a)));
                 }
 
-                let scope_str = self
-                    .context
-                    .resolve_string(scope_name);
+                let scope_str = self.context.resolve_string(scope_name);
 
                 let direct_name: StrId = optimized_string_buffering::build_scoped_name(
                     Some(scope_str),
@@ -583,15 +655,18 @@ where 'bump: 'a {
                     args: operands,
                 });
 
-                self.current_block_data.value_types.insert(dest, SsaType::I64);
+                self.current_block_data
+                    .value_types
+                    .insert(dest, SsaType::I64);
                 return dest;
             }
         }
 
-        let obj_val: Value = self.lower_expr(object);
+        let obj_val: Value = self.lower_expr_as_receiver(object);
         let mut operands: SmallVec<Operand, 8> = SmallVec::new();
 
-        let maybe_cls_name: Option<SsaType> = self.current_block_data.value_types.get(&obj_val).cloned();
+        let maybe_cls_name: Option<SsaType> =
+            self.current_block_data.value_types.get(&obj_val).cloned();
 
         let maybe_cls_name: Option<&str> = match maybe_cls_name {
             Some(SsaType::User(ref name, _args)) => {
@@ -606,11 +681,23 @@ where 'bump: 'a {
                     Some(resolved)
                 }
             }
+            Some(SsaType::Pointer(ref inner))
+                if let Some(SsaType::User(name, _)) = unwrap_pointers(inner) =>
+            {
+                let resolved = self.context.resolve_string(name);
+                resolved
+                    .split('_')
+                    .last()
+                    .filter(|s| !s.is_empty())
+                    .or(Some(resolved))
+            }
             _ => None,
         };
 
         if maybe_cls_name.is_some() {
-            self.current_block_data.value_types.insert(obj_val, SsaType::I64);
+            self.current_block_data
+                .value_types
+                .insert(obj_val, SsaType::I64);
         }
 
         operands.push(Operand::Value(obj_val));
@@ -620,9 +707,7 @@ where 'bump: 'a {
         }
 
         let cls_name_id: Option<StrId> = if let Some(cls_name) = maybe_cls_name {
-            Some(StrId(
-                self.context.intern(cls_name),
-            ))
+            Some(StrId(self.context.intern(cls_name)))
         } else {
             None
         };
@@ -644,8 +729,44 @@ where 'bump: 'a {
             args: operands,
         });
 
-        self.current_block_data.value_types.insert(dest, SsaType::I64);
+        self.current_block_data
+            .value_types
+            .insert(dest, SsaType::I64);
         dest
+    }
+
+    /// Like `lower_expr`, but for a method receiver.
+    /// If the receiver is a local variable whose SSA type is a pointer
+    /// (i.e. `this` was declared with a ref/ptr passing kind), return the
+    /// pointer value directly without emitting any load.
+    /// For everything else, falls back to the normal `lower_expr` path.
+    fn lower_expr_as_receiver(&mut self, object: &HirExpr<'a, 'bump>) -> Value {
+        if let HirExpr::Ident(name) = object {
+            if let Some(&v) = self.var_map.get(name) {
+                // If the variable already holds a pointer type, pass it directly.
+                // This is the case for `&this`, `&mut this`, `*this` params —
+                // they are registered in var_map with SsaType::Pointer(inner).
+                if matches!(
+                    self.current_block_data.value_types.get(&v),
+                    Some(SsaType::Pointer(_))
+                ) {
+                    return v;
+                }
+                // Also handle HirExpr::This routed through an Ident — same logic.
+            }
+        }
+        if let HirExpr::This { .. } = object {
+            let this_name = StrId(self.context.intern("this"));
+            if let Some(&v) = self.var_map.get(&this_name) {
+                if matches!(
+                    self.current_block_data.value_types.get(&v),
+                    Some(SsaType::Pointer(_))
+                ) {
+                    return v;
+                }
+            }
+        }
+        self.lower_expr(object)
     }
 
     fn emit_call(
@@ -659,36 +780,37 @@ where 'bump: 'a {
             return None;
         };
 
-        if let Some(class_slots) = self.class_method_slots.get(&cls_name) {
-            let Some(slot_idx) = class_slots.get(&field) else {
-                return None;
-            };
-            let dest = self.current_block_data.fresh_value();
-            self.emit(Instruction::ClassCall {
-                dest: Some(dest),
-                object: obj_val,
-                method_id: *slot_idx,
-                args: operands.clone(),
-            });
-
-            self.current_block_data.value_types.insert(dest, SsaType::I64);
-            return Some(dest);
+        // Prefer direct mangled call over vtable dispatch for non-interface methods
+        if let Some(mmap) = self.class_mangled_map.get(&cls_name) {
+            if let Some(mangled_name) = mmap.get(&field) {
+                let dest = self.current_block_data.fresh_value();
+                self.emit(Instruction::Call {
+                    dest: Some(dest),
+                    func: Operand::FunctionRef(mangled_name.clone()),
+                    args: operands.clone(),
+                });
+                self.current_block_data
+                    .value_types
+                    .insert(dest, SsaType::I64);
+                return Some(dest);
+            }
         }
 
-        if let Some(mmap) = self.class_mangled_map.get(&cls_name) {
-            let Some(mangled_name) = mmap.get(&field) else {
-                return None;
-            };
-
-            let dest = self.current_block_data.fresh_value();
-            self.emit(Instruction::Call {
-                dest: Some(dest),
-                func: Operand::FunctionRef(mangled_name.clone()),
-                args: operands.clone(),
-            });
-
-            self.current_block_data.value_types.insert(dest, SsaType::I64);
-            return Some(dest);
+        // Only use ClassCall (vtable dispatch) for interface methods
+        if let Some(class_slots) = self.class_method_slots.get(&cls_name) {
+            if let Some(slot_idx) = class_slots.get(&field) {
+                let dest = self.current_block_data.fresh_value();
+                self.emit(Instruction::ClassCall {
+                    dest: Some(dest),
+                    object: obj_val,
+                    method_id: *slot_idx,
+                    args: operands.clone(),
+                });
+                self.current_block_data
+                    .value_types
+                    .insert(dest, SsaType::I64);
+                return Some(dest);
+            }
         }
 
         None
@@ -696,11 +818,16 @@ where 'bump: 'a {
 
     fn lower_interface_call(
         &mut self,
-        callee: &HirExpr<'_, 'a>,
-        args: &[HirExpr<'_, 'a>],
+        callee: &HirExpr<'a, 'bump>,
+        args: &[HirExpr<'a, 'bump>],
         interface: StrId,
     ) -> Value {
-        let HirExpr::FieldAccess { object, field, span: _ } = callee else {
+        let HirExpr::FieldAccess {
+            object,
+            field,
+            span: _,
+        } = callee
+        else {
             panic!("InterfaceCall callee not FieldAccess; unsupported shape")
         };
 
@@ -715,8 +842,7 @@ where 'bump: 'a {
         let iface_id = *self.interface_id_map.get(&interface).unwrap_or_else(|| {
             panic!(
                 "Unknown interface {} in InterfaceCall",
-                self.context
-                    .resolve_string(&*interface)
+                self.context.resolve_string(&*interface)
             )
         });
 
@@ -726,18 +852,15 @@ where 'bump: 'a {
             .unwrap_or_else(|| {
                 panic!(
                     "Interface {} has no method slots",
-                    self.context
-                        .resolve_string(&*interface)
+                    self.context.resolve_string(&*interface)
                 )
             });
 
         let method_slot_in_iface = iface_slot_map.get(field).unwrap_or_else(|| {
             panic!(
                 "Interface {} has no method {}",
-                self.context
-                    .resolve_string(&*interface),
-                self.context
-                    .resolve_string(&*field)
+                self.context.resolve_string(&*interface),
+                self.context.resolve_string(&*field)
             )
         });
 
@@ -766,14 +889,23 @@ where 'bump: 'a {
             args: operands,
         });
 
-        self.current_block_data.value_types.insert(dest, SsaType::I64);
+        self.current_block_data
+            .value_types
+            .insert(dest, SsaType::I64);
         dest
     }
 
     fn get_field_offset(&mut self, obj: &Value, field: StrId) -> usize {
         let cls_name = match self.current_block_data.value_types.get(obj) {
-            Some(SsaType::User(name, _args)) => {
+            Some(SsaType::User(name, _)) => {
                 optimized_string_buffering::get_type(*name, self.context.clone())
+            }
+            Some(SsaType::Pointer(inner)) => {
+                if let SsaType::User(name, _) = inner.as_ref() {
+                    optimized_string_buffering::get_type(*name, self.context.clone())
+                } else {
+                    panic!("get_field_offset: pointer to non-User type: {:?}", inner)
+                }
             }
             other => panic!(
                 "Could not determine object's class for FieldAccess: {:?}",
@@ -789,10 +921,8 @@ where 'bump: 'a {
             .unwrap_or_else(|| {
                 panic!(
                     "Unknown field {} on class {}",
-                    self.context
-                        .resolve_string(&*field),
-                    self.context
-                        .resolve_string(&*cls_name)
+                    self.context.resolve_string(&*field),
+                    self.context.resolve_string(&*cls_name)
                 )
             })
     }
@@ -805,5 +935,12 @@ where 'bump: 'a {
     #[inline(always)]
     fn new_value(&mut self) -> Value {
         self.current_block_data.fresh_value()
+    }
+}
+
+fn unwrap_pointers(ty: &SsaType) -> Option<&SsaType> {
+    match ty {
+        SsaType::Pointer(inner) => unwrap_pointers(inner),
+        other => Some(other),
     }
 }

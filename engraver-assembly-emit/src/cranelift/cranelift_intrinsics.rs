@@ -1,57 +1,59 @@
-use ir::layout::{layout_of_ssa, sizeof_ssa};
-use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
-use cranelift_codegen::ir::{types, InstBuilder, MemFlags, Signature, StackSlotData, StackSlotKind, Type, Value, Function as ClFunction};
-use cranelift_codegen::isa::TargetIsa;
+use cranelift_codegen::ir::condcodes::IntCC;
+use cranelift_codegen::ir::{
+    Function as ClFunction, InstBuilder, MemFlags, Signature, StackSlotData, StackSlotKind, Type,
+    Value, types,
+};
 use cranelift_frontend::{FuncInstBuilder, FunctionBuilder};
 use ir::hir::HirType;
-use ir::ssa_ir::SsaType;
 use ir::layout::TargetInfo;
+use ir::layout::{layout_of_ssa, sizeof_ssa};
+use ir::ssa_ir::SsaType;
 
 /// Represents an intrinsic operation that can be lowered to Cranelift IR
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Intrinsic {
     // Pointer operations
-    PtrAdd,          // ptr + offset -> ptr
-    PtrDeref,        // *ptr -> T
-    PtrStore,        // *ptr = value
-    PtrFromAddr,     // addr as *const T
-    PtrAddr,         // ptr as usize
-    PtrCastToRaw,    // &T as *const T
-    PtrEq,           // ptr1 == ptr2 -> bool
-    PtrNe,           // ptr1 != ptr2 -> bool
-    PtrLt,           // ptr1 < ptr2 -> bool
-    PtrLe,           // ptr1 <= ptr2 -> bool
-    PtrGt,           // ptr1 > ptr2 -> bool
-    PtrGe,           // ptr1 >= ptr2 -> bool
-    
+    PtrAdd,       // ptr + offset -> ptr
+    PtrDeref,     // *ptr -> T
+    PtrStore,     // *ptr = value
+    PtrFromAddr,  // addr as *const T
+    PtrAddr,      // ptr as usize
+    PtrCastToRaw, // &T as *const T
+    PtrEq,        // ptr1 == ptr2 -> bool
+    PtrNe,        // ptr1 != ptr2 -> bool
+    PtrLt,        // ptr1 < ptr2 -> bool
+    PtrLe,        // ptr1 <= ptr2 -> bool
+    PtrGt,        // ptr1 > ptr2 -> bool
+    PtrGe,        // ptr1 >= ptr2 -> bool
+
     // Memory operations
-    StackAlloc,      // Allocate stack memory
-    StackAllocZeroed,// Allocate and zero-initialize stack memory
-    MemCopy,         // Copy memory regions
-    MemSet,          // Set memory to a value
-    
+    StackAlloc,       // Allocate stack memory
+    StackAllocZeroed, // Allocate and zero-initialize stack memory
+    MemCopy,          // Copy memory regions
+    MemSet,           // Set memory to a value
+
     // Type information
-    SizeOf,          // size_of::<T>()
-    AlignOf,         // align_of::<T>()
-    TypeId,          // Get type ID at runtime
-    
+    SizeOf,  // size_of::<T>()
+    AlignOf, // align_of::<T>()
+    TypeId,  // Get type ID at runtime
+
     // Atomic operations
-    AtomicLoad,      // Atomic load
-    AtomicStore,     // Atomic store
-    AtomicRmw,       // Atomic read-modify-write
-    AtomicCmpXchg,   // Atomic compare-and-swap
+    AtomicLoad,    // Atomic load
+    AtomicStore,   // Atomic store
+    AtomicRmw,     // Atomic read-modify-write
+    AtomicCmpXchg, // Atomic compare-and-swap
 }
 
 /// Resolves a function name to its corresponding intrinsic operation
-/// 
+///
 /// # Arguments
 /// * `name` - The name of the intrinsic to resolve
-/// 
+///
 /// # Returns
 /// `Some(Intrinsic)` if the name matches a known intrinsic, `None` otherwise
 pub fn resolve_intrinsic(name: &str) -> Option<Intrinsic> {
     use Intrinsic::*;
-    
+
     match name {
         // Pointer operations
         "ptr_add" | "__ptr_add" => Some(PtrAdd),
@@ -66,24 +68,24 @@ pub fn resolve_intrinsic(name: &str) -> Option<Intrinsic> {
         "ptr_le" | "__ptr_le" => Some(PtrLe),
         "ptr_gt" | "__ptr_gt" => Some(PtrGt),
         "ptr_ge" | "__ptr_ge" => Some(PtrGe),
-        
+
         // Memory operations
         "stack_alloc" | "__stack_alloc" => Some(StackAlloc),
         "stack_alloc_zeroed" | "__stack_alloc_zeroed" => Some(StackAllocZeroed),
         "mem_copy" | "__mem_copy" => Some(MemCopy),
         "mem_set" | "__mem_set" => Some(MemSet),
-        
+
         // Type information
-        "size_of" | "__size_of" | "core::mem::size_of" => Some(SizeOf),
-        "align_of" | "__align_of" | "core::mem::align_of" => Some(AlignOf),
+        "size_of" | "__size_of" | "zeta::mem::size_of" => Some(SizeOf),
+        "align_of" | "__align_of" | "zeta::mem::align_of" => Some(AlignOf),
         "type_id" | "__type_id" => Some(TypeId),
-        
+
         // Atomic operations
         "atomic_load" | "__atomic_load" => Some(AtomicLoad),
         "atomic_store" | "__atomic_store" => Some(AtomicStore),
         "atomic_rmw" | "__atomic_rmw" => Some(AtomicRmw),
         "atomic_cmpxchg" | "__atomic_cmpxchg" => Some(AtomicCmpXchg),
-        
+
         _ => None,
     }
 }
@@ -107,13 +109,9 @@ fn ensure_value_is_ptr_width(
     }
 }
 use cranelift_module::{Linkage, Module};
-use ir::ssa_ir::{Function};
+use ir::ssa_ir::Function;
 
-pub fn stack_alloc(
-    builder: &mut FunctionBuilder,
-    module: &dyn Module,
-    size_bytes: usize,
-) -> Value {
+pub fn stack_alloc(builder: &mut FunctionBuilder, module: &dyn Module, size_bytes: usize) -> Value {
     assert!(size_bytes > 0, "stack_alloc: size must be > 0");
 
     let isa = module.isa();
@@ -122,7 +120,7 @@ pub fn stack_alloc(
     let slot = builder.create_sized_stack_slot(StackSlotData::new(
         StackSlotKind::ExplicitSlot,
         aligned_size as u32,
-        0
+        0,
     ));
 
     FuncInstBuilder::stack_addr(builder.ins(), ptr_ty, slot, 0)
@@ -131,14 +129,6 @@ pub fn stack_alloc(
 #[inline(always)]
 const fn round_to_eight_align(size_bytes: usize) -> usize {
     ((size_bytes + 7) / 8) * 8
-}
-
-fn ptr_clif_ty(isa: &dyn TargetIsa) -> Type {
-    isa.pointer_type()
-}
-
-fn usize_clif_ty(isa: &dyn TargetIsa) -> Type {
-    ptr_clif_ty(isa)
 }
 
 /*
@@ -170,18 +160,21 @@ pub(super) fn clif_type_of(ty: &HirType) -> SsaType {
         HirType::F64 => SsaType::F64,
         HirType::Boolean => SsaType::Bool,
         HirType::String => SsaType::String,
-        HirType::Struct(name, args) | HirType::Interface(name, args) | HirType::Enum(name, args)
-            => SsaType::User(name.clone(), args.iter().map(clif_type_of).collect()),
+        HirType::Struct(name, args)
+        | HirType::Interface(name, args)
+        | HirType::Enum(name, args) => {
+            SsaType::User(name.clone(), args.iter().map(clif_type_of).collect())
+        }
         HirType::Void => SsaType::Void,
         _ => unimplemented!("Unsupported type {:?}", ty),
     }
 }
 
 fn lower_syscall(
-    builder: &mut FunctionBuilder, 
+    builder: &mut FunctionBuilder,
     call: &mut ClFunction,
     ssa_call: &mut Function,
-    module: &mut impl Module
+    module: &mut impl Module,
 ) -> Value {
     let (num_val, arg_vals) = extract_args(ssa_call);
     let sig = runtime_syscall_signature(arg_vals.len());
@@ -189,7 +182,8 @@ fn lower_syscall(
 
     let callee = module
         .declare_function(name, Linkage::Import, &sig)
-        .map(|id| module.declare_func_in_func(id, call)).unwrap();
+        .map(|id| module.declare_func_in_func(id, call))
+        .unwrap();
 
     let mut operands = Vec::new();
     operands.push(num_val);
@@ -215,24 +209,27 @@ pub fn codegen_intrinsic(
     ret_hir_types: &[HirType],
     builder: &mut FunctionBuilder,
     module: &dyn Module,
-    func_name: Option<&str>,
-    target_info: TargetInfo
+    _func_name: Option<&str>,
+    target_info: TargetInfo,
 ) -> Option<Value> {
     let isa = module.isa();
     let ptr_ty = isa.pointer_type();
-    
-    let arg_ty = args.first().map(|&val| {
-        let ty = builder.func.dfg.value_type(val);
-        match ty {
-            types::I8 => SsaType::I8,
-            types::I16 => SsaType::I16,
-            types::I32 => SsaType::I32,
-            types::I64 => SsaType::I64,
-            types::I128 => SsaType::I128,
-            _ => SsaType::Void, // Default to void if type is not recognized
-        }
-    }).unwrap_or(SsaType::Void);
-    
+
+    let arg_ty = args
+        .first()
+        .map(|&val| {
+            let ty = builder.func.dfg.value_type(val);
+            match ty {
+                types::I8 => SsaType::I8,
+                types::I16 => SsaType::I16,
+                types::I32 => SsaType::I32,
+                types::I64 => SsaType::I64,
+                types::I128 => SsaType::I128,
+                _ => SsaType::Void, // Default to void if type is not recognized
+            }
+        })
+        .unwrap_or(SsaType::Void);
+
     match intr {
         Intrinsic::StackAlloc => {
             let elem_size = sizeof_ssa(&arg_ty, target_info).ok()?;
@@ -243,43 +240,40 @@ pub fn codegen_intrinsic(
             stack_alloc_zeroed_intr(&arg_ty, builder, module, target_info)
         }
 
-        Intrinsic::SizeOf => {
-            layout_of_ssa(&arg_ty, target_info).ok().map(|l| builder.ins().iconst(ptr_ty, l.size as i64))
-        }
+        Intrinsic::SizeOf => layout_of_ssa(&arg_ty, target_info)
+            .ok()
+            .map(|l| builder.ins().iconst(ptr_ty, l.size as i64)),
 
-        Intrinsic::AlignOf => {
-            layout_of_ssa(&arg_ty, target_info).ok().map(|l| builder.ins().iconst(ptr_ty, l.align as i64))
-        }
+        Intrinsic::AlignOf => layout_of_ssa(&arg_ty, target_info)
+            .ok()
+            .map(|l| builder.ins().iconst(ptr_ty, l.align as i64)),
 
         Intrinsic::PtrCastToRaw => {
             ptr_cast_to_raw(args, builder, module).unwrap_or_else(|value| value)
         }
 
-        Intrinsic::PtrAdd => {
-            ptr_add(args, builder, ptr_ty)
-        }
+        Intrinsic::PtrAdd => ptr_add(args, builder, ptr_ty),
 
-        Intrinsic::PtrDeref => {
-            ptr_deref(args, &ret_hir_types, builder, ptr_ty)
-        }
+        Intrinsic::PtrDeref => ptr_deref(args, &ret_hir_types, builder, ptr_ty),
 
         Intrinsic::PtrStore => {
             ptr_store(args, &ret_hir_types, builder, ptr_ty);
             None
         }
 
-        Intrinsic::PtrFromAddr => {
-            get_ptr_from_addr(args, builder, ptr_ty)
-        }
-        
-        Intrinsic::PtrAddr => {
-            get_ptr_addr(args, builder, module)
-        },
-        _ => todo!()
+        Intrinsic::PtrFromAddr => get_ptr_from_addr(args, builder, ptr_ty),
+
+        Intrinsic::PtrAddr => get_ptr_addr(args, builder, module),
+        _ => todo!(),
     }
 }
 
-fn stack_alloc_zeroed_intr(ty: &SsaType, builder: &mut FunctionBuilder, isa: &dyn Module, target_info: TargetInfo) -> Option<Value> {
+fn stack_alloc_zeroed_intr(
+    ty: &SsaType,
+    builder: &mut FunctionBuilder,
+    isa: &dyn Module,
+    target_info: TargetInfo,
+) -> Option<Value> {
     let elem_size: usize = sizeof_ssa(ty, target_info).ok()?;
     let addr: Value = stack_alloc(builder, isa, elem_size);
 
@@ -290,7 +284,11 @@ fn stack_alloc_zeroed_intr(ty: &SsaType, builder: &mut FunctionBuilder, isa: &dy
     Some(addr)
 }
 
-fn ptr_cast_to_raw(args: &[Value], builder: &mut FunctionBuilder, module: &dyn Module) -> Result<Option<Value>, Option<Value>> {
+fn ptr_cast_to_raw(
+    args: &[Value],
+    builder: &mut FunctionBuilder,
+    module: &dyn Module,
+) -> Result<Option<Value>, Option<Value>> {
     let val = args[0];
     let val_ty = builder.func.dfg.value_type(val);
     let ptr_ty = module.isa().pointer_type();
@@ -321,25 +319,30 @@ fn ptr_add(args: &[Value], builder: &mut FunctionBuilder, ptr_ty: Type) -> Optio
     let offset = ensure_value_is_ptr_width(builder, offset, ptr_ty, offset_ty);
 
     let result = builder.ins().iadd(base_ptr, offset);
-    
+
     #[cfg(debug_assertions)]
     {
         // TODO: Add bounds checking in debug mode
     }
-    
+
     Some(result)
 }
 
-fn ptr_deref(args: &[Value], ret_hir_types: &&[HirType], builder: &mut FunctionBuilder, ptr_ty: Type) -> Option<Value> {
+fn ptr_deref(
+    args: &[Value],
+    ret_hir_types: &&[HirType],
+    builder: &mut FunctionBuilder,
+    ptr_ty: Type,
+) -> Option<Value> {
     let ptr = args[0];
     let ptr_val_ty = builder.func.dfg.value_type(ptr);
-    
+
     let ptr_val = ensure_value_is_ptr_width(builder, ptr, ptr_ty, ptr_val_ty);
-    
+
     let ret_hir = &ret_hir_types[0];
     let clif_ret = clif_type_of(&ret_hir);
     let load_ty = super::clif_type(&clif_ret);
-    
+
     let load_ty = match clif_ret {
         SsaType::Pointer(_) => ptr_ty,
         _ => load_ty,
@@ -348,22 +351,23 @@ fn ptr_deref(args: &[Value], ret_hir_types: &&[HirType], builder: &mut FunctionB
     // Use default memory flags (non-volatile, not atomic)
     // TODO: Add support for volatile/atomic operations
     let mem_flags = MemFlags::new();
-    
+
     let loaded = builder.ins().load(load_ty, mem_flags, ptr_val, 0);
-    
+
     #[cfg(debug_assertions)]
     {
         // TODO: Add null pointer checking in debug mode
     }
-    
-    if let SsaType::Pointer(inner) = clif_ret {
-        Some(loaded)
-    } else {
-        Some(loaded)
-    }
+
+    Some(loaded)
 }
 
-fn ptr_store(args: &[Value], ret_hir_types: &&[HirType], builder: &mut FunctionBuilder, ptr_ty: Type) {
+fn ptr_store(
+    args: &[Value],
+    ret_hir_types: &&[HirType],
+    builder: &mut FunctionBuilder,
+    ptr_ty: Type,
+) {
     let p = args[0];
     let mut val = args[1];
 
@@ -387,7 +391,11 @@ fn ptr_store(args: &[Value], ret_hir_types: &&[HirType], builder: &mut FunctionB
     builder.ins().store(mem_flags, val, p, 0);
 }
 
-fn get_ptr_addr(args: &[Value], builder: &mut FunctionBuilder, module: &dyn Module) -> Option<Value> {
+fn get_ptr_addr(
+    args: &[Value],
+    builder: &mut FunctionBuilder,
+    module: &dyn Module,
+) -> Option<Value> {
     let ptr = args[0];
     let ptr_ty = builder.func.dfg.value_type(ptr);
 

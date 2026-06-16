@@ -256,7 +256,7 @@ mod hir_lowerer_tests {
         let (context, _bump) = create_test_context();
         let atomic_bump = Arc::new(GrowableAtomicBump::new());
         let lowerer = HirLowerer::new(context.clone(), atomic_bump.clone());
-        let monomorphizer = Monomorphizer::new(context.clone(), atomic_bump.clone(), unsafe {
+        let _ = Monomorphizer::new(context.clone(), atomic_bump.clone(), unsafe {
             transmute(&lowerer.ctx)
         });
 

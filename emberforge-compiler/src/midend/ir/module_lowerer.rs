@@ -1,15 +1,19 @@
 use crate::midend::ir::ir_conversion::lower_type_hir;
-use ir::hir::{Hir, HirStruct, HirFunc, HirInterface, HirModule, HirParam, HirType, StrId};
+use crate::midend::ir::lowerer::FunctionLowerer;
+use ir::hir::{Hir, HirFunc, HirInterface, HirModule, HirParam, HirStruct, HirType, StrId};
 use ir::ir_hasher::FxHashBuilder;
 use ir::ssa_ir::{Function, Module, SsaType};
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use zetaruntime::string_pool::StringPool;
-use crate::midend::ir::lowerer::FunctionLowerer;
 
 pub struct MirModuleLowerer<'a, 'cx, 'bump>
-where 'bump: 'a, 'bump: 'cx, 'cx: 'a {
+where
+    'bump: 'a,
+    'bump: 'cx,
+    'cx: 'a,
+{
     pub module: Module<'a, 'bump>,
 
     // HIR -> SSA metadata for interfaces / classes
@@ -28,7 +32,11 @@ where 'bump: 'a, 'bump: 'cx, 'cx: 'a {
 }
 
 impl<'a, 'cx, 'bump> MirModuleLowerer<'a, 'cx, 'bump>
-where 'bump: 'a, 'bump: 'cx, 'cx: 'a {
+where
+    'bump: 'a,
+    'bump: 'cx,
+    'cx: 'a,
+{
     pub fn new(context: Arc<StringPool>) -> Self {
         Self {
             module: Module::new(),
@@ -49,9 +57,30 @@ where 'bump: 'a, 'bump: 'cx, 'cx: 'a {
             match item {
                 Hir::Struct(class) => self.lower_class(*class),
                 Hir::Interface(iface) => self.lower_interface(*iface),
-                Hir::Func(func) => {
-                    self.lower_function(*func)
-                },
+                Hir::Func(func) => self.lower_function(*func),
+                Hir::Impl(impl_block) => {
+                    // Build/update the mangled map for this impl's methods
+                    let class_str = self.context.resolve_string(&impl_block.target);
+                    let mmap = self
+                        .class_mangled_map
+                        .entry(impl_block.target)
+                        .or_insert_with(|| HashMap::with_hasher(FxHashBuilder));
+
+                    if let Some(methods) = impl_block.methods {
+                        for method in methods {
+                            let method_str = self.context.resolve_string(&method.name);
+                            let mangled = format!("{}_{}", class_str, method_str);
+                            let mangled_id = StrId(self.context.intern(&mangled));
+                            mmap.insert(method.name.clone(), mangled_id);
+                        }
+                        // Now lower the methods
+                        if let Some(methods) = impl_block.methods {
+                            for method in methods {
+                                self.lower_class_method(method, impl_block.target);
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -61,8 +90,7 @@ where 'bump: 'a, 'bump: 'cx, 'cx: 'a {
 
     fn lower_interface(&mut self, hir_iface: &HirInterface<'a, 'bump>) {
         let iface_id = self.interface_id_map.len();
-        self.interface_id_map
-            .insert(hir_iface.name, iface_id);
+        self.interface_id_map.insert(hir_iface.name, iface_id);
         let mut methods = Vec::new();
         let mut slot_map = HashMap::with_hasher(FxHashBuilder);
         for (i, m) in hir_iface.methods.unwrap().iter().enumerate() {
@@ -75,9 +103,7 @@ where 'bump: 'a, 'bump: 'cx, 'cx: 'a {
                         name: _,
                         param_type,
                     } => lower_type_hir(&param_type),
-                    HirParam::This => {
-                        lower_type_hir(&HirType::This)
-                    }
+                    HirParam::This { kind: _ } => lower_type_hir(&HirType::This),
                 })
                 .collect::<Vec<_>>();
             let ret = m
@@ -99,19 +125,36 @@ where 'bump: 'a, 'bump: 'cx, 'cx: 'a {
 
     fn lower_class(&mut self, hir_class: &HirStruct<'a, 'bump>) {
         self.compute_field_offsets(hir_class);
+
+        self.build_mangled_map(hir_class);
+
         self.build_class_vtable(hir_class);
-        
-        // Add the class to the module BEFORE lowering methods so they can access class info
+
         self.module
             .classes
             .insert(hir_class.name, hir_class.clone());
-        
-        // Lower all methods in the class
+
         if let Some(methods) = hir_class.methods {
             for method in methods {
                 self.lower_class_method(method, hir_class.name);
             }
         }
+    }
+
+    fn build_mangled_map(&mut self, hir_class: &HirStruct<'a, 'bump>) {
+        let class_str = self.context.resolve_string(&hir_class.name);
+        let mut mmap: HashMap<StrId, StrId, FxHashBuilder> = HashMap::with_hasher(FxHashBuilder);
+
+        if let Some(methods) = hir_class.methods {
+            for method in methods {
+                let method_str = self.context.resolve_string(&method.name);
+                let mangled = format!("{}_{}", class_str, method_str);
+                let mangled_id = StrId(self.context.intern(&mangled));
+                mmap.insert(method.name.clone(), mangled_id);
+            }
+        }
+
+        self.class_mangled_map.insert(hir_class.name, mmap);
     }
 
     fn compute_field_offsets(&mut self, hir_class: &HirStruct<'a, 'bump>) {
@@ -128,11 +171,11 @@ where 'bump: 'a, 'bump: 'cx, 'cx: 'a {
         let mut vtable_slots: Vec<StrId> = Vec::new();
         let mut class_slot_map: HashMap<StrId, usize, FxHashBuilder> =
             HashMap::with_hasher(FxHashBuilder);
-        
+
         let Some(interfaces) = hir_class.interfaces else {
             return;
         };
-        
+
         for iface_name in interfaces {
             let iface_methods = self.interface_methods.get(iface_name).unwrap_or_else(|| {
                 panic!(
@@ -171,7 +214,9 @@ where 'bump: 'a, 'bump: 'cx, 'cx: 'a {
     }
 
     fn lower_function_inner<'s>(&'s self, hir_fn: &HirFunc<'a, 'bump>) -> Function
-    where 's: 'cx {
+    where
+        's: 'cx,
+    {
         let mut fl: FunctionLowerer<'s, 'bump> = FunctionLowerer::new(
             hir_fn,
             &self.module.functions,
@@ -184,7 +229,7 @@ where 'bump: 'a, 'bump: 'cx, 'cx: 'a {
             &self.module.classes,
             self.context.clone(),
         )
-            .unwrap();
+        .unwrap();
         fl.lower_body(hir_fn.body);
         FunctionLowerer::finish(fl)
     }
@@ -195,8 +240,14 @@ where 'bump: 'a, 'bump: 'cx, 'cx: 'a {
         self.module.functions.insert(func.name, func);
     }
 
-    fn lower_class_method_inner<'s>(&'s self, hir_fn: &HirFunc<'a, 'bump>, class_name: StrId) -> Function
-    where 's: 'cx {
+    fn lower_class_method_inner<'s>(
+        &'s self,
+        hir_fn: &HirFunc<'a, 'bump>,
+        class_name: StrId,
+    ) -> Function
+    where
+        's: 'cx,
+    {
         let mut fl: FunctionLowerer<'s, 'bump> = FunctionLowerer::new_with_class(
             hir_fn,
             class_name,

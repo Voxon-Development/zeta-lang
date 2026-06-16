@@ -21,10 +21,10 @@ members = [
 ]
 
 [dependencies]
-snmalloc-rs = "0.3.8"
+snmalloc-rs = "0.7.4"
 scribe-parser = { path = "./scribe-parser" }
 emberforge-compiler = { path = "./emberforge-compiler" }
-smelter-optimizer = { path = "./smelter-optimizer" }
+#smelter-optimizer = { path = "./smelter-optimizer" }
 walkdir = "2.5.0"
 codex-dependency-graph = { path = "./codex-dependency-graph" }
 zetaruntime = { path = "zeta_utilities" }

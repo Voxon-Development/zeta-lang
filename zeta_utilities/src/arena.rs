@@ -1,12 +1,12 @@
 use crate::bump::align_up;
-use std::alloc::{Layout};
-use std::ptr::{slice_from_raw_parts_mut, NonNull};
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
-use std::mem::size_of;
-use std::mem::align_of;
-use std::ptr;
+use std::alloc::Layout;
 use std::hint::likely;
 use std::marker::PhantomData;
+use std::mem::align_of;
+use std::mem::size_of;
+use std::ptr;
+use std::ptr::{NonNull, slice_from_raw_parts_mut};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 /// Lock-free growable bump allocator with a small cached free-list of chunks.
 /// Highly unsafe but optimized for speed. Use only in contexts that guarantee
@@ -42,7 +42,8 @@ impl Chunk {
             return Err(std::alloc::AllocError);
         }
 
-        let layout = Layout::from_size_align(capacity, align).map_err(|_| std::alloc::AllocError)?;
+        let layout =
+            Layout::from_size_align(capacity, align).map_err(|_| std::alloc::AllocError)?;
         let mem: *mut u8 = unsafe { std::alloc::alloc(layout) };
         if mem.is_null() {
             return Err(std::alloc::AllocError);
@@ -81,8 +82,8 @@ pub struct GrowableAtomicBump<'bump> {
     cache_head: AtomicPtr<Chunk>,
     cache_len: AtomicUsize,
     cache_len_limit: usize,
-    
-    phantom_data: PhantomData<&'bump ()>
+
+    phantom_data: PhantomData<&'bump ()>,
 }
 
 unsafe impl<'bump> Send for GrowableAtomicBump<'bump> {}
@@ -117,7 +118,7 @@ impl<'bump> GrowableAtomicBump<'bump> {
             cache_head: AtomicPtr::new(ptr::null_mut()),
             cache_len: AtomicUsize::new(0),
             cache_len_limit: cache_limit.max(1),
-            phantom_data: PhantomData
+            phantom_data: PhantomData,
         })
     }
 
@@ -160,11 +161,7 @@ impl<'bump> GrowableAtomicBump<'bump> {
 
     /// Returns slice from an absolute pointer allocated by this arena.
     /// Caller must ensure pointer belongs to this allocator.
-    pub unsafe fn get_slice_from_ptr_unchecked<'a>(
-        &self,
-        ptr: *const u8,
-        len: usize,
-    ) -> &'a [u8] {
+    pub unsafe fn get_slice_from_ptr_unchecked<'a>(&self, ptr: *const u8, len: usize) -> &'a [u8] {
         debug_assert!(self.chunk_containing_ptr(ptr).is_some());
         unsafe { std::slice::from_raw_parts(ptr, len) }
     }
@@ -173,9 +170,12 @@ impl<'bump> GrowableAtomicBump<'bump> {
         if size == 0 {
             return &mut [];
         }
-        
+
         if size > isize::MAX as usize / 2 {
-            panic!("ERROR: Attempted to allocate {} bytes (exceeds limit)", size);
+            panic!(
+                "ERROR: Attempted to allocate {} bytes (exceeds limit)",
+                size
+            );
         }
 
         let allocation: &mut [u8] = self.try_alloc_in_head_aligned(size, align);
@@ -224,7 +224,10 @@ impl<'bump> GrowableAtomicBump<'bump> {
         }
 
         if size > isize::MAX as usize / 2 {
-            panic!("ERROR: Attempted to allocate {} bytes (exceeds limit)", size);
+            panic!(
+                "ERROR: Attempted to allocate {} bytes (exceeds limit)",
+                size
+            );
         }
 
         let allocation: &mut [u8] = self.try_alloc_in_head(size);
@@ -254,7 +257,11 @@ impl<'bump> GrowableAtomicBump<'bump> {
             return self.try_alloc_in_head_aligned(size, align);
         }
 
-        let new_chunk = unsafe { Chunk::new_raw(cap, self.align).ok().expect("Failed to allocate chunk") };
+        let new_chunk = unsafe {
+            Chunk::new_raw(cap, self.align)
+                .ok()
+                .expect("Failed to allocate chunk")
+        };
         unsafe { self.push_new_head(new_chunk) };
         self.try_alloc_in_head_aligned(size, align)
     }
@@ -267,7 +274,9 @@ impl<'bump> GrowableAtomicBump<'bump> {
     unsafe fn push_new_head(&self, new_chunk: *mut Chunk) {
         loop {
             let old_head = self.head.load(Ordering::Acquire);
-            unsafe { (*new_chunk).next.store(old_head, Ordering::Relaxed); }
+            unsafe {
+                (*new_chunk).next.store(old_head, Ordering::Relaxed);
+            }
             if self
                 .head
                 .compare_exchange(old_head, new_chunk, Ordering::AcqRel, Ordering::Acquire)
@@ -466,7 +475,7 @@ impl<'bump> GrowableAtomicBump<'bump> {
                             Chunk::dealloc_raw(head);
                         }
                         None
-                    }
+                    };
                 }
             }
             attempts += 1;
@@ -518,10 +527,6 @@ mod tests {
         assert!(s.is_empty());
     }
 
-    // ========================
-    // Single-value allocation
-    // ========================
-
     #[test]
     fn alloc_value_u8() {
         let a = GrowableAtomicBump::with_capacity(64);
@@ -552,10 +557,6 @@ mod tests {
         assert_eq!(*r, 99u32);
     }
 
-    // ========================
-    // Slice allocation
-    // ========================
-
     #[test]
     fn alloc_slice_roundtrip() {
         let a = GrowableAtomicBump::with_capacity(256);
@@ -579,10 +580,6 @@ mod tests {
         let s = a.alloc_many(data).unwrap();
         assert_eq!(s, data.as_slice());
     }
-
-    // ========================
-    // Alignment
-    // ========================
 
     #[test]
     fn u8_alloc_is_aligned() {
@@ -612,10 +609,6 @@ mod tests {
         assert_eq!(p64 as usize % align_of::<u64>(), 0);
     }
 
-    // ========================
-    // Growth (chunk overflow)
-    // ========================
-
     #[test]
     fn grows_beyond_initial_capacity() {
         // Start tiny — must grow to fit all allocations
@@ -635,10 +628,6 @@ mod tests {
         assert!(s.iter().all(|&b| b == 0xAB));
     }
 
-    // ========================
-    // len / head_used tracking
-    // ========================
-
     #[test]
     fn head_used_increases_after_alloc() {
         let a = GrowableAtomicBump::with_capacity(256);
@@ -654,10 +643,6 @@ mod tests {
         let _ = a.alloc_value(42u64);
         assert!(a.len() > before);
     }
-
-    // ========================
-    // Reset
-    // ========================
 
     #[test]
     fn reset_clears_head_used() {
@@ -684,10 +669,6 @@ mod tests {
         assert_eq!(a.head_used(), 0);
     }
 
-    // ========================
-    // get_slice
-    // ========================
-
     #[test]
     fn get_slice_invalid_range_returns_empty() {
         let a = GrowableAtomicBump::with_capacity(128);
@@ -695,10 +676,6 @@ mod tests {
         // end before start
         assert!(a.get_slice(10, 5).is_empty());
     }
-
-    // ========================
-    // Concurrent allocation
-    // ========================
 
     #[test]
     fn concurrent_allocs_no_collision() {
@@ -737,10 +714,6 @@ mod tests {
         assert!(a.len() > 0);
     }
 
-    // ========================
-    // Custom alignment / capacity
-    // ========================
-
     #[test]
     fn custom_alignment_16() {
         let a = GrowableAtomicBump::with_capacity_and_aligned(512, 16).unwrap();
@@ -755,14 +728,13 @@ mod tests {
         assert!(GrowableAtomicBump::with_capacity_and_aligned(64, 3).is_err());
     }
 
-    // ========================
-    // Struct allocation
-    // ========================
-
     #[test]
     fn alloc_struct_roundtrip() {
         #[derive(Debug, PartialEq)]
-        struct Point { x: f64, y: f64 }
+        struct Point {
+            x: f64,
+            y: f64,
+        }
 
         let a = GrowableAtomicBump::with_capacity(128);
         let p = a.alloc_value(Point { x: 1.5, y: -2.5 });

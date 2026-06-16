@@ -1,37 +1,33 @@
-use ir::hir::HirModule;
+use crate::main_structs::CompilerError;
+use ir::ast::Stmt;
 use ir::errors::reporter::ErrorReporter;
+use ir::hir::HirModule;
 use scribe_parser::hir_lowerer::HirLowerer;
 use sentinel_typechecker::TypeChecker;
-use zetaruntime::string_pool::StringPool;
+use std::sync::Arc;
 use zetaruntime::arena::GrowableAtomicBump;
 use zetaruntime::bump::GrowableBump;
-use std::sync::Arc;
-use ir::ast::Stmt;
-use crate::main_structs::CompilerError;
+use zetaruntime::string_pool::StringPool;
 
-/// Pass 1: HIR Lowering
-/// Converts parsed AST to High-Level IR
 pub fn pass_hir_lowering<'a, 'bump>(
     statements: Vec<Stmt<'a, 'bump>, &'bump GrowableBump<'bump>>,
     context: Arc<StringPool>,
     bump: Arc<GrowableAtomicBump<'bump>>,
 ) -> Result<HirModule<'a, 'bump>, CompilerError<'a>> {
     let mut lowerer = HirLowerer::new(context, bump);
-    println!("Lowering module");
     let module = lowerer.lower_module(statements);
     Ok(module)
 }
 
-/// Pass 2: Type Checking and CTRC Analysis
-/// Verifies type correctness and performs compile-time reference counting analysis
+#[warn(dead_code)]
 pub fn pass_type_checking<'a>(
     module: &HirModule,
-    context: Arc<StringPool>,
+    _context: Arc<StringPool>,
     file_name: &str,
 ) -> Result<(), CompilerError<'a>> {
-    // Type checking
     let mut type_checker = TypeChecker::new();
-    type_checker.check_module(module)
+    type_checker
+        .check_module(module)
         .map_err(|e| CompilerError::TypeError(e.to_string()))?;
 
     let mut error_reporter: ErrorReporter = ErrorReporter::new();
@@ -42,10 +38,5 @@ pub fn pass_type_checking<'a>(
         return Err(CompilerError::TypeCheckError);
     }
 
-    Ok(())
-}
-
-/// Pass 3: Monomorphization
-pub fn pass_monomorphization<'a>(_module: &HirModule) -> Result<(), CompilerError<'a>> {
     Ok(())
 }

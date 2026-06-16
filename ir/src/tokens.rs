@@ -113,12 +113,18 @@ impl<'a> Cursor<'a> {
     /// Advance past the current non-comment token and any trailing comments.
     #[inline]
     pub fn advance(&mut self) {
-        // Move past the current token (which may itself be a comment if we are
-        // somehow positioned on one; `peek` skips them so this is defensive).
+        // First, skip any comments we're currently sitting on
+        while self.index < self.tokens.len() {
+            match self.tokens[self.index].kind {
+                TokenKind::LineComment | TokenKind::DocComment => self.index += 1,
+                _ => break,
+            }
+        }
+        // Now move past the actual token
         if self.index < self.tokens.len() {
             self.index += 1;
         }
-        // Skip any comment tokens that immediately follow.
+        // Skip any comments that follow
         while self.index < self.tokens.len() {
             match self.tokens[self.index].kind {
                 TokenKind::LineComment | TokenKind::DocComment => self.index += 1,
@@ -167,9 +173,14 @@ impl<'a> Cursor<'a> {
         } else {
             Err(DiagnosticError {
                 kind: if tok.kind == TokenKind::EOF {
-                    ParseErrorKind::UnexpectedEOF { expected: Some(kind) }
+                    ParseErrorKind::UnexpectedEOF {
+                        expected: Some(kind),
+                    }
                 } else {
-                    ParseErrorKind::UnexpectedToken { expected: kind, found: tok.kind }
+                    ParseErrorKind::UnexpectedToken {
+                        expected: kind,
+                        found: tok.kind,
+                    }
                 },
                 span: tok.span,
                 context: vec![],
@@ -181,7 +192,11 @@ impl<'a> Cursor<'a> {
     /// Advance past `kind` and return the consumed token, or return a
     /// `DiagnosticError` if the next token does not match.
     #[inline]
-    pub fn expect_or(&mut self, kind: TokenKind, or: TokenKind) -> Result<Token<'a>, DiagnosticError<'a>> {
+    pub fn expect_or(
+        &mut self,
+        kind: TokenKind,
+        or: TokenKind,
+    ) -> Result<Token<'a>, DiagnosticError<'a>> {
         let tok = self.peek_token();
         if tok.kind == kind || tok.kind == or {
             self.advance();
@@ -189,9 +204,14 @@ impl<'a> Cursor<'a> {
         } else {
             Err(DiagnosticError {
                 kind: if tok.kind == TokenKind::EOF {
-                    ParseErrorKind::UnexpectedEOF { expected: Some(kind) }
+                    ParseErrorKind::UnexpectedEOF {
+                        expected: Some(kind),
+                    }
                 } else {
-                    ParseErrorKind::UnexpectedTokens { expected: vec![kind, or], found: tok.kind }
+                    ParseErrorKind::UnexpectedTokens {
+                        expected: vec![kind, or],
+                        found: tok.kind,
+                    }
                 },
                 span: tok.span,
                 context: vec![],
@@ -218,14 +238,16 @@ impl<'a> Cursor<'a> {
                             span: tok.span,
                             context: vec![],
                             notes: vec![],
-                        })
+                        });
                     }
                 };
                 self.advance();
                 Ok((text, tok.span))
             }
             TokenKind::EOF => Err(DiagnosticError {
-                kind: ParseErrorKind::UnexpectedEOF { expected: Some(TokenKind::Ident) },
+                kind: ParseErrorKind::UnexpectedEOF {
+                    expected: Some(TokenKind::Ident),
+                },
                 span: tok.span,
                 context: vec![],
                 notes: vec![],
@@ -243,10 +265,6 @@ impl<'a> Cursor<'a> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// TokenKind
-// ---------------------------------------------------------------------------
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TokenKind {
     // ===== Identifiers & Literals =====
@@ -261,6 +279,7 @@ pub enum TokenKind {
     Null,
 
     // ===== Keywords =====
+    Comptime,
     If,
     Else,
     While,
@@ -300,6 +319,13 @@ pub enum TokenKind {
     Let,
     Void,
     Fn,
+    Internal,
+    Throws,
+    Throw,
+    Suspend,
+    Nosuspend,
+    Blocking,
+    Await,
 
     // ===== Types =====
     U8,
@@ -321,213 +347,219 @@ pub enum TokenKind {
     Boolean,
 
     // ===== Punctuation =====
-    LParen,
-    RParen,
-    LBrace,
-    RBrace,
-    LBracket,
-    RBracket,
-    Comma,
-    Dot,
-    Semicolon,
-    Colon,
-    Question,
-    Arrow,
-    FatArrow,
-    Ellipsis,
-    DotDot,
-    DotDotLt,
+    LParen,     // (
+    RParen,     // )
+    LBrace,     // {
+    RBrace,     // }
+    LBracket,   // [
+    RBracket,   // ]
+    Comma,      // ,
+    Dot,        // .
+    Semicolon,  // ;
+    Colon,      // :
+    Question,   // ?
+    Arrow,      // ->
+    FatArrow,   // =>
+    Ellipsis,   // ...
+    DotDot,     // ..
+    DotDotLt,   // ..<
+    ColonColon, // ::
 
     // ===== Operators =====
-    Assign,
-    ColonAssign,
-    AddAssign,
-    SubAssign,
-    MulAssign,
-    DivAssign,
-    ModAssign,
-    ShlAssign,
-    ShrAssign,
-    UnsignedShrAssign,
-    NotAssign,
-    AndAssign,
-    OrAssign,
-    XorAssign,
-    Eq,
-    Ne,
-    Lt,
-    Gt,
-    Le,
-    Ge,
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Mod,
-    BitNot,
-    BitAnd,
-    BitOr,
-    BitXor,
-    Shl,
-    Shr,
-    UnsignedShr,
+    Assign,            // =
+    ColonAssign,       // :=
+    AddAssign,         // +=
+    SubAssign,         // -=
+    MulAssign,         // *=
+    DivAssign,         // /=
+    ModAssign,         // %=
+    ShlAssign,         // <<=
+    ShrAssign,         // >>=
+    UnsignedShrAssign, // >>>=
+    NotAssign,         // ~=
+    AndAssign,         // &=
+    OrAssign,          // |=
+    XorAssign,         // ^=
+    Eq,                // ==
+    Ne,                // !=
+    Lt,                // <
+    Gt,                // >
+    Le,                // <=
+    Ge,                // >=
+    Add,               // +
+    Sub,               // -
+    Mul,               // *
+    Div,               // /
+    Mod,               // %
+    BitNot,            // ~
+    BitAnd,            // &
+    BitOr,             // |
+    BitXor,            // ^
+    Shl,               // <<
+    Shr,               // >>
+    UnsignedShr,       // >>>
 
     // ===== Logic Operators =====
-    AndAnd,
-    OrOr,
-    LogicalNot,
+    AndAnd,     // &&
+    OrOr,       // ||
+    LogicalNot, // !
 
     // ===== Other =====
     This,
-    Underscore,
+    Underscore, // _
 
     // ===== Comments =====
-    LineComment,
-    DocComment,
+    LineComment, // ///
+    DocComment,  // //
 
     // ===== Special =====
     EOF,
     Unknown,
-    Internal,
-    ColonColon,
 }
 
 impl fmt::Display for TokenKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use TokenKind::*;
         let s = match self {
-            Ident       => "ident",
-            Number      => "number",
-            Decimal     => "decimal",
+            Ident => "ident",
+            Number => "number",
+            Decimal => "decimal",
             Hexadecimal => "hexadecimal",
-            Binary      => "binary",
-            String      => "string",
-            BooleanTrue  => "true",
+            Binary => "binary",
+            String => "string",
+            BooleanTrue => "true",
             BooleanFalse => "false",
-            Null        => "null",
+            Null => "null",
 
-            If        => "if",
-            Else      => "else",
-            While     => "while",
-            For       => "for",
-            In        => "in",
-            Return    => "return",
-            Break     => "break",
-            Continue  => "continue",
-            Enum      => "enum",
-            Struct    => "struct",
+            If => "if",
+            Else => "else",
+            While => "while",
+            For => "for",
+            In => "in",
+            Return => "return",
+            Break => "break",
+            Continue => "continue",
+            Enum => "enum",
+            Struct => "struct",
             Interface => "interface",
-            Impl      => "impl",
-            Import    => "import",
-            Package   => "package",
-            Type      => "type",
-            Const     => "const",
-            Mut       => "mut",
-            Unsafe    => "unsafe",
-            Inline    => "inline",
-            Noinline  => "noinline",
-            Sealed    => "sealed",
-            Private   => "private",
-            Module    => "module",
-            Extern    => "extern",
-            Static    => "static",
-            Match     => "match",
-            Case      => "case",
-            Defer     => "defer",
-            Effect    => "effect",
-            Permits   => "permits",
-            Statem    => "statem",
-            Trait     => "trait",
-            Where     => "where",
-            Uses      => "uses",
-            Requires  => "requires",
-            Ensures   => "ensures",
-            Let       => "let",
-            Void      => "void",
-            Fn        => "fn",
+            Impl => "impl",
+            Import => "import",
+            Package => "package",
+            Type => "type",
+            Const => "const",
+            Mut => "mut",
+            Unsafe => "unsafe",
+            Inline => "inline",
+            Noinline => "noinline",
+            Sealed => "sealed",
+            Private => "private",
+            Module => "module",
+            Extern => "extern",
+            Static => "static",
+            Match => "match",
+            Case => "case",
+            Defer => "defer",
+            Effect => "effect",
+            Permits => "permits",
+            Statem => "statem",
+            Trait => "trait",
+            Where => "where",
+            Uses => "uses",
+            Requires => "requires",
+            Ensures => "ensures",
+            Let => "let",
+            Void => "void",
+            Fn => "fn",
 
-            U8    => "u8",
-            U16   => "u16",
-            U32   => "u32",
-            U64   => "u64",
-            U128  => "u128",
-            I8    => "i8",
-            I16   => "i16",
-            I32   => "i32",
-            I64   => "i64",
-            I128  => "i128",
-            F32   => "f32",
-            F64   => "f64",
+            U8 => "u8",
+            U16 => "u16",
+            U32 => "u32",
+            U64 => "u64",
+            U128 => "u128",
+            I8 => "i8",
+            I16 => "i16",
+            I32 => "i32",
+            I64 => "i64",
+            I128 => "i128",
+            F32 => "f32",
+            F64 => "f64",
             Usize => "usize",
             Isize => "isize",
-            Char    => "char",
-            Str     => "str",
+            Char => "char",
+            Str => "str",
             Boolean => "boolean",
 
-            LParen    => "(",
-            RParen    => ")",
-            LBrace    => "{",
-            RBrace    => "}",
-            LBracket  => "[",
-            RBracket  => "]",
-            Comma     => ",",
-            Dot       => ".",
+            LParen => "(",
+            RParen => ")",
+            LBrace => "{",
+            RBrace => "}",
+            LBracket => "[",
+            RBracket => "]",
+            Comma => ",",
+            Dot => ".",
             Semicolon => ";",
-            Colon     => ":",
-            Question  => "?",
-            Arrow     => "->",
-            FatArrow  => "=>",
-            Ellipsis  => "...",
-            DotDot    => "..",
-            DotDotLt  => "..<",
+            Colon => ":",
+            Question => "?",
+            Arrow => "->",
+            FatArrow => "=>",
+            Ellipsis => "...",
+            DotDot => "..",
+            DotDotLt => "..<",
 
-            Assign            => "=",
-            ColonAssign       => ":=",
-            AddAssign         => "+=",
-            SubAssign         => "-=",
-            MulAssign         => "*=",
-            DivAssign         => "/=",
-            ModAssign         => "%=",
-            ShlAssign         => "<<=",
-            ShrAssign         => ">>=",
+            Assign => "=",
+            ColonAssign => ":=",
+            AddAssign => "+=",
+            SubAssign => "-=",
+            MulAssign => "*=",
+            DivAssign => "/=",
+            ModAssign => "%=",
+            ShlAssign => "<<=",
+            ShrAssign => ">>=",
             UnsignedShrAssign => ">>>=",
-            NotAssign         => "!=",
-            AndAssign         => "&=",
-            OrAssign          => "|=",
-            XorAssign         => "^=",
-            Eq                => "==",
-            Ne                => "~=",
-            Lt                => "<",
-            Gt                => ">",
-            Le                => "<=",
-            Ge                => ">=",
-            Add               => "+",
-            Sub               => "-",
-            Mul               => "*",
-            Div               => "/",
-            Mod               => "%",
-            BitNot            => "~",
-            BitAnd            => "&",
-            BitOr             => "|",
-            BitXor            => "^",
-            Shl               => "<<",
-            Shr               => ">>",
-            UnsignedShr       => ">>>",
+            NotAssign => "!=",
+            AndAssign => "&=",
+            OrAssign => "|=",
+            XorAssign => "^=",
+            Eq => "==",
+            Ne => "~=",
+            Lt => "<",
+            Gt => ">",
+            Le => "<=",
+            Ge => ">=",
+            Add => "+",
+            Sub => "-",
+            Mul => "*",
+            Div => "/",
+            Mod => "%",
+            BitNot => "~",
+            BitAnd => "&",
+            BitOr => "|",
+            BitXor => "^",
+            Shl => "<<",
+            Shr => ">>",
+            UnsignedShr => ">>>",
 
-            AndAnd     => "&&",
-            OrOr       => "||",
+            AndAnd => "&&",
+            OrOr => "||",
             LogicalNot => "!",
 
-            This       => "this",
+            This => "this",
             Underscore => "_",
 
             LineComment => "//",
-            DocComment  => "///",
+            DocComment => "///",
 
-            EOF      => "eof",
-            Unknown  => "unknown",
+            EOF => "eof",
+            Unknown => "unknown",
             Internal => "internal",
             ColonColon => "::",
+            Throws => "throws",
+            Throw => "throw",
+            Comptime => "comptime",
+            Suspend => "suspend",
+            Nosuspend => "nosuspend",
+            Blocking => "blocking",
+            Await => "await",
         };
         f.write_str(s)
     }

@@ -1,7 +1,7 @@
-use ir::ast::{Expr, Generic, Stmt, Visibility};
-use std::sync::Arc;
+use ir::ast::{Stmt, Visibility};
 use ir::diagnostics_context::{DiagnosticWarning, ParserDiagnosticsContext};
 use ir::errors::error::DiagnosticError;
+use std::sync::Arc;
 use zetaruntime::arena::GrowableAtomicBump;
 use zetaruntime::bump::GrowableBump;
 use zetaruntime::string_pool::StringPool;
@@ -79,16 +79,8 @@ where
             TokenKind::While => self.parse_while_stmt(),
             TokenKind::For => self.parse_for_stmt(),
             TokenKind::Return => self.parse_return_stmt(),
-            TokenKind::Break => {
-                self.cursor.advance();
-                self.cursor.consume(TokenKind::Semicolon);
-                Ok(Stmt::Break)
-            }
-            TokenKind::Continue => {
-                self.cursor.advance();
-                self.cursor.consume(TokenKind::Semicolon);
-                Ok(Stmt::Continue)
-            }
+            TokenKind::Break => self.parse_break_stmt(),
+            TokenKind::Continue => self.parse_continue_stmt(),
 
             TokenKind::Private => {
                 self.cursor.advance();
@@ -151,6 +143,7 @@ pub fn token_to_visibility(token_kind: TokenKind) -> Visibility {
     }
 }
 
+#[derive(Debug)]
 pub struct ParseResult<'a, 'bump> {
     pub statements: Vec<Stmt<'a, 'bump>, &'bump GrowableBump<'bump>>,
     pub diagnostics: ParserDiagnostics<'a>,
@@ -189,10 +182,7 @@ pub fn parse_program<'a, 'bump>(
 
     ParseResult {
         statements: stmts,
-        diagnostics: ParserDiagnostics {
-            errors,
-            warnings,
-        },
+        diagnostics: ParserDiagnostics { errors, warnings },
     }
 }
 

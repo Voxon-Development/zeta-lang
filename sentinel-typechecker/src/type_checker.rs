@@ -1,8 +1,6 @@
 use crate::type_context::TypeContext;
 use crate::type_error::{TypeCheckResult, TypeError};
-use ir::hir::{
-    Hir, HirExpr, HirFunc, HirInterface, HirModule, HirParam, HirStmt, HirType, Operator, StrId,
-};
+use ir::hir::{Hir, HirExpr, HirFunc, HirModule, HirParam, HirStmt, HirType, Operator, StrId};
 
 pub struct TypeChecker<'a, 'bump> {
     context: TypeContext<'a, 'bump>,
@@ -17,26 +15,32 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
 
     /// Check a complete HIR module for type correctness
     pub fn check_module(&mut self, module: &HirModule<'a, 'bump>) -> TypeCheckResult<()> {
-        // First pass: register all top-level definitions
         for item in module.items {
             match item {
                 Hir::Struct(s) => {
-                    let name = self.str_id_to_string(s.name);
-                    self.context.add_struct(name, (*s).clone());
+                    let name = s.name.to_string();
+                    // add_struct already pulls in struct-body methods
+                    self.context.add_struct(name, **s);
+                }
+                Hir::Impl(i) => {
+                    // target is the unmangled type name, e.g. "Vec9f"
+                    let target = i.target.to_string();
+                    if let Some(methods) = i.methods {
+                        self.context.add_impl_methods(&target, methods);
+                    }
                 }
                 Hir::Interface(i) => {
-                    let name = self.str_id_to_string(i.name);
-                    self.context.add_interface(name, (*i).clone());
+                    let name = i.name.to_string();
+                    self.context.add_interface(name, **i);
                 }
                 Hir::Func(f) => {
-                    let name = self.str_id_to_string(f.name);
-                    self.context.add_function(name, (*f).clone());
+                    let name = f.name.to_string();
+                    self.context.add_function(name, **f);
                 }
                 _ => {}
             }
         }
 
-        // Second pass: type check all functions
         for item in module.items {
             if let Hir::Func(func) = item {
                 self.check_function(func)?;
@@ -131,10 +135,9 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 }
 
                 if let Some(else_stmt) = else_block {
-                    let mut else_context = self.context.create_child_scope();
+                    let else_context = self.context.create_child_scope();
                     let old_context = std::mem::replace(&mut self.context, else_context);
                     self.check_stmt(else_stmt)?;
-                    else_context = self.context.clone();
                     self.context = old_context;
                 }
 
@@ -195,13 +198,19 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 }
                 Ok(None)
             }
-            HirStmt::Break => {
+            HirStmt::Break(expr, _span) => {
                 if !self.context.in_loop {
                     return Err(TypeError::BreakOutsideLoop);
                 }
+                if let Some(e) = expr {
+                    let expr_type = self.check_expr(e)?;
+                    if let Some(expected_return) = self.context.current_return_type {
+                        self.types_compatible(&expected_return, &expr_type)?;
+                    }
+                }
                 Ok(None)
             }
-            HirStmt::Continue => {
+            HirStmt::Continue(_span) => {
                 if !self.context.in_loop {
                     return Err(TypeError::ContinueOutsideLoop);
                 }
@@ -214,6 +223,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
     fn check_expr(&mut self, expr: &HirExpr<'a, 'bump>) -> TypeCheckResult<HirType<'a, 'bump>> {
         match expr {
             HirExpr::Number(_) => Ok(HirType::I64),
+            HirExpr::Null => Ok(HirType::Null),
             HirExpr::Decimal(_) => Ok(HirType::F64),
             HirExpr::Boolean(_) => Ok(HirType::Boolean),
             HirExpr::String(_) => Ok(HirType::String),
@@ -239,36 +249,94 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 self.check_binary_op(&left_type, op, &right_type)
             }
             HirExpr::Call { callee, args } => {
-                if let HirExpr::Ident(func_name) = **callee {
-                    let name = self.str_id_to_string(func_name);
-                    let func = self
-                        .context
-                        .get_function(&name)
-                        .ok_or_else(|| TypeError::UndefinedFunction(name))?;
+                match &callee {
+                    HirExpr::Ident(func_name) => {
+                        let name = self.str_id_to_string(*func_name);
+                        let func = self
+                            .context
+                            .get_function(&name)
+                            .ok_or_else(|| TypeError::UndefinedFunction(name))?;
 
-                    // Check argument count
-                    let expected_args = func.params.map(|p| p.len()).unwrap_or(0);
-                    if args.len() != expected_args {
-                        return Err(TypeError::InvalidFunctionCall {
-                            expected_args,
-                            found_args: args.len(),
-                        });
-                    }
+                        let expected_args = func.params.map(|p| p.len()).unwrap_or(0);
+                        if args.len() != expected_args {
+                            return Err(TypeError::InvalidFunctionCall {
+                                expected_args,
+                                found_args: args.len(),
+                            });
+                        }
 
-                    // Check argument types
-                    if let Some(params) = func.params {
-                        for (arg, param) in args.iter().zip(params.iter()) {
-                            let arg_type = self.check_expr(arg)?;
-                            if let Some(param_type) = param.get_type() {
-                                self.types_compatible(param_type, &arg_type)?;
+                        if let Some(params) = func.params {
+                            for (arg, param) in args.iter().zip(params.iter()) {
+                                let arg_type = self.check_expr(arg)?;
+                                if let Some(param_type) = param.get_type() {
+                                    self.types_compatible(param_type, &arg_type)?;
+                                }
                             }
                         }
+
+                        Ok(func.return_type.unwrap_or(HirType::Void))
                     }
 
-                    Ok(func.return_type.unwrap_or(HirType::Void))
-                } else {
-                    // For now, assume dynamic calls return Void
-                    Ok(HirType::Void)
+                    HirExpr::FieldAccess { object, field, .. } => {
+                        let obj_type = self.check_expr(object)?;
+
+                        let type_name = match obj_type {
+                            HirType::Struct(name, _) => name.to_string(),
+                            _ => {
+                                return Err(TypeError::Generic(format!(
+                                    "cannot call method on non-struct type: {}",
+                                    self.type_to_string(&obj_type)
+                                )))
+                            }
+                        };
+
+                        let method_name = field.to_string();
+
+                        let func = self
+                            .context
+                            .get_method(&type_name, &method_name)
+                            .copied()
+                            .ok_or_else(|| {
+                                TypeError::Generic(format!(
+                                    "no method `{}` on `{}`",
+                                    method_name, type_name
+                                ))
+                            })?;
+
+                        let total_params = func.params.map(|p| p.len()).unwrap_or(0);
+                        let expected_args = total_params.saturating_sub(1);
+                        if args.len() != expected_args {
+                            return Err(TypeError::InvalidFunctionCall {
+                                expected_args,
+                                found_args: args.len(),
+                            });
+                        }
+
+                        if let Some(params) = func.params {
+                            for (arg, param) in args.iter().zip(params.iter().skip(1)) {
+                                let arg_type = self.check_expr(arg)?;
+                                if let Some(param_type) = param.get_type() {
+                                    self.types_compatible(param_type, &arg_type)?;
+                                }
+                            }
+                        }
+
+                        Ok(func.return_type.unwrap_or(HirType::Void))
+                    }
+
+                    // Any other callee shape (e.g. a closure stored in a variable),
+                    // check the callee expression and, once you have lambda types wired up,
+                    // extract the return type from HirType::Lambda here
+                    other => {
+                        let callee_type = self.check_expr(&other)?;
+                        match callee_type {
+                            HirType::Lambda { return_type, .. } => Ok(*return_type),
+                            _ => Err(TypeError::Generic(format!(
+                                "Expression of type `{}` is not callable",
+                                self.type_to_string(&callee_type)
+                            ))),
+                        }
+                    }
                 }
             }
             HirExpr::FieldAccess {
@@ -303,6 +371,18 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     ))),
                 }
             }
+            HirExpr::StructInit {
+                name,
+                args: _,
+                span: _,
+            } => {
+                let HirExpr::Ident(name) = name else {
+                    println!("I tried, but the real expr was {name:#?}");
+                    return Ok(HirType::Void);
+                };
+                Ok(HirType::Struct(*name, &[]))
+            }
+
             _ => Ok(HirType::Void),
         }
     }

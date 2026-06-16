@@ -3,7 +3,7 @@ use ir::span::SourceSpan;
 use ir::tokens::{Token, TokenKind, Tokens};
 use smallvec::SmallVec;
 use std::fs::File;
-use std::io::{Error, ErrorKind, Read};
+use std::io::{self, Error, ErrorKind, Read};
 use std::sync::Arc;
 use zetaruntime::bump::GrowableBump;
 use zetaruntime::string_pool::StringPool;
@@ -127,7 +127,8 @@ impl Lexer {
         let mut file = File::open(file_name)?;
         let len = file.metadata().map(|m| m.len() as usize).unwrap_or(0);
         let buf: &'a mut [u8] = bump.alloc_bytes(len);
-        let bytes_read = file.read(buf)?;
+
+        let bytes_read = retry_on_interrupt(|| file.read(buf))?;
         let src = std::str::from_utf8(&buf[..bytes_read])
             .map_err(|_| Error::new(ErrorKind::InvalidData, "Invalid UTF-8"))?;
         Ok(self.tokenize(src, file_name, bump))
@@ -578,9 +579,27 @@ impl Lexer {
     }
 }
 
+fn retry_on_interrupt<T, F: FnMut() -> io::Result<T>>(mut f: F) -> io::Result<T> {
+    loop {
+        match f() {
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {
+                // Interrupt means that some sort of signal interrupted the syscall.
+                // it may be retried for zeta compiler stability reasons
+                // Can this just be replaced by using async I/O?
+                // TODO: evaluate if async I/O will actually benefit the zeta compiler long term.
+                continue;
+            }
+            other => return other,
+        }
+    }
+}
+
 #[inline(never)] // large match arm, keep out of hot loop
 fn keyword_or_ident(text: &str) -> TokenKind {
     match text {
+        // Special case here, not an ident or a keyword but best solution (for now)
+        // Is to put this here, just to ease the mind.
+        "_" => TokenKind::Underscore,
         "true" => TokenKind::BooleanTrue,
         "false" => TokenKind::BooleanFalse,
         "null" => TokenKind::Null,
@@ -612,6 +631,13 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "private" => TokenKind::Private,
         "module" => TokenKind::Module,
         "internal" => TokenKind::Internal,
+        "comptime" => TokenKind::Comptime,
+        "throws" => TokenKind::Throws,
+        "throw" => TokenKind::Throw,
+        "suspend" => TokenKind::Suspend,
+        "nosuspend" => TokenKind::Nosuspend,
+        "blocking" => TokenKind::Blocking,
+        "await" => TokenKind::Await,
         "extern" => TokenKind::Extern,
         "static" => TokenKind::Static,
         "effect" => TokenKind::Effect,
@@ -783,7 +809,7 @@ fn finish_number(
 }
 
 fn lex_string(
-    src: &str,
+    _src: &str,
     bytes: &[u8],
     pos: &mut usize,
     column: &mut usize,

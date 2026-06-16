@@ -1,11 +1,8 @@
 use super::context::HirLowerer;
 use ir::ast::{self, ElseBranch, LetStmt, MatchArm, Stmt, Type};
-use ir::hir::{Hir, HirMatchArm, HirStmt, HirType};
+use ir::hir::{HirMatchArm, HirStmt, HirType};
 
 impl<'a, 'bump> HirLowerer<'a, 'bump> {
-    // ===============================
-    // Statements
-    // ===============================
     pub(super) fn lower_stmt(&self, stmt: Stmt<'a, '_>) -> HirStmt<'a, 'bump> {
         match stmt {
             Stmt::Let(l) => self.lower_let_stmt(l),
@@ -62,7 +59,10 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                             .map(|e| self.ctx.bump.alloc_value_immutable(self.lower_expr(&e))),
                         body,
                     },
-                    ast::ForKind::RangeBased { variable, iterable } => {
+                    ast::ForKind::RangeBased {
+                        variable: _,
+                        iterable: _,
+                    } => {
                         // Convert for...in to C-style for loop
                         // for i in iterable => for (let i = 0; i < iterable.len(); i++)
                         // For now, just create a simple for loop
@@ -105,8 +105,11 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 }
             }
 
-            Stmt::Break => HirStmt::Break,
-            Stmt::Continue => HirStmt::Continue,
+            Stmt::Break(expr, span) => HirStmt::Break(
+                expr.map(|expr| self.ctx.bump.alloc_value_immutable(self.lower_expr(expr))),
+                span,
+            ),
+            Stmt::Continue(span) => HirStmt::Continue(span),
             Stmt::Block(block) => {
                 let body_vec: Vec<HirStmt<'a, 'bump>> =
                     block.into_iter().map(|s| self.lower_stmt(*s)).collect();
@@ -121,21 +124,22 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             | Stmt::InterfaceDecl(_)
             | Stmt::ImplDecl(_)
             | Stmt::EnumDecl(_)
-            | Stmt::StateMachineDecl(_)
-            | Stmt::EffectDecl(_) => {
+            | Stmt::StateMachineDecl(_) => {
                 panic!("Declaration statements should not appear in function bodies");
             }
 
             // Module-level statements that should be handled separately
-            Stmt::Import(import) => {
+            Stmt::Import(_) => {
                 // Import statements are handled at module level for dependency tracking
                 // Return a no-op statement here
+                // TODO: What can we do about here?
                 HirStmt::Block { body: &[] }
             }
 
-            Stmt::Package(package) => {
+            Stmt::Package(_) => {
                 // Package statements are handled at module level for dependency tracking
                 // Return a no-op statement here
+                // TODO: What can we do about here?
                 HirStmt::Block { body: &[] }
             }
 

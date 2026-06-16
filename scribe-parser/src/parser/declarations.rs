@@ -1,7 +1,11 @@
-use ir::ast::{Block, ConstStmt, EnumDecl, EnumVariant, Field, FuncDecl, Generic, ImplDecl, InterfaceDecl, Param, PermitsExpr, Stmt, StructDecl, Visibility};
-use ir::errors::error::{DiagnosticError};
-use ir::tokens::TokenKind;
 use crate::parser::descent_parser::DescentParser;
+use ir::ast::{
+    ConstStmt, EnumDecl, EnumVariant, Field, ImplDecl, InterfaceDecl, Param, PermitsExpr, Stmt,
+    StructDecl, Visibility,
+};
+use ir::errors::error::DiagnosticError;
+use ir::hir::StrId;
+use ir::tokens::TokenKind;
 
 impl<'a, 'bump> DescentParser<'a, 'bump>
 where
@@ -14,8 +18,11 @@ where
     ///     y: i32,
     /// }
     /// ```
-    pub fn parse_struct_decl(&mut self, visibility: Visibility) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
-        self.cursor.consume(TokenKind::Struct);
+    pub fn parse_struct_decl(
+        &mut self,
+        visibility: Visibility,
+    ) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
+        let token = self.cursor.expect(TokenKind::Struct)?;
 
         let (name, _span) = self.cursor.expect_ident()?;
 
@@ -26,34 +33,24 @@ where
             None
         };
 
-        let (params, body, constants, destructor) = if self.cursor.consume(TokenKind::Semicolon) {
+        let (params, body, constants) = if self.cursor.consume(TokenKind::Semicolon) {
             // Unit struct: `struct Foo;`
             let consts: &[ConstStmt] = &[];
-            (None, &[], consts, None)
+            (None, &[], consts)
         } else if self.cursor.peek() == TokenKind::LParen {
             // Tuple struct: `struct Foo(i32, i32);`
             let tuple_fields = self.parse_tuple_struct_fields()?;
             self.cursor.expect(TokenKind::Semicolon)?;
             let consts: &[ConstStmt] = &[];
-            (Some(tuple_fields), &[], consts, None)
+            (Some(tuple_fields), &[], consts)
         } else {
             // Regular struct with braces
             self.cursor.expect(TokenKind::LBrace)?;
 
             let mut fields = Vec::new_in(self.bump);
             let mut consts = Vec::new_in(self.bump);
-            let mut dtor: Option<&'bump Block<'a, 'bump>> = None;
 
             while self.cursor.peek() != TokenKind::RBrace && self.cursor.peek() != TokenKind::EOF {
-                // Check for destructor
-                if self.cursor.peek() == TokenKind::BitAnd {
-                    self.cursor.advance();
-                    self.cursor.expect(TokenKind::This)?;
-                    let block = self.parse_block()?;
-                    dtor = Some(self.bump.alloc_value_immutable(block));
-                    continue;
-                }
-
                 // Check for const
                 if self.cursor.peek() == TokenKind::Const {
                     let const_stmt = self.parse_const_stmt()?;
@@ -83,6 +80,7 @@ where
                     field_type,
                     visibility: field_vis,
                     generics: None,
+                    span: field_span,
                 });
 
                 // Optional trailing comma
@@ -96,20 +94,23 @@ where
                 .map(|f| {
                     Param::Normal(self.bump.alloc_value_immutable(ir::ast::NormalParam {
                         is_mut: false,
-                        is_move: false,
                         name: f.name,
                         type_annotation: f.field_type,
                         visibility: f.visibility,
                         default_value: None,
+                        span: f.span,
                     }))
                 })
                 .collect();
 
             (
-                if fields_as_params.is_empty() { None } else { Some(self.bump.alloc_slice_copy(&fields_as_params)) },
+                if fields_as_params.is_empty() {
+                    None
+                } else {
+                    Some(self.bump.alloc_slice_copy(&fields_as_params))
+                },
                 &[],
                 self.bump.alloc_slice_copy(&consts),
-                dtor,
             )
         };
 
@@ -120,10 +121,12 @@ where
             params,
             body,
             constants,
-            destructor,
+            span: token.span,
         };
 
-        Ok(ir::ast::Stmt::StructDecl(self.bump.alloc_value_immutable(struct_decl)))
+        Ok(ir::ast::Stmt::StructDecl(
+            self.bump.alloc_value_immutable(struct_decl),
+        ))
     }
 
     /// Parse an impl block
@@ -138,8 +141,11 @@ where
     ///     fn draw(&this) { ... }
     /// }
     /// ```
-    pub fn parse_impl_decl(&mut self, visibility: Visibility) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
-        self.cursor.consume(TokenKind::Impl);
+    pub fn parse_impl_decl(
+        &mut self,
+        _visibility: Visibility,
+    ) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
+        let token = self.cursor.expect(TokenKind::Impl)?;
 
         // Check for generic impl: impl<T> ...
         let generics = if self.cursor.peek() == TokenKind::Lt {
@@ -200,13 +206,22 @@ where
             generics,
             interface,
             target,
-            methods: if methods.is_empty() { None } else { Some(self.bump.alloc_slice_copy(&methods)) },
+            methods: if methods.is_empty() {
+                None
+            } else {
+                Some(self.bump.alloc_slice_copy(&methods))
+            },
+            span: token.span,
         };
 
-        Ok(ir::ast::Stmt::ImplDecl(self.bump.alloc_value_immutable(impl_decl)))
+        Ok(ir::ast::Stmt::ImplDecl(
+            self.bump.alloc_value_immutable(impl_decl),
+        ))
     }
 
-    fn parse_tuple_struct_fields(&mut self) -> Result<&'bump [Param<'a, 'bump>], DiagnosticError<'a>> {
+    fn parse_tuple_struct_fields(
+        &mut self,
+    ) -> Result<&'bump [Param<'a, 'bump>], DiagnosticError<'a>> {
         self.cursor.expect(TokenKind::LParen)?;
 
         let mut fields = Vec::new_in(self.bump);
@@ -223,16 +238,22 @@ where
                 Visibility::Public
             };
 
+            let peeked_token = self.cursor.peek_token();
             let field_type = self.parse_type()?;
 
-            fields.push(Param::Normal(self.bump.alloc_value_immutable(ir::ast::NormalParam {
-                is_mut: false,
-                is_move: false,
-                name: ir::hir::StrId::default(), // Anonymous field in tuple struct
-                type_annotation: field_type,
-                visibility: field_vis,
-                default_value: None,
-            })));
+            fields.push(Param::Normal(
+                self.bump.alloc_value_immutable(ir::ast::NormalParam {
+                    is_mut: false,
+                    name: StrId(
+                        self.string_pool
+                            .intern(format!("anonymous_tuple_field_{}", field_type).as_str()),
+                    ),
+                    type_annotation: field_type,
+                    visibility: field_vis,
+                    default_value: None,
+                    span: peeked_token.span,
+                }),
+            ));
 
             if !self.cursor.consume(TokenKind::Comma) {
                 break;
@@ -245,7 +266,7 @@ where
     }
 
     fn parse_const_stmt(&mut self) -> Result<ConstStmt<'a, 'bump>, DiagnosticError<'a>> {
-        self.cursor.consume(TokenKind::Const);
+        let token = self.cursor.expect(TokenKind::Const)?;
         let (name, _span) = self.cursor.expect_ident()?;
 
         let type_annotation = if self.cursor.consume(TokenKind::Colon) {
@@ -262,6 +283,7 @@ where
             ident: name,
             type_annotation,
             value: self.bump.alloc_value_immutable(value),
+            span: token.span,
         })
     }
 
@@ -275,8 +297,12 @@ where
     ///     fn method(&this);
     /// }
     /// ```
-    pub fn parse_interface_decl(&mut self, visibility: Visibility, is_sealed: bool) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
-        self.cursor.consume(TokenKind::Interface);
+    pub fn parse_interface_decl(
+        &mut self,
+        visibility: Visibility,
+        is_sealed: bool,
+    ) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
+        let token = self.cursor.expect(TokenKind::Interface)?;
 
         let (name, _span) = self.cursor.expect_ident()?;
 
@@ -327,15 +353,22 @@ where
             visibility,
             sealed: is_sealed,
             permits,
-            methods: if methods.is_empty() { None } else { Some(self.bump.alloc_slice_copy(&methods)) },
+            methods: if methods.is_empty() {
+                None
+            } else {
+                Some(self.bump.alloc_slice_copy(&methods))
+            },
             generics,
+            span: token.span,
         };
 
-        Ok(Stmt::InterfaceDecl(self.bump.alloc_value_immutable(interface_decl)))
+        Ok(Stmt::InterfaceDecl(
+            self.bump.alloc_value_immutable(interface_decl),
+        ))
     }
 
     fn parse_permits_expr(&mut self) -> Result<&'bump PermitsExpr<'a, 'bump>, DiagnosticError<'a>> {
-        self.cursor.consume(TokenKind::Permits);
+        let token = self.cursor.expect(TokenKind::Permits)?;
 
         let mut types = Vec::new_in(self.bump);
 
@@ -350,11 +383,15 @@ where
 
         Ok(self.bump.alloc_value_immutable(ir::ast::PermitsExpr {
             types: self.bump.alloc_slice_copy(&types),
+            span: token.span,
         }))
     }
 
-    pub fn parse_enum_decl(&mut self, visibility: Visibility) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
-        self.cursor.consume(TokenKind::Enum);
+    pub fn parse_enum_decl(
+        &mut self,
+        visibility: Visibility,
+    ) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
+        let token = self.cursor.expect(TokenKind::Enum)?;
         let (name, _span) = self.cursor.expect_ident()?;
         let generics = self.parse_generics()?;
 
@@ -373,21 +410,24 @@ where
             visibility,
             generics,
             variants: self.bump.alloc_slice_copy(&variants),
+            span: token.span,
         })))
     }
 
     /// Allows `VariantName` or `VariantName { first_field: type, second_field: type }`
     fn parse_variant(&mut self) -> Result<EnumVariant<'a, 'bump>, DiagnosticError<'a>> {
-        let (name, _span) = self.cursor.expect_ident()?;
+        let (name, span) = self.cursor.expect_ident()?;
 
         if self.cursor.peek() != TokenKind::LBrace {
-            Ok(EnumVariant { name, fields: &[] })
+            Ok(EnumVariant {
+                name,
+                fields: &[],
+                span,
+            })
         } else {
             self.cursor.advance();
-            let (variant_name, variant_span) = self.cursor.expect_ident()?;
             let mut fields = Vec::new();
             while self.cursor.peek() != TokenKind::RBrace && self.cursor.peek() != TokenKind::EOF {
-                // visibility
                 let visibility = match self.cursor.peek() {
                     TokenKind::Private => Visibility::Private,
                     TokenKind::Module => Visibility::Module,
@@ -400,14 +440,24 @@ where
                 let field_type = self.parse_type()?;
 
                 // TODO: generics
-                fields.push(Field { name: field_name, field_type, visibility, generics: None });
+                fields.push(Field {
+                    name: field_name,
+                    field_type,
+                    visibility,
+                    generics: None,
+                    span: field_span,
+                });
                 if !self.cursor.consume(TokenKind::Comma) {
                     break;
                 }
             }
 
             self.cursor.expect(TokenKind::RBrace)?;
-            Ok(EnumVariant { name, fields: self.bump.alloc_slice_copy(&fields) })
+            Ok(EnumVariant {
+                name,
+                fields: self.bump.alloc_slice_copy(&fields),
+                span,
+            })
         }
     }
 }

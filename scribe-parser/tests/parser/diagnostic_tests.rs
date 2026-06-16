@@ -1,15 +1,11 @@
 #[cfg(test)]
 mod diagnostic_tests {
-    use std::sync::Arc;
-    use ir::errors::error::{DiagnosticError, ParseContext, ParseErrorKind};
     use ir::ast::Stmt;
+    use ir::errors::error::{DiagnosticError, ParseContext, ParseErrorKind};
     use scribe_parser::parser::parse_program;
+    use std::sync::Arc;
     use zetaruntime::arena::GrowableAtomicBump;
     use zetaruntime::string_pool::StringPool;
-
-    // ---------------------------------------------------------------------------
-    // ParseReport struct
-    // ---------------------------------------------------------------------------
 
     #[derive(Debug)]
     struct ParseReport<'a, 'bump> {
@@ -29,10 +25,6 @@ mod diagnostic_tests {
         }
     }
 
-    // ---------------------------------------------------------------------------
-    // Helpers
-    // ---------------------------------------------------------------------------
-
     fn parse(src: &'static str) -> ParseReport<'static, 'static> {
         let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
         let ctx = Arc::new(StringPool::new().unwrap());
@@ -47,41 +39,25 @@ mod diagnostic_tests {
         }
     }
 
-    /// Assert that a parse succeeds with zero errors.
-    macro_rules! assert_ok {
-    ($src:expr) => {{
-        let report = parse($src);
-        if report.has_errors() {
-            report.emit_errors();
-            panic!("expected clean parse, got {} error(s)", report.errors.len());
-        }
-        report
-    }};
-}
-
     /// Assert that a parse produces at least one error whose kind matches.
     macro_rules! assert_error {
-    ($src:expr, $pat:pat) => {{
-        let report = parse($src);
-        assert!(
-            report.has_errors(),
-            "expected at least one error but parse succeeded"
-        );
-        let found = report.errors.iter().any(|e| matches!(&e.kind, $pat));
-        if !found {
-            report.emit_errors();
-            panic!(
-                "no error matched the expected pattern; got {} error(s)",
-                report.errors.len()
+        ($src:expr, $pat:pat) => {{
+            let report = parse($src);
+            assert!(
+                report.has_errors(),
+                "expected at least one error but parse succeeded"
             );
-        }
-        report
-    }};
-}
-
-    // ---------------------------------------------------------------------------
-    // Context chain tests
-    // ---------------------------------------------------------------------------
+            let found = report.errors.iter().any(|e| matches!(&e.kind, $pat));
+            if !found {
+                report.emit_errors();
+                panic!(
+                    "no error matched the expected pattern; got {} error(s)",
+                    report.errors.len()
+                );
+            }
+            report
+        }};
+    }
 
     #[test]
     fn error_inside_function_carries_function_context() {
@@ -102,21 +78,17 @@ mod diagnostic_tests {
     #[test]
     fn error_inside_impl_method_carries_impl_and_method_context() {
         let report = assert_error!(
-        "impl Foo { fn bar( { } }",
-        ParseErrorKind::UnexpectedToken {
-            expected: ir::tokens::TokenKind::RParen,
-            found: _,
-        }
-    );
+            "impl Foo { fn bar( { } }",
+            ParseErrorKind::UnexpectedToken {
+                expected: ir::tokens::TokenKind::RParen,
+                found: _,
+            }
+        );
 
         let err = &report.errors[0];
         assert!(err.context.contains(&ParseContext::ParsingImplBlock));
         assert!(err.context.contains(&ParseContext::ParsingMethod));
     }
-
-    // ---------------------------------------------------------------------------
-    // Multi-error recovery tests
-    // ---------------------------------------------------------------------------
 
     #[test]
     fn multiple_bad_top_level_items_produce_multiple_errors() {
@@ -152,20 +124,13 @@ mod diagnostic_tests {
         assert_eq!(report.statements.len(), 1, "impl block should be in AST");
     }
 
-    // ---------------------------------------------------------------------------
-    // Context ancestry rendering test
-    // ---------------------------------------------------------------------------
-
-    // ---------------------------------------------------------------------------
-    // Notes test
-    // ---------------------------------------------------------------------------
-
     #[test]
     fn unexpected_eof_carries_note() {
         let report = parse("fn foo() {");
-        let err = report.errors.iter().find(|e| {
-            matches!(e.kind, ParseErrorKind::UnexpectedEOF { .. })
-        });
+        let err = report
+            .errors
+            .iter()
+            .find(|e| matches!(e.kind, ParseErrorKind::UnexpectedEOF { .. }));
         assert!(err.is_some(), "expected an UnexpectedEOF error");
         // The parser should attach a note about the unclosed brace.
         // (The note is added by parse_block when EOF is hit.)
@@ -175,14 +140,8 @@ mod diagnostic_tests {
             return;
         }
 
-        panic!(
-            "expected at least one note on EOF error"
-        );
+        panic!("expected at least one note on EOF error");
     }
-
-    // ---------------------------------------------------------------------------
-    // Tracing smoke test (output goes to stderr; just check it doesn't panic)
-    // ---------------------------------------------------------------------------
 
     #[test]
     fn tracing_enabled_does_not_panic() {
@@ -190,10 +149,6 @@ mod diagnostic_tests {
         // Redirect stderr in CI if the output is noisy.
         let _report = parse("fn ok() {}"); // parse() would pass tracing_enabled=true here
     }
-
-    // ---------------------------------------------------------------------------
-    // Error limit test
-    // ---------------------------------------------------------------------------
 
     #[test]
     fn parser_stops_after_error_limit() {
@@ -213,6 +168,9 @@ mod diagnostic_tests {
             .errors
             .iter()
             .any(|e| matches!(e.kind, ParseErrorKind::RecoveryFailure));
-        assert!(has_recovery_failure, "expected a RecoveryFailure sentinel error");
-    }    
+        assert!(
+            has_recovery_failure,
+            "expected a RecoveryFailure sentinel error"
+        );
+    }
 }

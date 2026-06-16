@@ -1,9 +1,11 @@
 use crate::parser::descent_parser::DescentParser;
-use ir::ast::{Generic, NormalParam, Param, ThisParam, Type, TypeKind, Visibility};
+use ir::ast::{
+    Generic, MutabilityState, NormalParam, Param, ParamPassingKind, ThisParam, Type, TypeKind,
+    Visibility,
+};
 use ir::errors::error::{DiagnosticError, ParseErrorKind};
-use ir::hir::StrId;
-use ir::span::SourceSpan;
-use ir::tokens::{Cursor, Token, TokenKind};
+use ir::tokens::TokenKind::LBracket;
+use ir::tokens::{Token, TokenKind};
 use zetaruntime::bump::GrowableBump;
 
 impl<'a, 'bump> DescentParser<'a, 'bump>
@@ -72,13 +74,32 @@ where
         Ok(Some(self.bump.alloc_slice_copy(&generics)))
     }
 
-    pub fn parse_params(&mut self) -> Result<Option<&'bump [Param<'a, 'bump>]>, DiagnosticError<'a>> {
-        // No generics present
-        if self.cursor.peek() != TokenKind::LParen {
+    pub fn parse_params(
+        &mut self,
+    ) -> Result<Option<&'bump [Param<'a, 'bump>]>, DiagnosticError<'a>> {
+        let current_kind = self.cursor.peek_token();
+        if current_kind.kind != TokenKind::LParen {
+            let span = current_kind.span;
+
+            self.diag.record(
+                DiagnosticError::unexpected_token(
+                    TokenKind::LParen,
+                    current_kind.kind,
+                    current_kind.span,
+                )
+                .with_note("Fix: Add a ( to fix it."),
+            );
+            let stop = self.diag.synchronize(&mut self.cursor);
+            if stop == TokenKind::EOF {
+                return Err(DiagnosticError::unexpected_eof(
+                    Some(TokenKind::LParen),
+                    span,
+                ));
+            }
             return Ok(None);
         }
 
-        self.cursor.bump(); // consume '('
+        self.cursor.advance(); // consume '('
 
         let mut params: Vec<Param<'a, 'bump>, &GrowableBump> = Vec::new_in(self.bump);
 
@@ -88,181 +109,264 @@ where
         }
 
         while self.cursor.peek() != TokenKind::RParen && self.cursor.peek() != TokenKind::EOF {
-            let mut is_mut = false;
+            let param = if matches!(
+                self.cursor.peek(),
+                TokenKind::BitAnd | TokenKind::Mul | TokenKind::LBracket
+            ) {
+                let sigil_token = self.cursor.peek_token();
+                let passing_kind = self.parse_param_passing_kind()?;
 
-            // Check for & or &mut at the start (reference parameter like &this or &mut self)
-            let mut is_safe_ptr = false;
-            let mut is_unsafe_ptr = false;
-            let mut is_reference = false;
-            let mut is_mut_reference = false;
-
-            match self.cursor.peek() {
-                TokenKind::BitAnd => {
-                    self.cursor.advance();
-                    if self.cursor.consume(TokenKind::Mut) {
-                        is_mut_reference = true;
-                    } else {
-                        is_reference = true;
-                    }
+                // Reject pointer receivers (*mut this, *const this, [*]mut this, etc.)
+                if matches!(
+                    passing_kind,
+                    ParamPassingKind::MutSafePtr
+                        | ParamPassingKind::ConstSafePtr
+                        | ParamPassingKind::ConstUnsafePtr
+                        | ParamPassingKind::MutUnsafePtr
+                ) {
+                    self.diag.record(DiagnosticError::new(
+                        ParseErrorKind::UnexpectedToken {
+                            expected: TokenKind::BitAnd,
+                            found: sigil_token.kind,
+                        },
+                        sigil_token.span,
+                    ));
+                    self.diag.synchronize(&mut self.cursor);
+                    continue;
                 }
-                TokenKind::Mul => {
-                    self.cursor.advance();
-                    // Check for [*]this (unsafe pointer)
-                    if self.cursor.peek() == TokenKind::RBracket {
-                        self.cursor.advance(); // consume ]
-                        is_unsafe_ptr = true;
-                    } else {
-                        // *this (safe pointer)
-                        is_safe_ptr = true;
-                    }
-                }
-                _ => {}
-            }
 
-            // Check for mut keyword before parameter name (for by-value mutable)
-            if self.cursor.peek() == TokenKind::Mut {
-                self.cursor.advance();
-                is_mut = true;
-            }
+                let this_token = self.cursor.expect(TokenKind::This)?;
+                Param::This(self.bump.alloc_value_immutable(ThisParam {
+                    passing_kind,
+                    span: this_token.span,
+                }))
+            } else if self.cursor.peek() == TokenKind::This {
+                let token = self.cursor.expect(TokenKind::This)?;
+                Param::This(self.bump.alloc_value_immutable(ThisParam {
+                    passing_kind: ParamPassingKind::Move,
+                    span: token.span,
+                }))
+            } else {
+                let is_mut = self.cursor.consume(TokenKind::Mut);
+                let (name, span) = self.cursor.expect_ident()?;
 
-            // Identifier (or `this` keyword)
-            let (name, span): (StrId, SourceSpan) = match self.cursor.peek() {
-                TokenKind::This => {
-                    let tok = self.cursor.peek_token();
-                    self.cursor.advance();
-                    (
-                        ir::hir::StrId::new(self.string_pool.intern("this")),
-                        tok.span,
-                    )
-                }
-                _ => self.cursor.expect_ident()?,
+                let param_type: Type<'a, 'bump> = if self.cursor.consume(TokenKind::Colon) {
+                    self.parse_type()?
+                } else {
+                    return Err(DiagnosticError::new(
+                        ParseErrorKind::ExpectedTypeAnnotation,
+                        self.cursor.peek_token().span,
+                    ));
+                };
+
+                let default_value = if self.cursor.consume(TokenKind::Eq) {
+                    Some(Self::parse_expr_inner(
+                        &mut self.cursor,
+                        self.bump,
+                        0,
+                        true,
+                    )?)
+                } else {
+                    None
+                };
+
+                Param::Normal(self.bump.alloc_value_immutable(NormalParam {
+                    is_mut,
+                    name,
+                    type_annotation: param_type,
+                    visibility: Visibility::Public,
+                    default_value,
+                    span,
+                }))
             };
 
-            match name.as_str() {
-                "this" => {
-                    params.push(Param::This(self.bump.alloc_value_immutable(ThisParam {
-                        is_mut,
-                        is_move: !is_reference && !is_mut_reference && !is_unsafe_ptr && !is_safe_ptr,
-                    })));
-                }
-                _ => {
-                    let param_type: Type<'a, 'bump> = if self.cursor.consume(TokenKind::Colon) {
-                        self.parse_type()?
-                    } else {
-                        panic!("Param type not found.")
-                    };
-
-                    let default_value = if self.cursor.consume(TokenKind::Eq) {
-                        Some(Self::parse_expr_inner(
-                            &mut self.cursor,
-                            self.bump,
-                            0,
-                            true,
-                        )?)
-                    } else {
-                        None
-                    };
-
-                    params.push(Param::Normal(self.bump.alloc_value_immutable(
-                        NormalParam {
-                            is_mut,
-                            is_move: !is_reference && !is_unsafe_ptr && !is_safe_ptr,
-                            name,
-                            type_annotation: param_type,
-                            visibility: Visibility::Public,
-                            default_value,
-                        },
-                    )));
-                }
-            }
+            params.push(param);
 
             match self.cursor.expect_or(TokenKind::Comma, TokenKind::RParen) {
                 Ok(t) if t.kind == TokenKind::RParen => {
                     break;
                 }
-                Ok(_) => {
-                    // Happy path, continue
-                }
+                Ok(_) => {}
                 Err(error) => {
                     self.diag.record(error);
                     let kind = self.diag.synchronize(&mut self.cursor);
-                    if kind == TokenKind::LBrace || kind == TokenKind::RBrace || kind == TokenKind::RParen || kind == TokenKind::EOF {
-                        return Err(DiagnosticError::new(ParseErrorKind::UnexpectedTokens {
-                            expected: vec![TokenKind::RParen, TokenKind::Comma],
-                            found: kind,
-                        }, self.cursor.peek_token().span));
+                    if kind == TokenKind::LBrace
+                        || kind == TokenKind::RBrace
+                        || kind == TokenKind::RParen
+                        || kind == TokenKind::EOF
+                    {
+                        return Err(DiagnosticError::new(
+                            ParseErrorKind::UnexpectedTokens {
+                                expected: vec![TokenKind::RParen, TokenKind::Comma],
+                                found: kind,
+                            },
+                            self.cursor.peek_token().span,
+                        ));
                     }
                 }
             }
         }
 
-        self.cursor.expect(TokenKind::RParen)?;
-
         Ok(Some(self.bump.alloc_slice_copy(&params)))
     }
 
-    pub(crate) fn parse_type(&mut self) -> Result<Type<'a, 'bump>, DiagnosticError<'a>> {
-        let error = match self.cursor.peek() {
-            TokenKind::LBrace => {
+    fn parse_param_passing_kind(&mut self) -> Result<ParamPassingKind, DiagnosticError<'a>> {
+        match self.cursor.peek() {
+            TokenKind::BitAnd => {
                 self.cursor.advance();
-                let mut error_types = Vec::new();
-                loop {
-                    let (name, _span) = self.cursor.expect_ident()?;
-                    error_types.push(name);
-                    match self.cursor.peek() {
-                        TokenKind::Comma => {
-                            self.cursor.advance();
-                        }
-                        TokenKind::RBrace => {
-                            self.cursor.advance();
-                            break;
-                        }
-                        _ => {
-                            let tok = self.cursor.peek_token();
-                            return Err(DiagnosticError::new(ParseErrorKind::UnexpectedToken {
-                                expected: TokenKind::RBrace,
-                                found: tok.kind,
-                            }, tok.span));
-                        }
-                    }
-                }
-                // consume the `!`
-                let bang = self.cursor.peek_token();
-                if self.cursor.peek() != TokenKind::LogicalNot {
-                    return Err(DiagnosticError::new(ParseErrorKind::UnexpectedToken {
-                        expected: TokenKind::LogicalNot,
-                        found: bang.kind
-                    }, bang.span));
-                }
-                self.cursor.advance();
-                true
-            }
 
-            TokenKind::Ident => {
-                if self.cursor.peek_n(1) == TokenKind::LogicalNot {
-                    self.cursor.advance(); // consume error type ident
-                    self.cursor.advance(); // consume `!`
-                    true
+                if self.cursor.consume(TokenKind::Mut) {
+                    Ok(ParamPassingKind::RefMut)
                 } else {
-                    false
+                    Ok(ParamPassingKind::RefConst)
                 }
             }
 
-            _ => false,
-        };
+            TokenKind::Mul => {
+                self.cursor.advance();
+                match self.cursor.expect_or(TokenKind::Mut, TokenKind::Const) {
+                    Ok(token) if token.kind == TokenKind::Mut => {
+                        return Ok(ParamPassingKind::MutSafePtr);
+                    }
+                    Ok(token) if token.kind == TokenKind::Const => {
+                        return Ok(ParamPassingKind::ConstSafePtr);
+                    }
+                    Ok(_) => unreachable!(),
+                    Err(_) => todo!(),
+                }
+            }
+
+            TokenKind::LBracket => {
+                self.cursor.advance();
+
+                self.cursor.expect(TokenKind::Mul)?;
+                self.cursor.expect(TokenKind::RBracket)?;
+
+                match self.cursor.expect_or(TokenKind::Mut, TokenKind::Const) {
+                    Ok(token) if token.kind == TokenKind::Mut => {
+                        return Ok(ParamPassingKind::MutSafePtr);
+                    }
+                    Ok(token) if token.kind == TokenKind::Const => {
+                        return Ok(ParamPassingKind::ConstSafePtr);
+                    }
+                    Ok(_) => unreachable!(),
+                    Err(_) => todo!(),
+                }
+            }
+
+            _ => {
+                if self.cursor.consume(TokenKind::Mut) {
+                    return Ok(ParamPassingKind::MoveMut);
+                }
+                Ok(ParamPassingKind::Move)
+            }
+        }
+    }
+
+    pub(crate) fn parse_type(&mut self) -> Result<Type<'a, 'bump>, DiagnosticError<'a>> {
+        match self.cursor.peek() {
+            TokenKind::BitAnd => {
+                self.cursor.advance();
+
+                let token = self.cursor.peek_token();
+                if token.kind == LBracket {
+                    let kind: TypeKind<'a, 'bump> = self.process_type_kind_after_lbracket(token)?;
+
+                    let nullable = self.cursor.consume(TokenKind::Question);
+
+                    return Ok(Type { kind, nullable });
+                } else {
+                    let mutability_token =
+                        self.cursor.expect_or(TokenKind::Mut, TokenKind::Const)?;
+                    let mutability_state = match mutability_token.kind {
+                        TokenKind::Mut => MutabilityState::Mut,
+                        // I wish rust knew that only Mut and Const is possible here :(
+                        _ => MutabilityState::Const,
+                    };
+
+                    let inner = self.parse_core_type()?;
+
+                    let nullable = self.cursor.consume(TokenKind::Question);
+
+                    return Ok(Type {
+                        kind: TypeKind::Ref {
+                            inner: self.bump.alloc_value_immutable(inner),
+                            mutability_state,
+                        },
+                        nullable,
+                    });
+                }
+            }
+            _ => {}
+        }
 
         let mut ty = self.parse_core_type()?;
 
-        let nullable = if self.cursor.peek() == TokenKind::Question {
-            self.cursor.advance();
-            true
-        } else {
-            false
-        };
+        if self.cursor.consume(TokenKind::Question) {
+            ty.nullable = true;
+        }
 
-        ty.error = error;
-        ty.nullable = nullable;
         Ok(ty)
+    }
+
+    fn process_type_kind_after_lbracket(
+        &mut self,
+        token: Token<'a>,
+    ) -> Result<TypeKind<'a, 'bump>, DiagnosticError<'a>> {
+        self.cursor.advance();
+        // can this be an array, slice or unsafe pointer?
+        if token.kind == TokenKind::RBracket {
+            self.cursor.advance();
+            let inner = self.parse_core_type()?;
+            let inner_ref = self.bump.alloc_value(inner);
+            return Ok(TypeKind::Slice { inner: inner_ref });
+        } else if token.kind == TokenKind::Number {
+            self.cursor.advance();
+            self.cursor.expect(TokenKind::RBracket)?;
+            // SAFETY: a token with kind TokenKind::Number always comes with a text to parse.
+            // Can this be optimized to be inline-parsed at the lexer and be stored in an ADT instead?
+            let number_unparsed = unsafe { token.text.unwrap_unchecked() };
+            let length = number_unparsed.as_str().parse::<usize>().map_err(|_| {
+                DiagnosticError::new(
+                    ParseErrorKind::UnexpectedToken {
+                        expected: TokenKind::Number,
+                        found: token.kind,
+                    },
+                    self.cursor.peek_token().span,
+                )
+            })?;
+            let inner = self.parse_core_type()?;
+            let inner_ref = self.bump.alloc_value(inner);
+            return Ok(TypeKind::Array {
+                inner: inner_ref,
+                length,
+            });
+        } else if token.kind == TokenKind::Mul {
+            self.cursor.advance(); // consume *
+            self.cursor.expect(TokenKind::RBracket)?; // consume ]
+
+            let mutability_token = self.cursor.expect_or(TokenKind::Mut, TokenKind::Const)?;
+            let mutability_state = match mutability_token.kind {
+                TokenKind::Mut => MutabilityState::Mut,
+                // I wish rust knew that only Mut and Const is possible here :(
+                _ => MutabilityState::Const,
+            };
+
+            let inner = self.parse_core_type()?;
+            let inner_ref = self.bump.alloc_value(inner);
+            return Ok(TypeKind::UnsafePointer {
+                inner: inner_ref,
+                mutability_state,
+            });
+        } else {
+            return Err(DiagnosticError::new(
+                ParseErrorKind::UnexpectedToken {
+                    expected: TokenKind::Mul,
+                    found: self.cursor.peek_token().kind,
+                },
+                self.cursor.peek_token().span,
+            ));
+        }
     }
 
     fn parse_core_type(&mut self) -> Result<Type<'a, 'bump>, DiagnosticError<'a>> {
@@ -292,29 +396,18 @@ where
             TokenKind::Underscore => return Ok(Type::infer()),
 
             TokenKind::Mul => {
+                let mutability_token = self.cursor.expect_or(TokenKind::Mut, TokenKind::Const)?;
+                let mutability_state = match mutability_token.kind {
+                    TokenKind::Mut => MutabilityState::Mut,
+                    // I wish rust knew that only Mut and Const is possible here :(
+                    _ => MutabilityState::Const,
+                };
                 // *T is safe pointer (aligned, non-null)
                 let inner = self.parse_core_type()?;
                 let inner_ref = self.bump.alloc_value(inner);
                 TypeKind::SafePointer {
                     inner: inner_ref,
-                }
-            }
-
-            TokenKind::LBracket => {
-                // Check for [*]T (unsafe pointer)
-                if self.cursor.peek() == TokenKind::Mul {
-                    self.cursor.advance(); // consume *
-                    self.cursor.expect(TokenKind::RBracket)?; // consume ]
-                    let inner = self.parse_core_type()?;
-                    let inner_ref = self.bump.alloc_value(inner);
-                    TypeKind::UnsafePointer {
-                        inner: inner_ref,
-                    }
-                } else {
-                    return Err(DiagnosticError::new(ParseErrorKind::UnexpectedToken {
-                        expected: TokenKind::Mul,
-                        found: self.cursor.peek_token().kind,
-                    }, self.cursor.peek_token().span));
+                    mutability_state,
                 }
             }
 
@@ -349,6 +442,30 @@ where
                     .text
                     .ok_or_else(|| DiagnosticError::new(ParseErrorKind::EmptyIdent, tok.span))?;
 
+                // Fallback: if the lexer emitted a primitive keyword as a plain Ident
+                // (e.g. `void`, `bool`, etc.), resolve it here so we never produce
+                // TypeKind::Struct { name: "void", .. }.
+                match name.as_str() {
+                    "void" => return Ok(Type::void()),
+                    "bool" => return Ok(Type::boolean()),
+                    "str" => return Ok(Type::string()),
+                    "char" => return Ok(Type::char()),
+                    "u8" => return Ok(Type::u8()),
+                    "u16" => return Ok(Type::u16()),
+                    "u32" => return Ok(Type::u32()),
+                    "u64" => return Ok(Type::u64()),
+                    "u128" => return Ok(Type::u128()),
+                    "i8" => return Ok(Type::i8()),
+                    "i16" => return Ok(Type::i16()),
+                    "i32" => return Ok(Type::i32()),
+                    "i64" => return Ok(Type::i64()),
+                    "i128" => return Ok(Type::i128()),
+                    "f32" => return Ok(Type::f32()),
+                    "f64" => return Ok(Type::f64()),
+                    "this" => return Ok(Type::this()),
+                    _ => {}
+                }
+
                 let generics = if self.cursor.peek() == TokenKind::Lt {
                     self.cursor.advance();
                     let mut args: Vec<Type<'a, 'bump>> = Vec::new();
@@ -364,10 +481,13 @@ where
                             }
                             _ => {
                                 let t = self.cursor.peek_token();
-                                return Err(DiagnosticError::new(ParseErrorKind::UnexpectedToken {
-                                    expected: TokenKind::Gt,
-                                    found: t.kind
-                                }, t.span));
+                                return Err(DiagnosticError::new(
+                                    ParseErrorKind::UnexpectedToken {
+                                        expected: TokenKind::Gt,
+                                        found: t.kind,
+                                    },
+                                    t.span,
+                                ));
                             }
                         }
                     }
@@ -380,17 +500,19 @@ where
             }
 
             _ => {
-                return Err(DiagnosticError::new(ParseErrorKind::UnexpectedToken {
-                    expected: TokenKind::Ident,
-                    found: tok.kind
-                }, tok.span));
+                return Err(DiagnosticError::new(
+                    ParseErrorKind::UnexpectedToken {
+                        expected: TokenKind::Ident,
+                        found: tok.kind,
+                    },
+                    tok.span,
+                ));
             }
         };
 
         Ok(Type {
             kind,
             nullable: false,
-            error: false,
         })
     }
 }

@@ -30,10 +30,6 @@ impl<'a> ParserDiagnosticsContext<'a> {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Error / warning collection
-    // -----------------------------------------------------------------------
-
     /// Record an error, stamping it with the current context ancestry.
     pub fn record(&mut self, mut err: DiagnosticError<'a>) {
         err.context = self.context_stack.iter().rev().cloned().collect();
@@ -66,21 +62,17 @@ impl<'a> ParserDiagnosticsContext<'a> {
         self.errors
     }
 
-    pub fn errors(&self) -> &[DiagnosticError] {
+    pub fn errors(&self) -> &[DiagnosticError<'a>] {
         &self.errors
     }
 
-    pub fn warnings(&self) -> &[DiagnosticWarning] {
+    pub fn warnings(&self) -> &[DiagnosticWarning<'a>] {
         &self.warnings
     }
 
     pub fn into_diagnostics(self) -> (Vec<DiagnosticError<'a>>, Vec<DiagnosticWarning<'a>>) {
         (self.errors, self.warnings)
     }
-
-    // -----------------------------------------------------------------------
-    // Context stack
-    // -----------------------------------------------------------------------
 
     pub fn push_context(&mut self, ctx: ParseContext) {
         self.context_stack.push(ctx);
@@ -92,7 +84,7 @@ impl<'a> ParserDiagnosticsContext<'a> {
 
     /// RAII guard: push a context, run `f`, pop on exit regardless of outcome.
     ///
-    /// If `f` returns `Err`, the error is *not* automatically recorded —
+    /// If `f` returns `Err`, the error is *not* automatically recorded
     /// the caller decides whether to record-and-recover or to propagate.
     pub fn with_context<T, E, F>(&mut self, ctx: ParseContext, f: F) -> Result<T, E>
     where
@@ -103,10 +95,6 @@ impl<'a> ParserDiagnosticsContext<'a> {
         self.pop_context();
         result
     }
-
-    // -----------------------------------------------------------------------
-    // Recovery / synchronisation
-    // -----------------------------------------------------------------------
 
     /// Synchronisation tokens: structural anchors that delimit top-level items.
     fn is_sync_token(kind: TokenKind) -> bool {
@@ -125,7 +113,7 @@ impl<'a> ParserDiagnosticsContext<'a> {
         )
     }
 
-    /// Panic-mode recovery: advance the cursor until a synchronisation point.
+    /// Panic-mode recovery: advance the cursor until a synchronization point.
     ///
     /// Returns the `TokenKind` we stopped at so the caller can decide whether
     /// to consume it (e.g. consume `}`) or leave it (e.g. leave `fn`).
@@ -145,7 +133,7 @@ impl<'a> ParserDiagnosticsContext<'a> {
         }
     }
 
-    /// Record `err`, then synchronise the cursor.
+    /// Record `err`, then synchronize the cursor.
     ///
     /// Convenience for the common recovery pattern:
     ///   1. emit the error
@@ -159,10 +147,6 @@ impl<'a> ParserDiagnosticsContext<'a> {
         self.record(err);
         self.synchronize(cursor)
     }
-
-    // -----------------------------------------------------------------------
-    // Tracing
-    // -----------------------------------------------------------------------
 
     /// Returns a RAII trace scope.  Emit nothing when tracing is disabled.
     pub fn trace_scope(&self, rule: &'static str) -> TraceScope {
@@ -190,10 +174,6 @@ impl<'a> ParserDiagnosticsContext<'a> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// TraceScope — RAII guard that emits EXIT on drop
-// ---------------------------------------------------------------------------
-
 pub struct TraceScope {
     rule: &'static str,
     enabled: bool,
@@ -206,10 +186,6 @@ impl Drop for TraceScope {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// DiagnosticWarning
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct DiagnosticWarning<'a> {
@@ -226,10 +202,6 @@ impl<'a> DiagnosticWarning<'a> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ParseResult — the canonical result type for all parser methods
-// ---------------------------------------------------------------------------
-
 /// Parser methods should return `ParseResult<T>`.
 /// On `Err`, the error has already been recorded in `diag` *and* recovery
 /// has run, so the caller can continue without re-recording.
@@ -239,10 +211,6 @@ pub type ParseResult<T> = Result<T, RecoveredError>;
 /// Callers propagate this upward with `?`; they do not inspect its contents.
 #[derive(Debug, Clone, Copy)]
 pub struct RecoveredError;
-
-// ---------------------------------------------------------------------------
-// Render helpers
-// ---------------------------------------------------------------------------
 
 /// Pretty-print all collected errors to stderr (or a writer).
 pub fn render_errors(errors: &[DiagnosticError]) {

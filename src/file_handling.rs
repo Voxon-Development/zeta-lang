@@ -1,6 +1,4 @@
-use crate::compilation_passes::{
-    pass_hir_lowering, pass_monomorphization, pass_type_checking,
-};
+use crate::compilation_passes::{pass_hir_lowering, pass_type_checking};
 use crate::main_structs::{CompilerError, ModuleWithArena};
 use codex_dependency_graph::DepGraph;
 use emberforge_compiler::midend::ir::module_lowerer::MirModuleLowerer;
@@ -34,11 +32,18 @@ pub(crate) fn collect_zeta_files<'a>(dir: &Path) -> Result<Vec<PathBuf>, Compile
     let files = WalkDir::new(dir)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().and_then(|e| e.to_str()) == Some("zeta"))
+        .filter(|e| {
+            let extension = e.path().extension().and_then(|e| e.to_str());
+            extension == Some("zeta")
+        })
         .map(|e| e.into_path())
         .collect::<Vec<_>>();
 
     if files.is_empty() {
+        println!(
+            "hit `files.is_empty()`, iter: {:?}",
+            WalkDir::new(dir).into_iter().collect::<Vec<_>>()
+        );
         return Err(CompilerError::NoSourceFiles);
     }
 
@@ -52,10 +57,24 @@ pub(crate) fn compile_files<'a, 'bump>(
     let modules: Vec<ModuleWithArena> = files
         .iter()
         .map(|f| process_single_file(pool.clone(), f.clone()))
-        .filter_map(|res| res.ok())
+        .filter_map(|res: Result<ModuleWithArena<'_, '_>, CompilerError<'_>>| {
+            match &res {
+                Ok(_) => {
+                    return res.ok();
+                }
+                Err(e) => {
+                    println!("{}", e);
+                }
+            }
+            res.ok()
+        })
         .collect::<Vec<_>>();
 
     if modules.is_empty() {
+        println!(
+            "hit `modules.is_empty()`, iter: {:?}",
+            files.iter().collect::<Vec<_>>()
+        );
         return Err(CompilerError::NoSourceFiles);
     }
 
@@ -74,7 +93,7 @@ pub(crate) fn emit_all(
     let len = modules.len();
     if len > 1 {
         let stdlib_idx: usize = 0;
-        let user_indices: Vec<usize> = (1..len).collect();
+        let user_indices: Vec<usize> = Vec::from_iter(1..len);
         dep_graph.link_stdlib_to_user(stdlib_idx, &user_indices);
     }
 
@@ -150,8 +169,6 @@ where
         .unwrap()
     };
 
-    println!("{}", contents_static);
-
     let parse_result = scribe_parser::parser::parse_program(
         contents_static,
         file_name_static,
@@ -159,22 +176,11 @@ where
         bump.clone(),
     );
 
-    println!("Stmts: {:#?}", parse_result.statements);
-
-    // ============================================
-    // PASS 1: HIR Lowering
-    // ============================================
     let module = pass_hir_lowering(parse_result.statements, context.clone(), bump.clone())?;
 
-    // ============================================
-    // PASS 2: Type Checking and CTRC Analysis
-    // ============================================
     pass_type_checking(&module, context.clone(), file_name_static)?;
 
-    // ============================================
-    // PASS 3: Monomorphization (deferred to backend)
-    // ============================================
-    pass_monomorphization(&module)?;
+    //pass_monomorphization(&module)?;
 
     Ok(ModuleWithArena {
         parse_and_hir_bump: bump,

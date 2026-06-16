@@ -5,12 +5,9 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::ops::Deref;
 use zetaruntime::string_pool::VmString;
-
-// =====================================
-// HIR (High-Level IR)
-// =====================================
-
-type AliasID = usize;
+use std::cell::UnsafeCell;
+use std::hash::Hash;
+use std::str::from_utf8_unchecked;
 
 /// A reference to an interned string in the global string pool
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -109,7 +106,7 @@ where
     'bump: 'a,
 {
     pub name: StrId,
-    pub imports: &'bump [Path<'bump>],
+    pub imports: &'bump [Path<'a, 'bump>],
     pub items: &'bump [Hir<'a, 'bump>],
 }
 
@@ -138,7 +135,6 @@ where
     pub interfaces: Option<&'bump [StrId]>, // implemented interfaces
     pub methods: Option<&'bump [HirFunc<'a, 'bump>]>,
     pub constants: Option<&'bump [ConstStmt<'a, 'bump>]>,
-    pub destructor: Option<&'bump HirStmt<'a, 'bump>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -190,6 +186,41 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ThisPassingKind {
+    /// `&this`
+    RefConst,
+    /// `&mut this`
+    RefMut,
+    /// `*mut this`
+    MutSafePtr,
+    /// `*const this`
+    ConstSafePtr,
+    /// `[*]mut this`
+    MutUnsafePtr,
+    /// `[*]const this`
+    ConstUnsafePtr,
+    /// `this`
+    Move,
+    /// `mut this`
+    MoveMut,
+}
+
+impl Display for ThisPassingKind {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            ThisPassingKind::RefConst => write!(f, "&this"),
+            ThisPassingKind::RefMut => write!(f, "&mut this"),
+            ThisPassingKind::MutSafePtr => write!(f, "*mut this"),
+            ThisPassingKind::ConstSafePtr => write!(f, "*const this"),
+            ThisPassingKind::MutUnsafePtr => write!(f, "[*]mut this"),
+            ThisPassingKind::ConstUnsafePtr => write!(f, "[*]const this"),
+            ThisPassingKind::Move => write!(f, "this"),
+            ThisPassingKind::MoveMut => write!(f, "mut this"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum HirParam<'a, 'bump>
 where
     'bump: 'a,
@@ -198,16 +229,32 @@ where
         name: StrId,
         param_type: HirType<'a, 'bump>,
     },
-    This,
+    This {
+        kind: ThisPassingKind,
+    },
 }
 
 impl<'a, 'bump> HirParam<'a, 'bump> {
-    /// Get the type of this parameter
     pub fn get_type(&self) -> Option<&HirType<'a, 'bump>> {
         match self {
             HirParam::Normal { param_type, .. } => Some(param_type),
-            HirParam::This => Some(&HirType::This),
+            HirParam::This { .. } => Some(&HirType::This),
         }
+    }
+
+    /// Returns true when `this` is passed by pointer (all variants except Move/MoveMut).
+    pub fn this_is_ptr(&self) -> bool {
+        matches!(
+            self,
+            HirParam::This {
+                kind: ThisPassingKind::RefConst
+                    | ThisPassingKind::RefMut
+                    | ThisPassingKind::MutSafePtr
+                    | ThisPassingKind::ConstSafePtr
+                    | ThisPassingKind::MutUnsafePtr
+                    | ThisPassingKind::ConstUnsafePtr,
+            }
+        )
     }
 }
 
@@ -301,8 +348,8 @@ where
     Block {
         body: &'bump [HirStmt<'a, 'bump>],
     },
-    Break,
-    Continue,
+    Break(Option<&'bump HirExpr<'a, 'bump>>, SourceSpan<'a>),
+    Continue(SourceSpan<'a>),
     Defer(&'bump HirStmt<'a, 'bump>),
 }
 
@@ -407,6 +454,9 @@ where
         expr: &'bump HirExpr<'a, 'bump>,
         span: SourceSpan<'a>,
     },
+    This {
+        span: SourceSpan<'a>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -442,6 +492,10 @@ pub enum Operator {
     LessThan,
     GreaterThanOrEqual,
     LessThanOrEqual,
+    DerefUnsafe,
+    Deref,
+    Ref,
+    RefMut,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -584,11 +638,6 @@ where
     }
 }
 
-use crate::ir_hasher::FxHashBuilder;
-use std::cell::UnsafeCell;
-use std::hash::Hash;
-use std::str::from_utf8_unchecked;
-
 pub struct HirSlice<'bump, T> {
     inner: UnsafeCell<&'bump [T]>,
 }
@@ -612,106 +661,5 @@ impl<'bump, T> HirSlice<'bump, T> {
         // Unsafe because multiple mutable borrows would be UB,
         // caller must guarantee exclusive access
         unsafe { &mut *(*self.inner.get() as *const [T] as *mut [T]) }
-    }
-}
-
-// =====================================
-// CTRC Integration
-// =====================================
-
-/// HIR module with CTRC analysis results attached
-#[derive(Debug, Clone)]
-pub struct HirModuleWithCTRC<'a, 'bump>
-where
-    'bump: 'a,
-{
-    pub module: HirModule<'a, 'bump>,
-    pub ctrc_analysis: Option<CTRCAnalysisResult>,
-}
-
-/// CTRC analysis result integrated with HIR
-#[derive(Debug, Clone)]
-pub struct CTRCAnalysisResult {
-    pub structs_with_destructors: std::collections::HashSet<StrId, FxHashBuilder>,
-    pub droppable_fields: std::collections::HashSet<(StrId, StrId), FxHashBuilder>, // (struct_name, field_name)
-    pub variable_aliases: std::collections::HashMap<StrId, usize>,                  // AliasID
-    pub allocation_sites: std::collections::HashMap<usize, usize>, // ProgramPoint -> AliasID
-    pub drop_insertions: Vec<DropInsertion>,
-    pub destructor_calls: Vec<DestructorCall>,
-    pub potential_leaks: Vec<AliasID>, // AliasID
-}
-
-/// Drop insertion point in HIR
-#[derive(Debug, Clone)]
-pub struct DropInsertion {
-    pub program_point: usize,
-    pub variable_name: StrId,
-    pub alias_id: usize,
-    pub location_hint: Option<DropLocation>,
-}
-
-/// Destructor call in HIR
-#[derive(Debug, Clone)]
-pub struct DestructorCall {
-    pub program_point: usize,
-    pub alias_id: usize,
-    pub call_type: DestructorCallType,
-    pub location_hint: Option<DropLocation>,
-}
-
-/// Type of destructor call
-#[derive(Debug, Clone, PartialEq)]
-pub enum DestructorCallType {
-    AutoDrop,
-    ExplicitDrop,
-    ScopeDrop,
-}
-
-/// Location hint for where drops/destructors should be inserted
-#[derive(Debug, Clone, PartialEq)]
-pub enum DropLocation {
-    BeforeStatement(usize), // Statement index in block
-    AfterStatement(usize),  // Statement index in block
-    EndOfBlock,
-    EndOfFunction,
-}
-
-impl CTRCAnalysisResult {
-    pub fn new() -> Self {
-        Self {
-            structs_with_destructors: std::collections::HashSet::with_hasher(FxHashBuilder),
-            droppable_fields: std::collections::HashSet::with_hasher(FxHashBuilder),
-            variable_aliases: std::collections::HashMap::new(),
-            allocation_sites: std::collections::HashMap::new(),
-            drop_insertions: Vec::new(),
-            destructor_calls: Vec::new(),
-            potential_leaks: Vec::new(),
-        }
-    }
-
-    pub fn has_memory_safety_issues(&self) -> bool {
-        !self.potential_leaks.is_empty()
-    }
-
-    pub fn get_drop_points_for_variable(&self, var_name: StrId) -> Vec<usize> {
-        self.drop_insertions
-            .iter()
-            .filter(|drop| drop.variable_name == var_name)
-            .map(|drop| drop.program_point)
-            .collect()
-    }
-
-    pub fn get_destructor_calls_at_point(&self, program_point: usize) -> Vec<&DestructorCall> {
-        self.destructor_calls
-            .iter()
-            .filter(|call| call.program_point == program_point)
-            .collect()
-    }
-
-    pub fn get_drop_insertions_at_point(&self, program_point: usize) -> Vec<&DropInsertion> {
-        self.drop_insertions
-            .iter()
-            .filter(|drop| drop.program_point == program_point)
-            .collect()
     }
 }

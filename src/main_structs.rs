@@ -1,22 +1,24 @@
+use engraver_assembly_emit::cranelift::cranelift_backend::EmitError;
+use ir::errors::error::DiagnosticError;
+use ir::hir::HirModule;
+use scribe_parser::parser::ParserDiagnostics;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
-use engraver_assembly_emit::cranelift::cranelift_backend::EmitError;
-use ir::errors::error::{DiagnosticError};
-use ir::hir::HirModule;
-use scribe_parser::parser::{ParserDiagnostics};
 use zetaruntime::arena::GrowableAtomicBump;
 
+#[derive(Debug, Clone)]
 pub struct ModuleWithArena<'a, 'bump> {
-    #[allow(dead_code)] // This simply prevents parser and HIR bump from UB, doesn't need to be used
+    #[allow(dead_code)]
+    // This simply prevents parser and HIR bump from UB, doesn't need to be used
     pub(crate) parse_and_hir_bump: Arc<GrowableAtomicBump<'bump>>,
 
     pub(crate) module: HirModule<'a, 'bump>,
 
     pub(crate) parser_diagnostics: ParserDiagnostics<'a>,
 
-    pub(crate) valid: bool
+    pub(crate) valid: bool,
 }
 
 #[derive(Error, Debug)]

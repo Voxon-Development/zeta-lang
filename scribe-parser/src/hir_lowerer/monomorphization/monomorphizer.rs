@@ -1,13 +1,11 @@
 use smallvec::SmallVec;
 use std::cell::RefCell;
-use std::collections::hash_map::Entry;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use super::naming::suffix_for_subs;
 use super::type_substitution::substitute_type;
-use crate::hir_lowerer::context::LoweringCtx;
 use ir::hir::{HirExpr, HirFunc, HirParam, HirStmt, HirType, StrId};
 use ir::ir_hasher::{FxHashMap, HashMap};
 use zetaruntime::arena::GrowableAtomicBump;
@@ -92,7 +90,9 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
             .insert(new_func.name.clone(), new_func);
 
         // Cache the monomorphized function name
-        self.instantiated_functions.borrow_mut().insert(key, new_name);
+        self.instantiated_functions
+            .borrow_mut()
+            .insert(key, new_name);
 
         Some(new_name)
     }
@@ -128,7 +128,7 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
                         name: *name,
                         param_type: substitute_type(param_type, substitutions, self.bump.clone()),
                     },
-                    HirParam::This => HirParam::This,
+                    HirParam::This { kind } => HirParam::This { kind: *kind },
                 };
                 new_params.push(new_param);
             }

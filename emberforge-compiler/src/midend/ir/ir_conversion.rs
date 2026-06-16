@@ -36,13 +36,21 @@ pub fn lower_type_hir(ty: &HirType) -> SsaType {
         HirType::String => SsaType::String,
         HirType::Struct(name, args)
         | HirType::Interface(name, args)
-        | HirType::Enum(name, args) =>
-            SsaType::User(*name, args.iter().map(lower_type_hir).collect()),
+        | HirType::Enum(name, args) => {
+            SsaType::User(*name, args.iter().map(lower_type_hir).collect())
+        }
         HirType::Void => SsaType::Void,
-        HirType::SafePointer(inner) | HirType::UnsafePointer(inner) => SsaType::Pointer(Box::new(lower_type_hir(inner))),
-        HirType::Lambda { params, return_type, .. } => {
-            let param_types: Vec<SsaType> = params.iter().map(lower_type_hir).collect();
-            let ret_type = lower_type_hir(return_type);
+        HirType::SafePointer(inner) | HirType::UnsafePointer(inner) => {
+            SsaType::Pointer(Box::new(lower_type_hir(inner)))
+        }
+        HirType::Lambda {
+            params,
+            return_type,
+            ..
+        } => {
+            let _param_types: Vec<SsaType> = params.iter().map(lower_type_hir).collect();
+            let _ret_type = lower_type_hir(return_type);
+            // TODO: Improve
             // Represent lambda as a function pointer type (Dyn for now, could be improved)
             SsaType::Dyn
         }
@@ -56,10 +64,7 @@ pub fn lower_type_hir(ty: &HirType) -> SsaType {
             // If we get here, treat it as a generic user type
             SsaType::Dyn
         }
-        HirType::Null => {
-            // Null type - represent as void for now (could be a special pointer type)
-            SsaType::Void
-        }
+        HirType::Null => SsaType::Void,
     }
 }
 

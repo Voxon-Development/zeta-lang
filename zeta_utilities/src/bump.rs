@@ -1,4 +1,4 @@
-use std::alloc::{handle_alloc_error, AllocError, Allocator, Layout};
+use std::alloc::{AllocError, Allocator, Layout, handle_alloc_error};
 use std::cell::{RefCell, RefMut};
 use std::hint::likely;
 use std::marker::PhantomData;
@@ -21,7 +21,7 @@ pub struct Bump<'bump> {
     pub(crate) capacity: usize,
     pub(crate) offset: usize,
     pub(crate) align: usize,
-    phantom_data: PhantomData<&'bump ()>
+    phantom_data: PhantomData<&'bump ()>,
 }
 
 impl<'bump> Default for Bump<'bump> {
@@ -39,10 +39,7 @@ impl<'bump> Bump<'bump> {
         Self::with_capacity_and_aligned(capacity, 8)
     }
 
-    pub fn with_capacity_and_aligned(
-        capacity: usize,
-        align: usize
-    ) -> Self {
+    pub fn with_capacity_and_aligned(capacity: usize, align: usize) -> Self {
         let layout = unsafe { Layout::from_size_align_unchecked(capacity, align) };
         let ptr = unsafe { std::alloc::alloc(layout) };
         if ptr.is_null() {
@@ -54,14 +51,11 @@ impl<'bump> Bump<'bump> {
             capacity,
             offset: 0,
             align,
-            phantom_data: PhantomData
+            phantom_data: PhantomData,
         }
     }
 
-    pub fn alloc<T>(
-        &mut self,
-        val: T
-    ) -> Option<&'bump mut T> {
+    pub fn alloc<T>(&mut self, val: T) -> Option<&'bump mut T> {
         let align = align_of::<T>();
         let size = size_of::<T>();
 
@@ -117,10 +111,7 @@ struct Chunk {
 }
 
 impl Chunk {
-    fn new(
-        capacity: usize,
-        align: usize
-    ) -> Self {
+    fn new(capacity: usize, align: usize) -> Self {
         let layout = unsafe { Layout::from_size_align_unchecked(capacity, align) };
         let ptr = unsafe { std::alloc::alloc(layout) };
         if ptr.is_null() {
@@ -134,10 +125,7 @@ impl Chunk {
         }
     }
 
-    fn try_alloc(
-        &mut self,
-        layout: Layout
-    ) -> Option<NonNull<u8>> {
+    fn try_alloc(&mut self, layout: Layout) -> Option<NonNull<u8>> {
         let ptr = self.ptr.as_ptr() as usize;
         let base = ptr + self.offset;
         let aligned = align_up(base, layout.align());
@@ -164,31 +152,22 @@ impl Drop for Chunk {
 pub struct GrowableBump<'bump> {
     chunks: Rc<RefCell<Vec<Chunk>>>,
     align: usize,
-    phantom_data: PhantomData<&'bump ()>
+    phantom_data: PhantomData<&'bump ()>,
 }
 
 impl<'bump> GrowableBump<'bump> {
-    pub fn new(
-        initial_capacity: usize,
-        align: usize
-    ) -> Self {
+    pub fn new(initial_capacity: usize, align: usize) -> Self {
         Self {
             chunks: Rc::new(RefCell::new(vec![Chunk::new(initial_capacity, align)])),
             align,
-            phantom_data: PhantomData
+            phantom_data: PhantomData,
         }
     }
 
     /// Allocate and initialize a value of type `T` inside the bump.
-    pub fn alloc_value<T>(
-        &self,
-        val: T
-    ) -> &'bump mut T {
+    pub fn alloc_value<T>(&self, val: T) -> &'bump mut T {
         let layout = Layout::new::<T>();
-        let ptr: NonNull<T> = self.allocate(layout)
-            .unwrap()
-            .as_non_null_ptr()
-            .cast::<T>();
+        let ptr: NonNull<T> = self.allocate(layout).unwrap().as_non_null_ptr().cast::<T>();
         unsafe {
             ptr.as_ptr().write(val);
             &mut *ptr.as_ptr()
@@ -196,15 +175,9 @@ impl<'bump> GrowableBump<'bump> {
     }
 
     /// Allocate and initialize a value of type `T` inside the bump.
-    pub fn alloc_value_immutable<T>(
-        &self,
-        val: T
-    ) -> &'bump T {
+    pub fn alloc_value_immutable<T>(&self, val: T) -> &'bump T {
         let layout = Layout::new::<T>();
-        let ptr: NonNull<T> = self.allocate(layout)
-            .unwrap()
-            .as_non_null_ptr()
-            .cast::<T>();
+        let ptr: NonNull<T> = self.allocate(layout).unwrap().as_non_null_ptr().cast::<T>();
         unsafe {
             ptr.as_ptr().write(val);
             &*ptr.as_ptr()
@@ -247,11 +220,11 @@ impl<'bump> GrowableBump<'bump> {
             return &[];
         }
 
-        let layout = Layout::array::<T>(slice.len())
-            .expect("Failed to create layout for slice");
+        let layout = Layout::array::<T>(slice.len()).expect("Failed to create layout for slice");
 
         // allocate raw bytes large enough and properly aligned for T
-        let ptr = self.allocate(layout)
+        let ptr = self
+            .allocate(layout)
             .expect("Failed to allocate slice in bump allocator")
             .as_ptr() as *mut T;
 
@@ -266,11 +239,11 @@ impl<'bump> GrowableBump<'bump> {
             return &[];
         }
 
-        let layout = Layout::array::<T>(slice.len())
-            .expect("Failed to create layout for slice");
+        let layout = Layout::array::<T>(slice.len()).expect("Failed to create layout for slice");
 
         // allocate raw bytes large enough and properly aligned for T
-        let ptr = self.allocate(layout)
+        let ptr = self
+            .allocate(layout)
             .expect("Failed to allocate slice in bump allocator")
             .as_ptr() as *mut T;
 
@@ -281,7 +254,11 @@ impl<'bump> GrowableBump<'bump> {
     }
 
     #[cold]
-    fn grow_allocator(&self, layout: Layout, chunks: &mut RefMut<Vec<Chunk>>) -> Result<NonNull<[u8]>, AllocError> {
+    fn grow_allocator(
+        &self,
+        layout: Layout,
+        chunks: &mut RefMut<Vec<Chunk>>,
+    ) -> Result<NonNull<[u8]>, AllocError> {
         let new_cap = chunks
             .last()
             .map(|c| c.capacity.max(layout.size()) * 2)
@@ -289,9 +266,7 @@ impl<'bump> GrowableBump<'bump> {
 
         chunks.push(Chunk::new(new_cap, self.align));
         let last = chunks.last_mut().unwrap();
-        let ptr = last
-            .try_alloc(layout)
-            .ok_or(AllocError)?; // must succeed after growing
+        let ptr = last.try_alloc(layout).ok_or(AllocError)?; // must succeed after growing
 
         Ok(NonNull::slice_from_raw_parts(ptr, layout.size()))
     }
@@ -341,7 +316,12 @@ impl AtomicBump {
             handle_alloc_error(layout);
         }
 
-        Self { ptr: unsafe { NonNull::new_unchecked(ptr) }, capacity, offset: AtomicUsize::new(0), align, }
+        Self {
+            ptr: unsafe { NonNull::new_unchecked(ptr) },
+            capacity,
+            offset: AtomicUsize::new(0),
+            align,
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -368,7 +348,8 @@ impl AtomicBump {
                 return None;
             }
 
-            if self.offset
+            if self
+                .offset
                 .compare_exchange(old, new_offset, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
             {
@@ -392,7 +373,8 @@ impl AtomicBump {
                 return None;
             }
 
-            if self.offset
+            if self
+                .offset
                 .compare_exchange(old, new_offset, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
             {
@@ -409,12 +391,10 @@ impl AtomicBump {
     pub fn get_slice(&self, start: usize, end: usize) -> &[u8] {
         let ptr = self.ptr.as_ptr();
 
-        // Validate bounds
         if start > end || end > self.offset.load(Ordering::Relaxed) {
             return &[];
         }
 
-        // use start, end to get the slice
         unsafe { std::slice::from_raw_parts(ptr.add(start), end - start) }
     }
 

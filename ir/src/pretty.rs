@@ -1,7 +1,7 @@
 use crate::ast::{Expr, FuncSafety, InlineModifier, Stmt, Type, Visibility};
 use crate::hir::{
-    CTRCAnalysisResult, DestructorCallType, Hir, HirEnum, HirExpr, HirFunc, HirInterface,
-    HirModule, HirModuleWithCTRC, HirParam, HirStmt, HirStruct, HirType, Operator, StrId,
+    Hir, HirEnum, HirExpr, HirFunc, HirInterface, HirModule, HirParam, HirStmt, HirStruct, HirType,
+    Operator, StrId,
 };
 use crate::ssa_ir::{BinOp, Function, Instruction, Module, Operand, SsaType, UnOp};
 use std::fmt::{self, Write};
@@ -63,7 +63,7 @@ impl IrPrettyPrinter {
         // Format imports
         if !module.imports.is_empty() {
             for import in module.imports {
-                writeln!(output, "{}import;", self.indent())?;
+                writeln!(output, "{}import {};", self.indent(), import)?;
             }
             writeln!(output)?;
         }
@@ -72,78 +72,6 @@ impl IrPrettyPrinter {
         for item in module.items {
             self.format_hir_item(&mut output, item)?;
             writeln!(output)?;
-        }
-
-        Ok(output)
-    }
-
-    /// Format HIR module with CTRC analysis results
-    pub fn format_hir_module_with_ctrc(
-        &mut self,
-        module_with_ctrc: &HirModuleWithCTRC<'_, '_>,
-    ) -> Result<String, fmt::Error> {
-        let mut output = String::new();
-        let module = &module_with_ctrc.module;
-
-        // Module header
-        writeln!(
-            output,
-            "// HIR Module: {} (with CTRC Analysis)",
-            self.resolve_str(module.name)
-        )?;
-
-        // CTRC Analysis Summary
-        if let Some(ctrc) = &module_with_ctrc.ctrc_analysis {
-            writeln!(output, "// CTRC Analysis Results:")?;
-            writeln!(
-                output,
-                "//   Structs with destructors: {}",
-                ctrc.structs_with_destructors.len()
-            )?;
-            writeln!(
-                output,
-                "//   Drop insertions: {}",
-                ctrc.drop_insertions.len()
-            )?;
-            writeln!(
-                output,
-                "//   Destructor calls: {}",
-                ctrc.destructor_calls.len()
-            )?;
-            writeln!(
-                output,
-                "//   Potential leaks: {}",
-                ctrc.potential_leaks.len()
-            )?;
-            if ctrc.has_memory_safety_issues() {
-                writeln!(output, "//    MEMORY SAFETY ISSUES DETECTED")?;
-            } else {
-                writeln!(output, "//    Memory safe")?;
-            }
-        }
-        writeln!(output)?;
-
-        // Format imports
-        if !module.imports.is_empty() {
-            for import in module.imports {
-                writeln!(output, "{}import {};", self.indent(), import)?;
-            }
-            writeln!(output)?;
-        }
-
-        // Format items with CTRC annotations
-        for item in module.items {
-            self.format_hir_item_with_ctrc(
-                &mut output,
-                item,
-                module_with_ctrc.ctrc_analysis.as_ref(),
-            )?;
-            writeln!(output)?;
-        }
-
-        // CTRC Analysis Details
-        if let Some(ctrc) = &module_with_ctrc.ctrc_analysis {
-            self.format_ctrc_analysis_details(&mut output, ctrc)?;
         }
 
         Ok(output)
@@ -159,26 +87,6 @@ impl IrPrettyPrinter {
             Hir::Struct(struct_def) => self.format_hir_struct(output, struct_def),
             Hir::Enum(enum_def) => self.format_hir_enum(output, enum_def),
             Hir::Interface(interface_def) => self.format_hir_interface(output, interface_def),
-            _ => {
-                writeln!(output, "{}// Other HIR item", self.indent())?;
-                Ok(())
-            }
-        }
-    }
-
-    fn format_hir_item_with_ctrc(
-        &mut self,
-        output: &mut String,
-        item: &Hir<'_, '_>,
-        ctrc: Option<&CTRCAnalysisResult>,
-    ) -> Result<(), fmt::Error> {
-        match item {
-            Hir::Func(func) => self.format_hir_function_with_ctrc(output, func, ctrc),
-            Hir::Struct(struct_def) => self.format_hir_struct_with_ctrc(output, struct_def, ctrc),
-            Hir::Enum(enum_def) => self.format_hir_enum(output, enum_def),
-            Hir::Interface(interface_def) => self.format_hir_interface(output, interface_def),
-            Hir::Stmt(stmt) => self.format_hir_statement(output, stmt),
-            Hir::Expr(expr) => self.format_hir_expression(output, expr),
             _ => {
                 writeln!(output, "{}// Other HIR item", self.indent())?;
                 Ok(())
@@ -245,8 +153,8 @@ impl IrPrettyPrinter {
                         write!(output, "{}: ", self.resolve_str(*name))?;
                         self.format_hir_type(output, param_type)?;
                     }
-                    HirParam::This => {
-                        write!(output, "this")?;
+                    HirParam::This { kind } => {
+                        write!(output, "{}", kind)?;
                     }
                 }
             }
@@ -279,75 +187,6 @@ impl IrPrettyPrinter {
             writeln!(output, "{}}}", self.indent())?;
         } else {
             writeln!(output, ";")?;
-        }
-
-        Ok(())
-    }
-
-    fn format_hir_function_with_ctrc(
-        &mut self,
-        output: &mut String,
-        func: &HirFunc<'_, '_>,
-        ctrc: Option<&CTRCAnalysisResult>,
-    ) -> Result<(), fmt::Error> {
-        // First format the function normally
-        self.format_hir_function(output, func)?;
-
-        // Add CTRC annotations if available
-        if let Some(ctrc_result) = ctrc {
-            // Check if this function has any CTRC-related information
-            let has_drops = !ctrc_result.drop_insertions.is_empty();
-            let has_destructor_calls = !ctrc_result.destructor_calls.is_empty();
-
-            if has_drops || has_destructor_calls {
-                writeln!(
-                    output,
-                    "{}// CTRC Analysis for function '{}':",
-                    self.indent(),
-                    self.resolve_str(func.name)
-                )?;
-
-                if has_drops {
-                    writeln!(
-                        output,
-                        "{}//   Drop insertions: {}",
-                        self.indent(),
-                        ctrc_result.drop_insertions.len()
-                    )?;
-                    for drop in &ctrc_result.drop_insertions {
-                        writeln!(
-                            output,
-                            "{}//     - {} at program point {}",
-                            self.indent(),
-                            self.resolve_str(drop.variable_name),
-                            drop.program_point
-                        )?;
-                    }
-                }
-
-                if has_destructor_calls {
-                    writeln!(
-                        output,
-                        "{}//   Destructor calls: {}",
-                        self.indent(),
-                        ctrc_result.destructor_calls.len()
-                    )?;
-                    for call in &ctrc_result.destructor_calls {
-                        let call_type = match call.call_type {
-                            DestructorCallType::AutoDrop => "auto-drop",
-                            DestructorCallType::ExplicitDrop => "explicit-drop",
-                            DestructorCallType::ScopeDrop => "scope-drop",
-                        };
-                        writeln!(
-                            output,
-                            "{}//     - {} at program point {}",
-                            self.indent(),
-                            call_type,
-                            call.program_point
-                        )?;
-                    }
-                }
-            }
         }
 
         Ok(())
@@ -409,75 +248,6 @@ impl IrPrettyPrinter {
 
         self.pop_indent();
         writeln!(output, "{}}}", self.indent())?;
-
-        // Destructor
-        if let Some(destructor) = struct_def.destructor {
-            writeln!(output)?;
-            writeln!(
-                output,
-                "{}impl Drop for {} {{",
-                self.indent(),
-                self.resolve_str(struct_def.name)
-            )?;
-            self.push_indent();
-            writeln!(output, "{}fn drop(&mut self) {{", self.indent())?;
-            self.push_indent();
-            self.format_hir_statement(output, destructor)?;
-            self.pop_indent();
-            writeln!(output, "{}}}", self.indent())?;
-            self.pop_indent();
-            writeln!(output, "{}}}", self.indent())?;
-        }
-
-        Ok(())
-    }
-
-    fn format_hir_struct_with_ctrc(
-        &mut self,
-        output: &mut String,
-        struct_def: &HirStruct<'_, '_>,
-        ctrc: Option<&CTRCAnalysisResult>,
-    ) -> Result<(), fmt::Error> {
-        // First format the struct normally
-        self.format_hir_struct(output, struct_def)?;
-
-        // Add CTRC annotations if available
-        if let Some(ctrc_result) = ctrc {
-            // Check if this struct has destructor or droppable fields
-            let has_destructor = ctrc_result
-                .structs_with_destructors
-                .contains(&struct_def.name);
-            let droppable_fields: Vec<_> = ctrc_result
-                .droppable_fields
-                .iter()
-                .filter(|(struct_name, _)| *struct_name == struct_def.name)
-                .collect();
-
-            if has_destructor || !droppable_fields.is_empty() {
-                writeln!(
-                    output,
-                    "{}// CTRC Analysis for struct '{}':",
-                    self.indent(),
-                    self.resolve_str(struct_def.name)
-                )?;
-
-                if has_destructor {
-                    writeln!(output, "{}//   Has destructor", self.indent())?;
-                }
-
-                if !droppable_fields.is_empty() {
-                    writeln!(output, "{}//   Droppable fields:", self.indent())?;
-                    for (_, field_name) in &droppable_fields {
-                        writeln!(
-                            output,
-                            "{}//     - {}",
-                            self.indent(),
-                            self.resolve_str(*field_name)
-                        )?;
-                    }
-                }
-            }
-        }
 
         Ok(())
     }
@@ -993,7 +763,7 @@ impl IrPrettyPrinter {
                     interface_id
                 )?;
             }
-            Instruction::Alloc { dest, ty, count } => {
+            Instruction::StackAlloc { dest, ty, count } => {
                 writeln!(
                     output,
                     "{}{} = alloc {} [{}]",
@@ -1191,6 +961,10 @@ impl IrPrettyPrinter {
             Operator::LessThanOrEqual => "<=",
             Operator::LogicalAnd => "&&",
             Operator::LogicalOr => "||",
+            Operator::DerefUnsafe => "[*]",
+            Operator::Deref => "*",
+            Operator::Ref => "&",
+            Operator::RefMut => "&mut ",
         }
     }
 
@@ -1378,10 +1152,15 @@ impl IrPrettyPrinter {
                 )?;
                 writeln!(output, " {{ /* class body */ }}")?;
             }
-            Stmt::Break => {
-                writeln!(output, "{}break;", self.indent())?;
+            Stmt::Break(expr, _span) => {
+                write!(output, "{}break", self.indent())?;
+                if let Some(expr) = expr {
+                    write!(output, " ")?;
+                    self.format_ast_expression(output, expr)?;
+                }
+                writeln!(output, ";")?;
             }
-            Stmt::Continue => {
+            Stmt::Continue(_span) => {
                 writeln!(output, "{}continue;", self.indent())?;
             }
             _ => {
@@ -1410,112 +1189,6 @@ impl IrPrettyPrinter {
         // This would need to be implemented based on the actual Type enum
         // For now, just a placeholder
         write!(output, "/* ast type */")?;
-        Ok(())
-    }
-
-    fn format_ctrc_analysis_details(
-        &mut self,
-        output: &mut String,
-        ctrc: &CTRCAnalysisResult,
-    ) -> Result<(), fmt::Error> {
-        writeln!(output, "// ===== CTRC Analysis Details =====")?;
-        writeln!(output)?;
-
-        // Structs with destructors
-        if !ctrc.structs_with_destructors.is_empty() {
-            writeln!(output, "{}// Structs with destructors:", self.indent())?;
-            for struct_name in &ctrc.structs_with_destructors {
-                writeln!(
-                    output,
-                    "{}//   - {}",
-                    self.indent(),
-                    self.resolve_str(*struct_name)
-                )?;
-            }
-            writeln!(output)?;
-        }
-
-        // Drop insertions
-        if !ctrc.drop_insertions.is_empty() {
-            writeln!(output, "{}// Drop insertions:", self.indent())?;
-            for drop in &ctrc.drop_insertions {
-                writeln!(
-                    output,
-                    "{}//   Program point {}: drop {} (alias {})",
-                    self.indent(),
-                    drop.program_point,
-                    self.resolve_str(drop.variable_name),
-                    drop.alias_id
-                )?;
-            }
-            writeln!(output)?;
-        }
-
-        // Destructor calls
-        if !ctrc.destructor_calls.is_empty() {
-            writeln!(output, "{}// Destructor calls:", self.indent())?;
-            for call in &ctrc.destructor_calls {
-                let call_type = match call.call_type {
-                    DestructorCallType::AutoDrop => "auto-drop",
-                    DestructorCallType::ExplicitDrop => "explicit-drop",
-                    DestructorCallType::ScopeDrop => "scope-drop",
-                };
-                writeln!(
-                    output,
-                    "{}//   Program point {}: {} (alias {})",
-                    self.indent(),
-                    call.program_point,
-                    call_type,
-                    call.alias_id
-                )?;
-            }
-            writeln!(output)?;
-        }
-
-        // Allocation sites
-        if !ctrc.allocation_sites.is_empty() {
-            writeln!(output, "{}// Allocation sites:", self.indent())?;
-            for (program_point, alias_id) in &ctrc.allocation_sites {
-                writeln!(
-                    output,
-                    "{}//   Program point {}: allocation -> alias {}",
-                    self.indent(),
-                    program_point,
-                    alias_id
-                )?;
-            }
-            writeln!(output)?;
-        }
-
-        // Potential leaks
-        if !ctrc.potential_leaks.is_empty() {
-            writeln!(output, "{}// ⚠️  Potential memory leaks:", self.indent())?;
-            for alias_id in &ctrc.potential_leaks {
-                writeln!(
-                    output,
-                    "{}//   - Alias {} may leak",
-                    self.indent(),
-                    alias_id
-                )?;
-            }
-            writeln!(output)?;
-        }
-
-        // Variable aliases
-        if !ctrc.variable_aliases.is_empty() {
-            writeln!(output, "{}// Variable aliases:", self.indent())?;
-            for (var_name, alias_id) in &ctrc.variable_aliases {
-                writeln!(
-                    output,
-                    "{}//   {} -> alias {}",
-                    self.indent(),
-                    self.resolve_str(*var_name),
-                    alias_id
-                )?;
-            }
-            writeln!(output)?;
-        }
-
         Ok(())
     }
 }
@@ -1547,14 +1220,5 @@ impl IrPrettyPrinter {
     ) -> Result<String, fmt::Error> {
         let mut printer = IrPrettyPrinter::new(string_pool);
         printer.format_ast_statements(statements)
-    }
-
-    /// Format HIR module with CTRC analysis to string with default settings
-    pub fn hir_with_ctrc_to_string(
-        string_pool: Arc<StringPool>,
-        module_with_ctrc: &HirModuleWithCTRC<'_, '_>,
-    ) -> Result<String, fmt::Error> {
-        let mut printer = IrPrettyPrinter::new(string_pool);
-        printer.format_hir_module_with_ctrc(module_with_ctrc)
     }
 }

@@ -174,10 +174,6 @@ impl DepGraph {
     }
 
     /// Drain instantiation queue and create edges for instantiated items.
-    ///
-    /// NOTE: This function contains the minimal skeleton. To be useful you must:
-    /// - implement `instantiate_generic_body` to produce concrete edges from the generic body
-    /// - implement resolution from type args to TypeDecl nodes
     pub fn drain_instantiation_queue<F>(&mut self, mut instantiate_generic_body: F)
     where
         F: FnMut(&InstanceKey, &mut DepGraph),
@@ -185,18 +181,12 @@ impl DepGraph {
         while let Some(key) = self.inst_queue.pop_front() {
             // find node idx
             if let Some(&node_idx) = self.instance_map.get(&key) {
-                // call out to user-provided function to create edges for this instance
                 instantiate_generic_body(&key, self);
-                // ensure the instance node depends on base generic
                 self.add_edge(node_idx, key.base);
-                // also add edges to TypeDecl nodes for each type arg if resolver is available
-                // (instantiate_generic_body likely does that)
             }
         }
     }
 
-    /// Build graph nodes (Phase A) from HIR modules. This only creates nodes and populates `item_index`.
-    /// It does NOT yet inspect bodies for edges.
     pub fn phase_a_create_nodes(&mut self, modules: &Vec<HirModule>) {
         for (midx, module) in modules.iter().enumerate() {
             let module_node =
@@ -204,7 +194,6 @@ impl DepGraph {
 
             let _ = module_node;
 
-            // iterate items and create nodes per top-level item
             for (item_idx, item) in module.items.iter().enumerate() {
                 match item {
                     Hir::Func(f) => {
@@ -308,24 +297,24 @@ impl DepGraph {
         WBody:
             FnMut(&Hir, NodeIdx, &mut DepGraph, usize, &mut dyn FnMut(NodeIdx, Vec<TypeKey>, bool)),
     {
-        // queue is used even when not necessary to avoid borrowck issues
+        // queue is used even when not necessary to avoid borrow checker issues
         let mut inst_queue: Vec<(NodeIdx, Vec<TypeKey>, bool)> = Vec::new();
 
-        for (midx, module) in modules.iter().enumerate() {
+        for (m_idx, module) in modules.iter().enumerate() {
             for (item_idx, item) in module.items.iter().enumerate() {
-                if let Some(sig_node) = self.lookup_item_node(midx, item_idx, "func_sig") {
-                    walk_signature_fn(item, sig_node, self, midx);
+                if let Some(sig_node) = self.lookup_item_node(m_idx, item_idx, "func_sig") {
+                    walk_signature_fn(item, sig_node, self, m_idx);
                 }
 
-                if let Some(body_node) = self.lookup_item_node(midx, item_idx, "func_body") {
+                if let Some(body_node) = self.lookup_item_node(m_idx, item_idx, "func_body") {
                     // enqueue pushes into a queue instead of mutably borrowing self
                     let mut enqueue_instance = |base, args, is_fn| {
                         inst_queue.push((base, args, is_fn));
                     };
-                    walk_body_fn(item, body_node, self, midx, &mut enqueue_instance);
+                    walk_body_fn(item, body_node, self, m_idx, &mut enqueue_instance);
                 }
 
-                if let Some(type_node) = self.lookup_item_node(midx, item_idx, "type") {
+                if let Some(type_node) = self.lookup_item_node(m_idx, item_idx, "type") {
                     let _ = (type_node, &resolve_typekey);
                 }
             }
@@ -337,7 +326,6 @@ impl DepGraph {
         }
     }
 
-    /// Run Tarjan SCC and return components as Vec<Vec<NodeIdx>> (each Vec is a SCC).
     pub fn tarjan_scc(&self) -> Vec<Vec<NodeIdx>> {
         let n = self.nodes.len();
         let mut index: Vec<Option<usize>> = vec![None; n];
@@ -510,10 +498,7 @@ impl DepGraph {
         )
     }
 
-    /// Register an import dependency: current_module imports imported_module
-    /// This creates an edge from current_module to imported_module in the dependency graph
     pub fn register_import(&mut self, current_module_idx: usize, imported_module_idx: usize) {
-        // Create module nodes if they don't exist
         let current_module_node: NodeIdx = self
             .lookup_item_node(current_module_idx, 0, "module")
             .unwrap_or_else(|| {
@@ -540,16 +525,12 @@ impl DepGraph {
                 idx
             });
 
-        // Add edge: current_module depends on imported_module
         self.add_edge(current_module_node, imported_module_node);
     }
 
-    /// Register a package dependency: module belongs to package
-    /// This creates a package hierarchy for namespace resolution
     pub fn register_package(&mut self, module_idx: usize, package_path: StrId, _pool: &StringPool) {
         self.package_hierarchy.insert(module_idx, package_path);
 
-        // Also set the hint on the module node for diagnostics
         if let Some(module_node_idx) = self.lookup_item_node(module_idx, 0, "module") {
             if let Some(node) = self.nodes.get_mut(module_node_idx) {
                 node.hint = Some(package_path);
@@ -655,20 +636,15 @@ impl DepGraph {
     /// Build complete semantic dependency graph from HIR modules
     /// This is the main entry point that orchestrates all phases
     pub fn build_from_hir(&mut self, modules: &Vec<HirModule>, pool: &StringPool) {
-        // Phase A: Create nodes for all top-level items
         self.phase_a_create_nodes(modules);
 
-        // Phase A.5: Populate internal symbol table for name resolution
         self.populate_symbol_table();
 
-        // Phase B: Extract edges by walking HIR
         self.phase_b_extract_edges_from_hir(modules, pool);
 
-        // Phase C: Drain instantiation queue for generics
         self.phase_c_instantiate_generics();
     }
 
-    /// Populate internal symbol table from item_index using node hints
     fn populate_symbol_table(&mut self) {
         for (key, &node_idx) in &self.item_index.clone() {
             let (module_idx, item_idx, tag): (usize, usize, &str) = *key;
@@ -681,7 +657,6 @@ impl DepGraph {
         }
     }
 
-    /// Phase B: Extract edges from HIR by walking function signatures and bodies
     fn phase_b_extract_edges_from_hir(&mut self, modules: &[HirModule], pool: &StringPool) {
         for (midx, module) in modules.iter().enumerate() {
             for (item_idx, item) in module.items.iter().enumerate() {
@@ -725,12 +700,7 @@ impl DepGraph {
     fn phase_c_instantiate_generics(&mut self) {
         while let Some(key) = self.inst_queue.pop_front() {
             if let Some(&node_idx) = self.instance_map.get(&key) {
-                // Instance depends on its base generic
-                self.add_edge(node_idx, key.base);
-
-                // Instance also depends on the type arguments (if they're TypeDecl nodes)
-                // This would require a type resolver to map TypeKey -> NodeIdx
-                // For now, we just establish the base dependency
+                self.add_edge(node_idx, key.base)
             }
         }
     }
@@ -1252,8 +1222,6 @@ impl DepGraph {
         order
     }
 
-    /// Test-only thin wrapper that exposes the private `walk_stmt_for_deps` so
-    /// unit tests can exercise it directly without going through `build_from_hir`.
     #[cfg(test)]
     pub fn walk_stmt_for_deps_pub(
         &mut self,

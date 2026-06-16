@@ -1,6 +1,6 @@
-use ir::hir::HirFuncProto;
 use crate::hir_lowerer::monomorphization::Monomorphizer;
 use ir::errors::reporter::ErrorReporter;
+use ir::hir::HirFuncProto;
 use ir::hir::{HirFunc, HirInterface, HirStruct, HirType, StrId};
 use ir::ir_hasher::{FxHashBuilder, FxHashMap};
 use std::cell::RefCell;
@@ -13,9 +13,6 @@ use zetaruntime::string_pool::StringPool;
 
 pub type FxHashSet<T> = HashSet<T, FxHashBuilder>;
 
-// ===============================
-// Lowering Context
-// ===============================
 pub struct LoweringCtx<'a, 'bump> {
     pub classes: RefCell<FxHashMap<StrId, HirStruct<'a, 'bump>>>,
     pub interfaces: RefCell<FxHashMap<StrId, HirInterface<'a, 'bump>>>,
@@ -40,7 +37,8 @@ pub struct HirLowerer<'a, 'bump> {
 
 impl<'a, 'bump> HirLowerer<'a, 'bump> {
     pub fn new(context: Arc<StringPool>, bump: Arc<GrowableAtomicBump<'bump>>) -> Self {
-        let functions: Rc<RefCell<FxHashMap<StrId, HirFunc>>> = Rc::new(RefCell::new(FxHashMap::default()));
+        let functions: Rc<RefCell<FxHashMap<StrId, HirFunc>>> =
+            Rc::new(RefCell::new(FxHashMap::default()));
         Self {
             ctx: LoweringCtx {
                 classes: RefCell::new(FxHashMap::default()),
@@ -54,35 +52,31 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 bump: bump.clone(),
             },
             error_reporter: ErrorReporter::new(),
-            mono: Monomorphizer::new(
-                context,
-                bump,
-                functions.clone()
-            ),
+            mono: Monomorphizer::new(context, bump, functions.clone()),
             _phantom: PhantomData,
         }
     }
-    
+
     /// Get a reference to the monomorphizer
     pub fn monomorphizer(&self) -> &Monomorphizer<'a, 'bump> {
         &self.mono
     }
-    
+
     /// Check if an identifier is a generic type parameter
     pub fn is_generic_param(&self, name: StrId) -> bool {
         self.ctx.generic_params.borrow().contains(&name)
     }
-    
+
     /// Add a generic parameter to the current context
     pub fn add_generic_param(&self, name: StrId) {
         self.ctx.generic_params.borrow_mut().insert(name);
     }
-    
+
     /// Remove a generic parameter from the current context
     pub fn remove_generic_param(&self, name: StrId) {
         self.ctx.generic_params.borrow_mut().remove(&name);
     }
-    
+
     /// Get all generic parameters in the current context
     pub fn get_generic_params(&self) -> HashSet<StrId> {
         self.ctx.generic_params.borrow().clone()
