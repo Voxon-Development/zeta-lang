@@ -1,28 +1,28 @@
 struct Vec3f { x: i64, y: i64, z: i64 }
 
 impl Vec3f {
-    fn multiply(this, by: Vec3f) -> Vec3f {
-        Vec3f { x: this.x * by.x, y: this.y * by.y, z: this.z * by.z };
+    fn multiply(&this, by: Vec3f) Vec3f {
+        return Vec3f { x: this.x * by.x, y: this.y * by.y, z: this.z * by.z };
     }
 
-    fn sum(this) -> i64 {
-        this.x + this.y + this.z
+    fn sum(&this) i64 {
+        return this.x + this.y + this.z;
     }
 }
 
 struct Vec9f { x: Vec3f, y: Vec3f, z: Vec3f }
 
 impl Vec9f {
-    fn multiply(this, by: Vec3f) -> Vec9f {
-        Vec9f {
+    fn multiply(&this, by: Vec3f) Vec9f {
+        return Vec9f {
             x: this.x.multiply(by),
             y: this.y.multiply(by),
             z: this.z.multiply(by)
-        }
+        };
     }
 
-    fn sum(this) -> i64 {
-        this.x.sum() + this.y.sum() + this.z.sum()
+    fn sum(&this) i64 {
+        return this.x.sum() + this.y.sum() + this.z.sum();
     }
 }
 
@@ -34,4 +34,5 @@ fn main() {
     };
     let secondSum: i64 = vec9f.sum();
     println_int(secondSum);
+    println_int(secondSum + secondSum);
 }
