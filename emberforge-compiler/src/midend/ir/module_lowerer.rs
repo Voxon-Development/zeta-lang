@@ -1,7 +1,8 @@
 use crate::midend::ir::ir_conversion::lower_type_hir;
 use crate::midend::ir::lowerer::FunctionLowerer;
+use codex_dependency_graph::DepGraph;
 use ir::hir::{Hir, HirFunc, HirInterface, HirModule, HirParam, HirStruct, HirType, StrId};
-use ir::ir_hasher::FxHashBuilder;
+use ir::ir_hasher::{FxHashBuilder, HashSet};
 use ir::ssa_ir::{Function, Module, SsaType};
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -29,6 +30,10 @@ where
     phantom_data: PhantomData<&'cx ()>,
 
     context: Arc<StringPool>,
+    extern_c_names: &'a HashSet<StrId>,
+
+    pub dep_graph: &'a DepGraph,
+    pub module_idx: usize,
 }
 
 impl<'a, 'cx, 'bump> MirModuleLowerer<'a, 'cx, 'bump>
@@ -37,7 +42,12 @@ where
     'bump: 'cx,
     'cx: 'a,
 {
-    pub fn new(context: Arc<StringPool>) -> Self {
+    pub fn new(
+        context: Arc<StringPool>,
+        extern_c_names: &'a HashSet<StrId>,
+        dep_graph: &'a DepGraph,
+        module_idx: usize,
+    ) -> Self {
         Self {
             module: Module::new(),
             interface_methods: HashMap::with_hasher(FxHashBuilder),
@@ -49,6 +59,9 @@ where
             class_field_offsets: HashMap::with_hasher(FxHashBuilder),
             phantom_data: PhantomData,
             context,
+            extern_c_names,
+            dep_graph,
+            module_idx,
         }
     }
 
@@ -59,25 +72,15 @@ where
                 Hir::Interface(iface) => self.lower_interface(*iface),
                 Hir::Func(func) => self.lower_function(*func),
                 Hir::Impl(impl_block) => {
-                    // Build/update the mangled map for this impl's methods
-                    let class_str = self.context.resolve_string(&impl_block.target);
-                    let mmap = self
-                        .class_mangled_map
-                        .entry(impl_block.target)
-                        .or_insert_with(|| HashMap::with_hasher(FxHashBuilder));
-
                     if let Some(methods) = impl_block.methods {
                         for method in methods {
-                            let method_str = self.context.resolve_string(&method.name);
-                            let mangled = format!("{}_{}", class_str, method_str);
-                            let mangled_id = StrId(self.context.intern(&mangled));
-                            mmap.insert(method.name.clone(), mangled_id);
+                            self.class_mangled_map
+                                .entry(impl_block.target)
+                                .or_insert_with(|| HashMap::with_hasher(FxHashBuilder))
+                                .insert(method.unmangled_name, method.name);
                         }
-                        // Now lower the methods
-                        if let Some(methods) = impl_block.methods {
-                            for method in methods {
-                                self.lower_class_method(method, impl_block.target);
-                            }
+                        for method in methods {
+                            self.lower_class_method(method, impl_block.target);
                         }
                     }
                 }
@@ -142,15 +145,11 @@ where
     }
 
     fn build_mangled_map(&mut self, hir_class: &HirStruct<'a, 'bump>) {
-        let class_str = self.context.resolve_string(&hir_class.name);
         let mut mmap: HashMap<StrId, StrId, FxHashBuilder> = HashMap::with_hasher(FxHashBuilder);
 
         if let Some(methods) = hir_class.methods {
             for method in methods {
-                let method_str = self.context.resolve_string(&method.name);
-                let mangled = format!("{}_{}", class_str, method_str);
-                let mangled_id = StrId(self.context.intern(&mangled));
-                mmap.insert(method.name.clone(), mangled_id);
+                mmap.insert(method.unmangled_name, method.name);
             }
         }
 
@@ -158,23 +157,24 @@ where
     }
 
     fn compute_field_offsets(&mut self, hir_class: &HirStruct<'a, 'bump>) {
-        let mut offsets: HashMap<StrId, usize, FxHashBuilder> = HashMap::with_hasher(FxHashBuilder);
-        let has_interfaces: bool = hir_class.interfaces.is_some_and(|i| !i.is_empty());
-        let field_start: usize = if has_interfaces { 1usize } else { 0usize };
+        let mut offsets = HashMap::with_hasher(FxHashBuilder);
+
         for (i, f) in hir_class.fields.iter().enumerate() {
-            offsets.insert(f.name, field_start + i);
+            offsets.insert(f.name, i);
         }
+
         self.class_field_offsets.insert(hir_class.name, offsets);
     }
 
     fn build_class_vtable(&mut self, hir_class: &HirStruct<'a, 'bump>) {
-        let mut vtable_slots: Vec<StrId> = Vec::new();
-        let mut class_slot_map: HashMap<StrId, usize, FxHashBuilder> =
-            HashMap::with_hasher(FxHashBuilder);
-
         let Some(interfaces) = hir_class.interfaces else {
             return;
         };
+
+        let class_methods = self
+            .class_mangled_map
+            .get(&hir_class.name)
+            .unwrap_or_else(|| panic!("Missing mangled method map for class {}", hir_class.name));
 
         for iface_name in interfaces {
             let iface_methods = self.interface_methods.get(iface_name).unwrap_or_else(|| {
@@ -183,29 +183,36 @@ where
                     hir_class.name, iface_name
                 )
             });
-            for (midx, (mname, _params, _ret)) in iface_methods.iter().enumerate() {
-                let mangled = self
-                    .class_mangled_map
-                    .get(&hir_class.name)
-                    .and_then(|map| map.get(mname))
+
+            let mut vtable_slots = Vec::new();
+            let mut slot_map = HashMap::with_hasher(FxHashBuilder);
+
+            for (slot, (method_name, _, _)) in iface_methods.iter().enumerate() {
+                let mangled = class_methods
+                    .get(method_name)
                     .unwrap_or_else(|| {
                         panic!(
                             "Class {} implements interface {} but does not provide method {}",
-                            hir_class.name, iface_name, mname
+                            hir_class.name, iface_name, method_name
                         )
                     })
                     .clone();
 
-                let slot_index = vtable_slots.len();
-                vtable_slots.push(mangled.clone());
-                class_slot_map.insert(mname.clone(), slot_index);
-                let _ = midx;
+                vtable_slots.push(mangled);
+                slot_map.insert(method_name.clone(), slot);
             }
+
+            self.class_vtable_slots.insert(
+                StrId(self.context.intern(&format!(
+                    "{}_{}",
+                    self.context.resolve_string(&hir_class.name),
+                    self.context.resolve_string(iface_name)
+                ))),
+                vtable_slots,
+            );
+
+            self.class_method_slots.insert(hir_class.name, slot_map);
         }
-        self.class_vtable_slots
-            .insert(hir_class.name.clone(), vtable_slots);
-        self.class_method_slots
-            .insert(hir_class.name.clone(), class_slot_map);
     }
 
     fn lower_function(&mut self, hir_fn: &HirFunc<'a, 'bump>) {
@@ -228,6 +235,9 @@ where
             &self.interface_method_slots,
             &self.module.classes,
             self.context.clone(),
+            self.extern_c_names,
+            self.dep_graph,
+            self.module_idx,
         )
         .unwrap();
         fl.lower_body(hir_fn.body);
@@ -260,6 +270,9 @@ where
             &self.interface_method_slots,
             &self.module.classes,
             Arc::clone(&self.context),
+            self.extern_c_names,
+            self.dep_graph,
+            self.module_idx,
         )
         .unwrap();
         fl.lower_body(hir_fn.body);

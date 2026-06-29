@@ -1,9 +1,13 @@
 use crate::midend::ir::block_data::CurrentBlockData;
 use crate::midend::ir::expr_lowerer::MirExprLowerer;
 use crate::midend::ir::ir_conversion::lower_type_hir;
-use ir::hir::{HirExpr, HirFunc, HirParam, HirStmt, HirStruct, HirType, StrId, ThisPassingKind};
-use ir::ir_hasher::FxHashBuilder;
-use ir::ssa_ir::{BasicBlock, BlockId, Function, Instruction, Operand, SsaType, Value};
+use codex_dependency_graph::DepGraph;
+use ir::hir::{
+    HirErrorHandlerPattern, HirExpr, HirFunc, HirParam, HirStmt, HirStruct, HirType, StrId,
+    ThisPassingKind,
+};
+use ir::ir_hasher::{FxHashBuilder, HashSet};
+use ir::ssa_ir::{BasicBlock, BinOp, BlockId, Function, Instruction, Operand, SsaType, Value};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -26,6 +30,9 @@ pub struct FunctionLowerer<'a, 'bump> {
     classes: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
 
     context: Arc<StringPool>,
+    extern_c_names: &'a HashSet<StrId>,
+    pub dep_graph: &'a DepGraph,
+    pub module_idx: usize,
 }
 
 impl<'a, 'bump> FunctionLowerer<'a, 'bump>
@@ -51,6 +58,9 @@ where
         >,
         classes: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
         context: Arc<StringPool>,
+        extern_c_names: &'a HashSet<StrId>,
+        dep_graph: &'a DepGraph,
+        module_idx: usize,
     ) -> Result<Self, std::alloc::AllocError> {
         Self::new_internal(
             hir_fn,
@@ -64,6 +74,9 @@ where
             interface_method_slots,
             classes,
             context,
+            extern_c_names,
+            dep_graph,
+            module_idx,
         )
     }
 
@@ -87,6 +100,9 @@ where
         >,
         classes: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
         context: Arc<StringPool>,
+        extern_c_names: &'a HashSet<StrId>,
+        dep_graph: &'a DepGraph,
+        module_idx: usize,
     ) -> Result<Self, std::alloc::AllocError> {
         Self::new_internal(
             hir_fn,
@@ -100,6 +116,9 @@ where
             interface_method_slots,
             classes,
             context,
+            extern_c_names,
+            dep_graph,
+            module_idx,
         )
     }
 
@@ -123,19 +142,12 @@ where
         >,
         classes: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
         context: Arc<StringPool>,
+        extern_c_names: &'a HashSet<StrId>,
+        dep_graph: &'a DepGraph,
+        module_idx: usize,
     ) -> Result<Self, std::alloc::AllocError> {
-        // If this is a method (has class context), mangle the name with the class name
-        let func_name = if let Some(class_name) = class_context {
-            let class_str = context.resolve_string(&class_name);
-            let method_str = context.resolve_string(&hir_fn.name);
-            let mangled = format!("{}_{}", class_str, method_str);
-            StrId(context.intern(&mangled))
-        } else {
-            hir_fn.name.clone()
-        };
-
         let mut func: Function = Function {
-            name: func_name,
+            name: hir_fn.name,
             params: SmallVec::new(),
             ret_type: lower_type_hir(hir_fn.return_type.as_ref().unwrap_or(&HirType::Void)),
             blocks: SmallVec::new(),
@@ -148,6 +160,7 @@ where
         let mut next_block = 0usize;
         let mut var_map = HashMap::with_hasher(FxHashBuilder);
         let mut value_types = HashMap::with_hasher(FxHashBuilder);
+
         if let Some(params) = hir_fn.params {
             // allocate params
             Self::insert_existing_params_with_class(
@@ -186,6 +199,9 @@ where
             classes,
             context,
             phantom_data: Default::default(),
+            extern_c_names,
+            dep_graph,
+            module_idx,
         })
     }
 
@@ -247,8 +263,23 @@ where
 
     pub(super) fn lower_stmt(&mut self, stmt: &HirStmt<'a, 'bump>) {
         match stmt {
-            HirStmt::Let { name, value, .. } => {
-                let val = self.allow_lowering_expr(value);
+            HirStmt::Let {
+                name,
+                value,
+                catch_pattern,
+                else_block,
+                ..
+            } => {
+                let mut val = self.allow_lowering_expr(value);
+
+                if let Some(pat) = catch_pattern {
+                    val = self.lower_catch(val, pat);
+                }
+
+                if let Some(else_stmts) = else_block {
+                    val = self.lower_nullable_unwrap(val, else_stmts);
+                }
+
                 self.var_map.insert(name.clone(), val);
             }
             HirStmt::Return(expr) => {
@@ -265,6 +296,158 @@ where
         }
     }
 
+    /// Lowers `expr catch { Type a => {}, ... }` (or single-branch form) into a
+    /// MatchEnum over the thrown-error tagged union, with one block per branch
+    /// and a Phi joining the results.
+    fn lower_catch(
+        &mut self,
+        raw_val: Value,
+        pattern: &HirErrorHandlerPattern<'a, 'bump>,
+    ) -> Value {
+        let branches: Vec<(HirType, Option<StrId>, &[HirStmt])> = match pattern {
+            HirErrorHandlerPattern::Single {
+                error_type,
+                binding,
+                body,
+            } => {
+                vec![(*error_type, *binding, *body)]
+            }
+            HirErrorHandlerPattern::Multiple { branches } => branches
+                .iter()
+                .map(|b| (b.error_type, b.binding, b.body))
+                .collect(),
+        };
+
+        let join_bb = self.current_block_data.fresh_block();
+        let mut arms = SmallVec::new();
+        let mut incoming = SmallVec::new();
+
+        for (error_type, binding, body) in branches {
+            let arm_bb = self.current_block_data.fresh_block();
+            // Discriminant tag = the error type's name, per EnumConstruct's
+            // (enum_name, variant) convention — see note above on this assumption.
+            let tag = match error_type {
+                HirType::Struct(name, _) | HirType::Enum(name, _) => name,
+                other => panic!("catch branch type {:?} is not a nominal error type", other),
+            };
+            arms.push((tag, arm_bb));
+
+            self.current_block_data.switch_to(arm_bb);
+            if let Some(b) = binding {
+                // Bound error payload: loaded out of the tagged union's data slot.
+                let payload = self.current_block_data.fresh_value();
+                self.emit(Instruction::LoadField {
+                    dest: payload,
+                    base: Operand::Value(raw_val),
+                    offset: 0, // payload offset within the Enum repr — TODO confirm against your layout
+                });
+                self.var_map.insert(b, payload);
+            }
+            for s in body {
+                self.lower_stmt(s);
+            }
+            let arm_result = self.current_block_data.fresh_value(); // placeholder result of the arm's tail expr, if catch-as-expr is needed
+            self.emit(Instruction::Jump { target: join_bb });
+            incoming.push((arm_bb, arm_result));
+        }
+
+        self.emit(Instruction::MatchEnum {
+            value: raw_val,
+            arms,
+        });
+
+        self.current_block_data.switch_to(join_bb);
+        let dest = self.current_block_data.fresh_value();
+        self.emit(Instruction::Phi { dest, incoming });
+        dest
+    }
+
+    fn lower_nullable_unwrap(&mut self, val: Value, else_stmts: &HirStmt<'a, 'bump>) -> Value {
+        let then_bb = self.current_block_data.fresh_block(); // not-null path
+        let else_bb = self.current_block_data.fresh_block();
+        let join_bb = self.current_block_data.fresh_block();
+
+        if self
+            .current_block_data
+            .value_type(val)
+            .expect("nullable-unwrapped value must have a known SsaType")
+            .nullable_pointer_repr()
+            .is_some()
+        {
+            let cond = self.current_block_data.fresh_value();
+            self.emit(Instruction::Binary {
+                dest: cond,
+                op: BinOp::Eq,
+                left: Operand::Value(val),
+                right: Operand::ConstInt(0),
+            });
+            self.emit(Instruction::Branch {
+                cond: Operand::Value(cond),
+                then_bb: else_bb,
+                else_bb: then_bb,
+            });
+        } else if self
+            .current_block_data
+            .value_type(val)
+            .expect("nullable-unwrapped value must have a known SsaType")
+            .is_tagged_nullable()
+        {
+            // MatchEnum is itself the terminator here — dispatches on the
+            // variant tag directly, no LoadField/Binary/Branch needed.
+            self.emit(Instruction::MatchEnum {
+                value: val,
+                arms: SmallVec::from_buf([
+                    (StrId(self.context.intern("null")), else_bb),
+                    (StrId(self.context.intern("some")), then_bb),
+                ]),
+            });
+        } else {
+            panic!(
+                "`? else` used on non-nullable SsaType {:?}",
+                self.current_block_data
+                    .value_type(val)
+                    .expect("nullable-unwrapped value must have a known SsaType")
+            );
+        }
+
+        self.current_block_data.switch_to(else_bb);
+        let HirStmt::Block { body } = else_stmts else {
+            unreachable!()
+        };
+        for s in *body {
+            self.lower_stmt(s);
+        }
+        self.emit(Instruction::Jump { target: join_bb });
+
+        self.current_block_data.switch_to(then_bb);
+        let unwrapped = if self
+            .current_block_data
+            .value_type(val)
+            .expect("nullable-unwrapped value must have a known SsaType")
+            .nullable_pointer_repr()
+            .is_some()
+        {
+            val
+        } else {
+            let payload = self.current_block_data.fresh_value();
+            self.emit(Instruction::LoadField {
+                dest: payload,
+                base: Operand::Value(val),
+                offset: 0, // still wrong per layout_of_ssa — payload offset, not 0; unresolved
+            });
+            payload
+        };
+        self.emit(Instruction::Jump { target: join_bb });
+
+        self.current_block_data.switch_to(join_bb);
+        let dest = self.current_block_data.fresh_value();
+        self.emit(Instruction::Phi {
+            dest,
+            incoming: SmallVec::from_buf([(else_bb, unwrapped), (then_bb, unwrapped)]),
+        });
+        dest
+    }
+
     fn allow_lowering_expr(&mut self, value: &HirExpr<'a, 'bump>) -> Value {
         let mut el = MirExprLowerer::new(
             &mut self.current_block_data,
@@ -278,6 +461,9 @@ where
             &self.interface_id_map,
             &self.interface_method_slots,
             &self.classes,
+            self.extern_c_names,
+            self.dep_graph,
+            self.module_idx,
         );
         el.lower_expr(value)
     }

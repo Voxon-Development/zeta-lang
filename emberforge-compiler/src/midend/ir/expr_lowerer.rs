@@ -1,8 +1,9 @@
 use crate::midend::ir::block_data::CurrentBlockData;
 use crate::midend::ir::ir_conversion::{assign_op_to_bin_op, lower_operator_bin, lower_type_hir};
-use crate::midend::ir::optimized_string_buffering;
+use crate::optimized_string_buffering;
+use codex_dependency_graph::DepGraph;
 use ir::hir::{AssignmentOperator, HirExpr, HirStruct, HirType, Operator, StrId};
-use ir::ir_hasher::FxHashBuilder;
+use ir::ir_hasher::{FxHashBuilder, HashSet};
 use ir::ssa_ir::{Function, Instruction, Operand, SsaType, Value};
 use smallvec::SmallVec;
 use std::collections::HashMap;
@@ -31,6 +32,9 @@ pub struct MirExprLowerer<'el, 'a, 'cx, 'bump> {
     pub classes: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
 
     pub cx_phantom: PhantomData<&'cx ()>,
+    pub extern_c_names: &'a HashSet<StrId>,
+    pub dep_graph: &'a DepGraph,
+    pub module_idx: usize,
 }
 
 impl<'el, 'a, 'cx, 'bump> MirExprLowerer<'el, 'a, 'cx, 'bump>
@@ -57,7 +61,10 @@ where
             HashMap<StrId, usize, FxHashBuilder>,
             FxHashBuilder,
         >,
-        classes: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
+        classes: &'a HashMap<StrId, HirStruct<'a, 'bump>, FxHashBuilder>,
+        extern_c_names: &'a HashSet<StrId>,
+        dep_graph: &'a DepGraph,
+        module_idx: usize,
     ) -> Self {
         Self {
             current_block_data,
@@ -73,6 +80,9 @@ where
             classes,
             phantom_data: PhantomData,
             cx_phantom: PhantomData,
+            extern_c_names,
+            dep_graph,
+            module_idx,
         }
     }
 
@@ -269,14 +279,113 @@ where
                 self.current_block_data.value_types.insert(v, SsaType::I64);
                 v
             }
-            HirExpr::Deref { .. } => todo!(),
+
             HirExpr::This { .. } => {
                 let this_name = StrId(self.context.intern("this"));
                 *self.var_map.get(&this_name).unwrap_or_else(|| {
-                    panic!("lower_expr: `this` referenced but not found in var_map — are we inside a method?")
+                    panic!("`this` referenced but not found in var_map, are we inside a method?")
                 })
             }
+            HirExpr::Ref { expr, .. } => {
+                let src = self.lower_expr(expr);
+
+                let dest = self.current_block_data.fresh_value();
+
+                self.emit(Instruction::AddressOf { dest, source: src });
+
+                let inner_ty = self
+                    .current_block_data
+                    .value_types
+                    .get(&src)
+                    .unwrap()
+                    .clone();
+
+                self.current_block_data
+                    .value_types
+                    .insert(dest, SsaType::Pointer(Box::new(inner_ty)));
+
+                dest
+            }
+
+            HirExpr::Deref { expr, .. } => {
+                let ptr = self.lower_expr(expr);
+
+                let dest = self.current_block_data.fresh_value();
+
+                self.emit(Instruction::Load {
+                    dest,
+                    ptr: Operand::Value(ptr),
+                });
+
+                let pointee_ty = match self.current_block_data.value_types[&ptr].clone() {
+                    SsaType::Pointer(inner) => *inner,
+                    other => panic!("cannot dereference {:?}", other),
+                };
+
+                self.current_block_data.value_types.insert(dest, pointee_ty);
+
+                dest
+            }
+            HirExpr::ModuleAccess(hir_module_access) => {
+                let mangled = optimized_string_buffering::build_module_scoped_name(
+                    hir_module_access.path,
+                    hir_module_access.member,
+                    None,
+                    self.context.clone(),
+                );
+
+                let dest = self.current_block_data.fresh_value();
+                self.emit(Instruction::Const {
+                    dest,
+                    ty: SsaType::I64, // TODO this is a placeholder; refined once type info flows through
+                    value: Operand::GlobalRef(mangled),
+                });
+                self.current_block_data
+                    .value_types
+                    .insert(dest, SsaType::I64);
+                dest
+            }
+            HirExpr::Lambda { .. } => {
+                todo!("There should be no lambdas here so we should handle that error")
+            }
         }
+    }
+
+    fn try_flatten_module_path(&self, expr: &HirExpr<'a, 'bump>) -> Option<StrId> {
+        match expr {
+            HirExpr::ModuleAccess(acc) => {
+                Some(self.resolve_module_qualified_name(acc.path, acc.member, None))
+            }
+            HirExpr::FieldAccess { object, field, .. } | HirExpr::Get { object, field, .. } => {
+                if let HirExpr::ModuleAccess(acc) = object {
+                    Some(self.resolve_module_qualified_name(acc.path, acc.member, Some(*field)))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Resolves a module-qualified reference to its correct call-site symbol.
+    fn resolve_module_qualified_name(
+        &self,
+        path: &[StrId],
+        member: StrId,
+        extra: Option<StrId>,
+    ) -> StrId {
+        let bare_name = extra.unwrap_or(member);
+
+        if self.extern_c_names.contains(&bare_name) {
+            return bare_name;
+        }
+
+        optimized_string_buffering::build_module_scoped_name(
+            path,
+            member,
+            extra,
+            self.context.clone(),
+        )
     }
 
     fn lower_expr_assignment(
@@ -366,6 +475,24 @@ where
         object: &HirExpr<'a, 'bump>,
         field: StrId,
     ) -> Value {
+        // Module-qualified static field: `zeta::io::files.File.DEFAULT`
+        if let Some(mangled) = self.try_flatten_module_path(&HirExpr::FieldAccess {
+            object,
+            field,
+            span: Default::default(),
+        }) {
+            let dest = self.current_block_data.fresh_value();
+            self.emit(Instruction::Const {
+                dest,
+                ty: SsaType::I64,
+                value: Operand::GlobalRef(mangled),
+            });
+            self.current_block_data
+                .value_types
+                .insert(dest, SsaType::I64);
+            return dest;
+        }
+
         let obj_val = self.lower_expr(object);
         let field_offset = self.get_field_offset(&obj_val, field);
 
@@ -588,6 +715,26 @@ where
     }
 
     fn lower_call(&mut self, callee: &HirExpr<'a, 'bump>, args: &[HirExpr<'a, 'bump>]) -> Value {
+        // Module-qualified call: `zeta::io::files.File.open(...)` or
+        // `zeta::io.println(...)`. Flatten to one mangled function name.
+        if let Some(mangled) = self.try_flatten_module_path(callee) {
+            let arg_ops: SmallVec<Operand, 8> = args
+                .iter()
+                .map(|a| Operand::Value(self.lower_expr(a)))
+                .collect();
+
+            let dest = self.current_block_data.fresh_value();
+            self.emit(Instruction::Call {
+                dest: Some(dest),
+                func: Operand::FunctionRef(mangled),
+                args: arg_ops,
+            });
+            self.current_block_data
+                .value_types
+                .insert(dest, SsaType::I64);
+            return dest;
+        }
+
         match callee {
             HirExpr::Ident(fname) => {
                 let arg_ops: SmallVec<Operand, 8> = args
@@ -640,10 +787,10 @@ where
                     operands.push(Operand::Value(self.lower_expr(a)));
                 }
 
-                let scope_str = self.context.resolve_string(scope_name);
-
-                let direct_name: StrId = optimized_string_buffering::build_scoped_name(
-                    Some(scope_str),
+                let direct_name: StrId = optimized_string_buffering::mangle_method_name(
+                    self.dep_graph,
+                    self.module_idx,
+                    *scope_name,
                     field,
                     self.context.clone(),
                 );
@@ -665,36 +812,19 @@ where
         let obj_val: Value = self.lower_expr_as_receiver(object);
         let mut operands: SmallVec<Operand, 8> = SmallVec::new();
 
-        let maybe_cls_name: Option<SsaType> =
+        let maybe_cls_name_ssa: Option<SsaType> =
             self.current_block_data.value_types.get(&obj_val).cloned();
 
-        let maybe_cls_name: Option<&str> = match maybe_cls_name {
-            Some(SsaType::User(ref name, _args)) => {
-                let resolved = self.context.resolve_string(name);
-                if let Some(last) = resolved.split("_").last() {
-                    if !last.is_empty() {
-                        Some(last)
-                    } else {
-                        Some(resolved)
-                    }
-                } else {
-                    Some(resolved)
-                }
-            }
-            Some(SsaType::Pointer(ref inner))
-                if let Some(SsaType::User(name, _)) = unwrap_pointers(inner) =>
-            {
-                let resolved = self.context.resolve_string(name);
-                resolved
-                    .split('_')
-                    .last()
-                    .filter(|s| !s.is_empty())
-                    .or(Some(resolved))
-            }
+        let cls_name_id: Option<StrId> = match maybe_cls_name_ssa {
+            Some(SsaType::User(name, _)) => Some(name),
+            Some(SsaType::Pointer(ref inner)) => match unwrap_pointers(inner) {
+                Some(SsaType::User(name, _)) => Some(*name),
+                _ => None,
+            },
             _ => None,
         };
 
-        if maybe_cls_name.is_some() {
+        if cls_name_id.is_some() {
             self.current_block_data
                 .value_types
                 .insert(obj_val, SsaType::I64);
@@ -706,53 +836,28 @@ where
             operands.push(Operand::Value(av));
         }
 
-        let cls_name_id: Option<StrId> = if let Some(cls_name) = maybe_cls_name {
-            Some(StrId(self.context.intern(cls_name)))
-        } else {
-            None
-        };
-
         if let Some(value) = self.emit_call(field, obj_val, &mut operands, cls_name_id) {
             return value;
         }
 
-        let direct_name: StrId = optimized_string_buffering::build_scoped_name(
-            maybe_cls_name,
-            field,
-            self.context.clone(),
+        panic!(
+            "lower_method_call: no mangled mapping or vtable slot found for method `{}` on class `{:?}`, \
+             this means class_mangled_map/class_method_slots is missing an entry, not that the method doesn't exist. \
+             Check MirModuleLowerer::build_mangled_map / build_class_vtable for this class.",
+            self.context.resolve_string(&field),
+            cls_name_id.map(|id| self.context.resolve_string(&id).to_string())
         );
-
-        let dest: Value = self.current_block_data.fresh_value();
-        self.emit(Instruction::Call {
-            dest: Some(dest),
-            func: Operand::FunctionRef(direct_name),
-            args: operands,
-        });
-
-        self.current_block_data
-            .value_types
-            .insert(dest, SsaType::I64);
-        dest
     }
 
-    /// Like `lower_expr`, but for a method receiver.
-    /// If the receiver is a local variable whose SSA type is a pointer
-    /// (i.e. `this` was declared with a ref/ptr passing kind), return the
-    /// pointer value directly without emitting any load.
-    /// For everything else, falls back to the normal `lower_expr` path.
     fn lower_expr_as_receiver(&mut self, object: &HirExpr<'a, 'bump>) -> Value {
         if let HirExpr::Ident(name) = object {
             if let Some(&v) = self.var_map.get(name) {
-                // If the variable already holds a pointer type, pass it directly.
-                // This is the case for `&this`, `&mut this`, `*this` params —
-                // they are registered in var_map with SsaType::Pointer(inner).
                 if matches!(
                     self.current_block_data.value_types.get(&v),
                     Some(SsaType::Pointer(_))
                 ) {
                     return v;
                 }
-                // Also handle HirExpr::This routed through an Ident — same logic.
             }
         }
         if let HirExpr::This { .. } = object {
@@ -796,14 +901,14 @@ where
             }
         }
 
-        // Only use ClassCall (vtable dispatch) for interface methods
+        // Only use InterfaceDispatch (vtable dispatch) for interface methods
         if let Some(class_slots) = self.class_method_slots.get(&cls_name) {
             if let Some(slot_idx) = class_slots.get(&field) {
                 let dest = self.current_block_data.fresh_value();
-                self.emit(Instruction::ClassCall {
+                self.emit(Instruction::InterfaceDispatch {
                     dest: Some(dest),
                     object: obj_val,
-                    method_id: *slot_idx,
+                    method_slot: *slot_idx,
                     args: operands.clone(),
                 });
                 self.current_block_data
@@ -833,7 +938,6 @@ where
 
         let obj_val = self.lower_expr(object);
         let mut operands: SmallVec<Operand, 8> = SmallVec::new();
-        operands.push(Operand::Value(obj_val));
 
         for a in args {
             operands.push(Operand::Value(self.lower_expr(a)));
@@ -865,7 +969,7 @@ where
         });
 
         let interface_val = match self.current_block_data.value_types.get(&obj_val).cloned() {
-            Some(SsaType::User(ref _name, args)) => {
+            Some(SsaType::User(ref _name, _args)) => {
                 let upcast_dest = self.current_block_data.fresh_value();
                 self.emit(Instruction::UpcastToInterface {
                     dest: upcast_dest,
@@ -875,7 +979,7 @@ where
 
                 self.current_block_data
                     .value_types
-                    .insert(upcast_dest, SsaType::User(interface, args));
+                    .insert(upcast_dest, SsaType::Interface(interface));
                 upcast_dest
             }
             _ => obj_val,

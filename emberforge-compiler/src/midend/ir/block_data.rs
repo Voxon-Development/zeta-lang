@@ -29,6 +29,14 @@ impl CurrentBlockData {
         }
     }
 
+    pub fn switch_to(&mut self, id: BlockId) {
+        self.current_block = id;
+    }
+
+    pub fn value_type(&self, v: Value) -> Option<&SsaType> {
+        self.value_types.get(&v)
+    }
+
     pub fn fresh_value(&mut self) -> Value {
         let v = Value(self.next_value);
         self.next_value += 1;

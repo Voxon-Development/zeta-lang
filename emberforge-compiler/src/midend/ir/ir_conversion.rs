@@ -35,7 +35,7 @@ pub fn lower_type_hir(ty: &HirType) -> SsaType {
         HirType::Boolean => SsaType::Bool,
         HirType::String => SsaType::String,
         HirType::Struct(name, args)
-        | HirType::Interface(name, args)
+        | HirType::DynInterface(name, args)
         | HirType::Enum(name, args) => {
             SsaType::User(*name, args.iter().map(lower_type_hir).collect())
         }
@@ -65,6 +65,13 @@ pub fn lower_type_hir(ty: &HirType) -> SsaType {
             SsaType::Dyn
         }
         HirType::Null => SsaType::Void,
+        HirType::Char => SsaType::Char,
+        HirType::Ref {
+            inner,
+            mutability_state: _,
+        } => SsaType::Pointer(Box::new(lower_type_hir(inner))),
+        HirType::Nullable(hir_type) => SsaType::Nullable(Box::new(lower_type_hir(hir_type))),
+        HirType::Dyn { bounds: _ } => todo!(),
     }
 }
 
@@ -81,6 +88,11 @@ pub(super) fn lower_operator_bin(operator: &Operator) -> BinOp {
         Operator::LessThanOrEqual => BinOp::Le,
         Operator::GreaterThan => BinOp::Gt,
         Operator::GreaterThanOrEqual => BinOp::Ge,
-        _ => unimplemented!("Operator {:?} not yet lowered", operator),
+        Operator::BitAnd => BinOp::BitAnd,
+        Operator::BitOr => BinOp::BitOr,
+        Operator::BitXor => BinOp::BitXor,
+        Operator::ShiftLeft => BinOp::ShiftLeft,
+        Operator::ShiftRight => BinOp::ShiftRight,
+        _ => todo!("Handle when a non-binary operation is passed here"),
     }
 }
