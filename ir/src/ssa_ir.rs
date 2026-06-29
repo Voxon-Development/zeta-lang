@@ -3,23 +3,42 @@ use crate::ir_hasher::FxHashBuilder;
 use std::collections::HashMap;
 
 impl SsaType {
-    /// Creates a new pointer type that points to the given type
     pub fn ptr_to(inner: SsaType) -> Self {
         SsaType::Pointer(Box::new(inner))
     }
 
-    /// Returns true if this type is a pointer type
     pub fn is_pointer(&self) -> bool {
         matches!(self, SsaType::Pointer(_))
     }
 
-    /// If this is a pointer type, returns the inner type. Otherwise, returns None.
     pub fn as_pointer(&self) -> Option<&SsaType> {
         if let SsaType::Pointer(inner) = self {
             Some(inner)
         } else {
             None
         }
+    }
+
+    /// True if this nullable can be represented with zero-cost null-pointer
+    /// encoding (no tag byte needed), only applies when the inner type is
+    /// itself a pointer.
+    pub fn nullable_is_pointer_optimized(&self) -> bool {
+        matches!(self, SsaType::Nullable(inner) if inner.is_pointer())
+    }
+
+    /// If this is `Nullable(Pointer(_))`, returns the underlying pointer
+    /// type directly, the nullable collapses to the pointer with 0 = null.
+    pub fn nullable_pointer_repr(&self) -> Option<&SsaType> {
+        match self {
+            SsaType::Nullable(inner) if inner.is_pointer() => Some(inner),
+            _ => None,
+        }
+    }
+
+    /// True if this is a tagged-union nullable (inner type is NOT a pointer,
+    /// so it needs an explicit discriminant byte).
+    pub fn is_tagged_nullable(&self) -> bool {
+        matches!(self, SsaType::Nullable(inner) if !inner.is_pointer())
     }
 }
 
@@ -37,10 +56,8 @@ pub enum Operand {
     GlobalRef(StrId),
 }
 
-/// Represents a type in the SSA IR
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SsaType {
-    // Primitive types
     I8,
     U8,
     I16,
@@ -64,8 +81,9 @@ pub enum SsaType {
 
     // Composite types
     User(StrId, Vec<SsaType>), // User-defined type with generic parameters
-    Enum(Vec<SsaType>),        // Tagged union of types
-    Tuple(Vec<SsaType>),       // Fixed-size collection of heterogeneous types
+    Interface(StrId),
+    Enum(Vec<SsaType>),  // Tagged union of types
+    Tuple(Vec<SsaType>), // Fixed-size collection of heterogeneous types
 
     // Pointer types
     Pointer(Box<SsaType>), // Pointer to another type
@@ -73,6 +91,9 @@ pub enum SsaType {
     // Dynamically sized types
     Dyn,   // Trait object (fat pointer)
     Slice, // Slice (fat pointer)
+    Char,
+
+    Nullable(Box<SsaType>),
 }
 
 use crate::ast::FuncModifiers;
@@ -106,14 +127,6 @@ pub enum Instruction {
         dest: Option<Value>,
         func: Operand,
         args: SmallVec<Operand, 8>, // most calls <8 args
-    },
-
-    /// Direct class method call (resolved at compile time)
-    ClassCall {
-        dest: Option<Value>,
-        object: Value,    // `this` pointer
-        method_id: usize, // method index
-        args: SmallVec<Operand, 8>,
     },
 
     /// Virtual/interface call through vtable
@@ -185,6 +198,18 @@ pub enum Instruction {
         ty: SsaType,
         value: Operand,
     },
+    AddressOf {
+        dest: Value,
+        source: Value,
+    },
+    Load {
+        dest: Value,
+        ptr: Operand,
+    },
+    Store {
+        ptr: Operand,
+        value: Operand,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -248,6 +273,7 @@ where
 
     pub class_layouts: HashMap<StrId, ClassLayout, FxHashBuilder>,
     pub interface_layouts: HashMap<StrId, InterfaceLayout, FxHashBuilder>,
+    pub class_interface_vtables: HashMap<(StrId, StrId), VTableInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -256,7 +282,6 @@ pub enum Type {
     Bool,
     Str,
     Enum(StrId),
-    // possibly more like Float, Struct, etc.
 }
 
 impl<'a, 'bump> Module<'a, 'bump> {
@@ -285,13 +310,25 @@ pub enum BinOp {
     ShiftRight,
 }
 
-// Insert near top of emit_function (or inline): helper to identify IR terminators
 pub fn inst_is_terminator(inst: &Instruction) -> bool {
     matches!(
         inst,
         Instruction::Jump { .. }
             | Instruction::Branch { .. }
             | Instruction::Ret { .. }
-            | Instruction::MatchEnum { .. } // you lower this to br_table (terminator)
+            | Instruction::MatchEnum { .. } // lower this to br_table (terminator)
     )
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct VTable {
+    pub class: StrId,
+    pub interface: StrId,
+    pub methods: Vec<StrId>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct VTableInfo {
+    pub interface: StrId,
+    pub methods: Vec<StrId>,
 }
