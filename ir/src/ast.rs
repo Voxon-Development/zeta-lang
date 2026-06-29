@@ -30,6 +30,13 @@ where
     ExprStmt(&'bump InternalExprStmt<'a, 'bump>),
     Break(Option<&'bump Expr<'a, 'bump>>, SourceSpan<'a>),
     Continue(SourceSpan<'a>),
+    Throw(ThrowStmt<'a, 'bump>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ThrowStmt<'a, 'bump> {
+    pub inner: Expr<'a, 'bump>,
+    pub span: SourceSpan<'a>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -47,6 +54,7 @@ pub struct PackageStmt<'a, 'bump> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Path<'a, 'bump> {
     pub path: &'bump [StrId],
+    pub member: Option<StrId>,
     pub span: SourceSpan<'a>,
 }
 
@@ -73,6 +81,8 @@ where
     pub value: &'bump Expr<'a, 'bump>,
     pub mutable: bool,
     pub is_static: bool,
+    pub catch_pattern: Option<ErrorHandlerPattern<'a, 'bump>>,
+    pub else_block: Option<&'bump Block<'a, 'bump>>,
     pub span: SourceSpan<'a>,
 }
 
@@ -276,7 +286,7 @@ where
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThrowsDecl<'a, 'bump> {
-    pub error_type: Option<Type<'a, 'bump>>,
+    pub error_types: &'bump [Type<'a, 'bump>],
     pub span: SourceSpan<'a>,
 }
 
@@ -479,6 +489,43 @@ where
     This {
         span: SourceSpan<'a>,
     },
+    Ref {
+        expr: &'bump Expr<'a, 'bump>,
+        mutable: bool,
+        span: SourceSpan<'a>,
+    },
+    Lambda {
+        modifiers: Option<LambdaModifier>,
+        params: &'bump [LambdaParam<'a, 'bump>],
+        return_type: Option<Type<'a, 'bump>>,
+        body: &'bump Block<'a, 'bump>,
+        span: SourceSpan<'a>,
+    },
+    ModulePath {
+        segments: &'bump [StrId],
+        span: SourceSpan<'a>,
+    },
+    ModuleAccess {
+        segments: &'bump [StrId],
+        member: StrId,
+        span: SourceSpan<'a>,
+    },
+}
+
+/// A closure/anonymous-function parameter. Unlike `NormalParam`, the type
+/// annotation is optional since closures can omit param types.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LambdaParam<'a, 'bump> {
+    pub name: StrId,
+    pub type_annotation: Option<Type<'a, 'bump>>,
+    pub span: SourceSpan<'a>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LambdaModifier {
+    Suspend,
+    Nosuspend,
+    Blocking,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -486,12 +533,13 @@ pub enum ErrorHandlerPattern<'a, 'bump>
 where
     'bump: 'a,
 {
-    /// Single branch for nullable or error: `else () => { ... }` or `else (err) => { ... }`
+    /// `catch (MyError err) => { ... }`
     Single {
+        error_type: Type<'a, 'bump>,
         binding: Option<StrId>,
         body: &'bump Block<'a, 'bump>,
     },
-    /// Multiple branches for combined error+nullable: `else { error => ..., null => ... }`
+    /// `catch { MyError e => {}, MyOtherError e => {} }`
     Multiple {
         branches: &'bump [ErrorHandlerBranch<'a, 'bump>],
     },
@@ -502,7 +550,8 @@ pub struct ErrorHandlerBranch<'a, 'bump>
 where
     'bump: 'a,
 {
-    pub kind: ErrorHandlerKind,
+    pub error_type: Type<'a, 'bump>,
+    pub binding: Option<StrId>,
     pub body: &'bump Block<'a, 'bump>,
     pub span: SourceSpan<'a>,
 }
@@ -557,6 +606,7 @@ where
     Lambda {
         params: &'bump [Type<'a, 'bump>],
         return_type: &'a Type<'a, 'bump>,
+        throws: Option<&'bump [Type<'a, 'bump>]>,
     },
     Struct {
         name: StrId,
@@ -567,6 +617,9 @@ where
     Ref {
         inner: &'a Type<'a, 'bump>,
         mutability_state: MutabilityState,
+    },
+    Dyn {
+        bounds: &'bump [Type<'a, 'bump>],
     },
 }
 
@@ -686,7 +739,7 @@ pub enum FuncSafety {
 
 // General Metadata
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MutabilityState {
     Mut,
     Const,
@@ -1022,7 +1075,7 @@ impl<'a, 'bump> Display for Type<'a, 'bump> {
             TypeKind::F32 => f.write_str("f32"),
             TypeKind::F64 => f.write_str("f64"),
             TypeKind::I64 => f.write_str("i64"),
-            TypeKind::String => f.write_str("StrId"),
+            TypeKind::String => f.write_str("str"),
             TypeKind::Boolean => f.write_str("bool"),
             TypeKind::UF32 => f.write_str("uf32"),
             TypeKind::U32 => f.write_str("u32"),
@@ -1034,7 +1087,27 @@ impl<'a, 'bump> Display for Type<'a, 'bump> {
             TypeKind::Lambda {
                 params,
                 return_type,
-            } => write!(f, "({:?}) -> {}", params, return_type),
+                throws,
+            } => {
+                write!(f, "fn(")?;
+                for (i, p) in params.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", p)?;
+                }
+                write!(f, ")")?;
+                if let Some(errs) = throws {
+                    write!(f, " throws ")?;
+                    for (i, e) in errs.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", e)?;
+                    }
+                }
+                write!(f, " -> {}", return_type)
+            }
             TypeKind::Struct { name, generics } => {
                 write!(f, "{}", name)?;
                 if !generics.is_empty() {
@@ -1055,7 +1128,13 @@ impl<'a, 'bump> Display for Type<'a, 'bump> {
             TypeKind::Ref {
                 inner,
                 mutability_state,
-            } => write!(f, "&{} {}", mutability_state, inner),
+            } => {
+                if let MutabilityState::Mut = mutability_state {
+                    write!(f, "&mut {}", inner)
+                } else {
+                    write!(f, "&{}", inner)
+                }
+            }
             TypeKind::SafePointer {
                 inner,
                 mutability_state,
@@ -1066,6 +1145,19 @@ impl<'a, 'bump> Display for Type<'a, 'bump> {
             } => write!(f, "[*]{} {}", mutability_state, inner),
             TypeKind::Array { inner, length } => write!(f, "[{}]{}", length, inner),
             TypeKind::Slice { inner } => write!(f, "[]{}", inner),
+            TypeKind::Dyn { bounds } => {
+                write!(f, "dyn ")?;
+                let mut is_start = true;
+                let mut iter = bounds.into_iter();
+                while let Some(bound) = iter.next() {
+                    write!(f, "{}", bound)?;
+                    if !is_start {
+                        write!(f, " + ")?;
+                    }
+                    is_start = false;
+                }
+                Ok(())
+            }
         }?;
 
         if self.nullable {

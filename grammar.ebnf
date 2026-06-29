@@ -216,7 +216,7 @@ postfix         ::= "(" arg_list? ")"                          (* call          
                   | "." IDENT                                   (* field access  *)
                   | ".*"                                        (* pointer deref *)
                   | "[" expr "]"                               (* index         *)
-                  | "{" struct_init_fields "}"                 (* struct init — only after Ident lhs *)
+                  | "{" struct_init_fields "}"                 (* struct init, only after Ident lhs *)
 
 arg_list        ::= expr ("," expr)*
 
