@@ -9,3 +9,4 @@ opt-level = 3
 [dependencies]
 zetaruntime = { path = "../zeta_utilities" }
 ir = { path = "../ir" }
+codex-dependency-graph = { path = "../codex-dependency-graph" }
