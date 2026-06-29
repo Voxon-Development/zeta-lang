@@ -1,13 +1,13 @@
-use std::collections::{HashSet};
-use std::path::PathBuf;
 use ir::hir::StrId;
 use ir::ir_hasher::FxHashBuilder;
+use std::collections::HashSet;
+use std::path::PathBuf;
 use zetaruntime::bump::GrowableBump;
 
 #[derive(Debug)]
 pub struct SymbolsSoA<'bump> {
     pub names: Vec<StrId, GrowableBump<'bump>>,
-    pub kinds: Vec<StrId, GrowableBump<'bump>>
+    pub kinds: Vec<StrId, GrowableBump<'bump>>,
 }
 
 impl<'bump> SymbolsSoA<'bump> {
@@ -37,7 +37,6 @@ impl<'bump> ModulesSoA<'bump> {
             symbols: Vec::new_in(bump),
         }
     }
-
 
     pub fn push_module(
         &mut self,

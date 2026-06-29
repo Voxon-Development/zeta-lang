@@ -1,5 +1,7 @@
+use crate::dep_graph::AstModule;
 use crate::symbol_table::{ModulesSoA, SymbolsSoA};
-use ir::hir::{Hir, HirModule, StrId};
+use ir::ast::Stmt;
+use ir::hir::StrId;
 use ir::ir_hasher::FxHashBuilder;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -11,21 +13,22 @@ pub struct ModuleBuilder<'bump> {
 }
 
 impl<'bump> ModuleBuilder<'bump> {
-    pub fn run(hir_modules: &Vec<HirModule>, string_pool: Arc<StringPool>) -> Self {
+    pub fn run<'a>(ast_modules: &[AstModule<'a, '_>], string_pool: Arc<StringPool>) -> Self {
         let mut modules = ModulesSoA::new();
 
-        for module in hir_modules {
+        for module in ast_modules {
             let mut symbols = SymbolsSoA::new();
 
-            for item in module.items {
-                let (name, kind) = extract_symbol_info(item, string_pool.clone());
+            for stmt in module.stmts {
+                let (name, kind) = extract_symbol_info(stmt, &string_pool);
                 symbols.names.push(name);
                 symbols.kinds.push(kind);
             }
 
-            let path = PathBuf::from(format!("{}.zeta", module.name));
+            let path = PathBuf::from(format!("{}.zeta", string_pool.resolve_string(&module.name)));
             let deps: HashSet<usize, FxHashBuilder> =
                 HashSet::with_hasher(FxHashBuilder::default());
+
             modules.push_module(module.name, path, deps, symbols);
         }
 
@@ -33,17 +36,20 @@ impl<'bump> ModuleBuilder<'bump> {
     }
 }
 
-fn extract_symbol_info(hir: &Hir, string_pool: Arc<StringPool>) -> (StrId, StrId) {
-    match hir {
-        Hir::Func(f) => (f.name, StrId(string_pool.intern("function"))),
-        Hir::Struct(s) => (s.name, StrId(string_pool.intern("struct"))),
-        Hir::Const(c) => (c.name, StrId(string_pool.intern("const"))),
-        Hir::Interface(i) => (i.name, StrId(string_pool.intern("interface"))),
-        Hir::Enum(e) => (e.name, StrId(string_pool.intern("enum"))),
-        Hir::Impl(i) => (i.target, StrId(string_pool.intern("impl"))),
-        _ => (
-            StrId(string_pool.intern("<anon>")),
-            StrId(string_pool.intern("unknown")),
-        ),
+/// Extract a (name, kind) pair from a top-level AST statement.
+/// Statements that do not introduce a named declaration get the `<anon>` /
+/// `unknown` sentinel so the symbol table slot is still populated but clearly
+/// marked as non-addressable.
+fn extract_symbol_info(stmt: &Stmt<'_, '_>, pool: &StringPool) -> (StrId, StrId) {
+    let kind = |s: &str| StrId(pool.intern(s));
+
+    match stmt {
+        Stmt::FuncDecl(f) => (f.name, kind("function")),
+        Stmt::StructDecl(s) => (s.name, kind("struct")),
+        Stmt::Const(c) => (c.ident, kind("const")),
+        Stmt::InterfaceDecl(i) => (i.name, kind("interface")),
+        Stmt::EnumDecl(e) => (e.name, kind("enum")),
+        Stmt::ImplDecl(i) => (i.target, kind("impl")),
+        _ => (StrId(pool.intern("<anon>")), kind("unknown")),
     }
 }
