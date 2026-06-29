@@ -14,10 +14,7 @@ mod tests {
         bump: Arc<GrowableAtomicBump<'bump>>,
     ) -> Vec<Stmt<'a, 'bump>, &'bump GrowableBump<'bump>> {
         let ctx = Arc::new(StringPool::new().unwrap());
-        // Clone for parse_program - this gives us an Arc with refcount 2
         let ctx_for_parse = Arc::clone(&ctx);
-        // Leak the original Arc - this increases the "leaked refcount" by 1
-        // The StringPool will now never be dropped because at least 1 Arc is leaked
         std::mem::forget(ctx);
         parse_program(src, "<test>", ctx_for_parse, bump).statements
     }
@@ -73,7 +70,6 @@ mod tests {
         assert_eq!(f.function_metadata.visibility, Visibility::Public);
     }
 
-    // these segfault, commented out for now
     /*#[test]
     fn test_visibility_private() {
         let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
@@ -322,7 +318,6 @@ mod tests {
         assert!(f.return_type.unwrap().nullable);
     }
 
-    // TODO: adjust these for `throws`
     /*
     #[test]
     fn test_error_return_type_single() {

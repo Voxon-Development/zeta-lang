@@ -16,9 +16,9 @@ use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 struct Chunk {
     ptr: NonNull<u8>,
     capacity: usize,
-    offset: AtomicUsize, // atomic offset inside chunk
+    offset: AtomicUsize,
     align: usize,
-    next: AtomicPtr<Chunk>, // intrusive lock-free next pointer
+    next: AtomicPtr<Chunk>,
 }
 
 impl Clone for Chunk {
@@ -159,8 +159,6 @@ impl<'bump> GrowableAtomicBump<'bump> {
         None
     }
 
-    /// Returns slice from an absolute pointer allocated by this arena.
-    /// Caller must ensure pointer belongs to this allocator.
     pub unsafe fn get_slice_from_ptr_unchecked<'a>(&self, ptr: *const u8, len: usize) -> &'a [u8] {
         debug_assert!(self.chunk_containing_ptr(ptr).is_some());
         unsafe { std::slice::from_raw_parts(ptr, len) }
@@ -591,7 +589,6 @@ mod tests {
     #[test]
     fn u64_alloc_is_aligned() {
         let a = GrowableAtomicBump::with_capacity(256);
-        // Burn one byte first to make alignment non-trivial
         let _ = a.alloc_value(1u8);
         let p = a.alloc_value(0u64) as *const u64;
         assert_eq!(p as usize % align_of::<u64>(), 0);
@@ -611,7 +608,6 @@ mod tests {
 
     #[test]
     fn grows_beyond_initial_capacity() {
-        // Start tiny — must grow to fit all allocations
         let a = GrowableAtomicBump::with_capacity(16);
         for i in 0u64..64 {
             let r = a.alloc_value(i);
@@ -665,7 +661,7 @@ mod tests {
     fn reset_is_idempotent() {
         let mut a = GrowableAtomicBump::with_capacity(64);
         a.reset();
-        a.reset(); // should not panic
+        a.reset();
         assert_eq!(a.head_used(), 0);
     }
 
@@ -673,13 +669,11 @@ mod tests {
     fn get_slice_invalid_range_returns_empty() {
         let a = GrowableAtomicBump::with_capacity(128);
         let _ = a.alloc_value(1u32);
-        // end before start
         assert!(a.get_slice(10, 5).is_empty());
     }
 
     #[test]
     fn concurrent_allocs_no_collision() {
-        // Each thread writes a unique value and reads it back immediately.
         let a = Arc::new(GrowableAtomicBump::with_capacity(4096));
         let threads: Vec<_> = (0u64..16)
             .map(|i| {
@@ -697,7 +691,7 @@ mod tests {
 
     #[test]
     fn concurrent_allocs_no_panic_under_pressure() {
-        let a = Arc::new(GrowableAtomicBump::with_capacity(64)); // tiny to force growth
+        let a = Arc::new(GrowableAtomicBump::with_capacity(64));
         let threads: Vec<_> = (0..8)
             .map(|_| {
                 let ca = Arc::clone(&a);
@@ -717,14 +711,13 @@ mod tests {
     #[test]
     fn custom_alignment_16() {
         let a = GrowableAtomicBump::with_capacity_and_aligned(512, 16).unwrap();
-        let _ = a.alloc_value(1u8); // misalign deliberately
+        let _ = a.alloc_value(1u8);
         let p = a.alloc_value(0u128) as *const u128;
         assert_eq!(p as usize % 16, 0);
     }
 
     #[test]
     fn with_capacity_and_aligned_invalid_align_errors() {
-        // align must be a power of two; 3 is not
         assert!(GrowableAtomicBump::with_capacity_and_aligned(64, 3).is_err());
     }
 
@@ -750,7 +743,6 @@ mod tests {
         let a = GrowableAtomicBump::with_capacity(256);
         let p1 = a.alloc_value(Pair(1, 2));
         let p2 = a.alloc_value(Pair(3, 4));
-        // Values should not alias
         assert_eq!(*p1, Pair(1, 2));
         assert_eq!(*p2, Pair(3, 4));
         assert_ne!(p1 as *const _, p2 as *const _);

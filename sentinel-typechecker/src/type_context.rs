@@ -1,8 +1,11 @@
-use ir::hir::{HirFunc, HirInterface, HirStruct, HirType};
+use codex_dependency_graph::DepGraph;
+use ir::{
+    hir::{HirFunc, HirInterface, HirStruct, HirType},
+    ir_hasher::HashSet,
+};
 use std::collections::HashMap;
+use zetaruntime::bump::GrowableBump;
 
-/// All methods attached to a single named type, gathered from every
-/// registration source (struct body, impl blocks, interface impls).
 #[derive(Debug, Clone, Default)]
 pub struct TypeMethodTable<'a, 'bump> {
     pub methods: HashMap<String, HirFunc<'a, 'bump>>,
@@ -18,45 +21,80 @@ impl<'a, 'bump> TypeMethodTable<'a, 'bump> {
     }
 }
 
-/// The name resolution context for a single compilation unit.
-///
-/// Separation of concerns:
-///   - `variables`    - local bindings in the current scope
-///   - `structs`      - struct shape (fields, generics)
-///   - `interfaces`   - interface shape (method signatures)
-///   - `functions`    - free functions (non-method)
-///   - `type_methods` - per-type method tables, keyed by the *unmangled*
-///                     type name.  Mangling is codegen's problem.
 #[derive(Debug, Clone)]
 pub struct TypeContext<'a, 'bump> {
     pub variables: HashMap<String, HirType<'a, 'bump>>,
     pub structs: HashMap<String, HirStruct<'a, 'bump>>,
     pub interfaces: HashMap<String, HirInterface<'a, 'bump>>,
-    pub functions: HashMap<String, HirFunc<'a, 'bump>>,
+    pub module_functions: HashMap<usize, HashMap<String, HirFunc<'a, 'bump>>>,
     pub type_methods: HashMap<String, TypeMethodTable<'a, 'bump>>,
     pub current_return_type: Option<HirType<'a, 'bump>>,
     pub in_loop: bool,
+    pub current_module_idx: usize,
+    pub dep_graph: &'a DepGraph,
+    pub bump: &'bump GrowableBump<'bump>,
+    pub dangling_locals: HashSet<String>,
+    pub struct_interfaces: HashMap<String, HashSet<String>>,
+    pub mutable_variables: HashSet<String>,
 }
 
 impl<'a, 'bump> TypeContext<'a, 'bump> {
-    pub fn new() -> Self {
+    pub fn new(dep_graph: &'a DepGraph, bump: &'bump GrowableBump<'bump>) -> Self {
         Self {
             variables: HashMap::new(),
             structs: HashMap::new(),
             interfaces: HashMap::new(),
-            functions: HashMap::new(),
+            module_functions: HashMap::new(),
             type_methods: HashMap::new(),
             current_return_type: None,
             in_loop: false,
+            current_module_idx: usize::MAX, // sentinel
+            dep_graph,
+            bump,
+            dangling_locals: HashSet::default(),
+            struct_interfaces: HashMap::default(),
+            mutable_variables: HashSet::default(),
         }
     }
 
-    pub fn add_function(&mut self, name: String, func: HirFunc<'a, 'bump>) {
-        self.functions.insert(name, func);
+    pub fn add_struct_interface(&mut self, struct_name: &str, interface_name: String) {
+        self.struct_interfaces
+            .entry(struct_name.to_string())
+            .or_default()
+            .insert(interface_name);
+    }
+
+    pub fn struct_implements(&self, struct_name: &str, interface_name: &str) -> bool {
+        self.struct_interfaces
+            .get(struct_name)
+            .is_some_and(|set| set.contains(interface_name))
+    }
+
+    pub fn is_local_binding(&self, name: &str) -> bool {
+        self.variables.contains_key(name)
+    }
+
+    pub fn mark_dangling(&mut self, name: String) {
+        self.dangling_locals.insert(name);
+    }
+
+    pub fn is_dangling(&self, name: &str) -> bool {
+        self.dangling_locals.contains(name)
+    }
+
+    pub fn add_function(&mut self, module_idx: usize, name: String, func: HirFunc<'a, 'bump>) {
+        self.module_functions
+            .entry(module_idx)
+            .or_default()
+            .insert(name, func);
+    }
+
+    pub fn get_module_function(&self, module_idx: usize, name: &str) -> Option<HirFunc<'a, 'bump>> {
+        self.module_functions.get(&module_idx)?.get(name).copied()
     }
 
     pub fn get_function(&self, name: &str) -> Option<HirFunc<'a, 'bump>> {
-        self.functions.get(name).copied()
+        self.get_module_function(self.current_module_idx, name)
     }
 
     pub fn add_struct(&mut self, name: String, struct_def: HirStruct<'a, 'bump>) {
@@ -64,7 +102,7 @@ impl<'a, 'bump> TypeContext<'a, 'bump> {
 
         if let Some(methods) = struct_def.methods {
             for func in methods {
-                let method_name = func.name.to_string();
+                let method_name = func.unmangled_name.to_string();
                 self.type_methods
                     .entry(name.clone())
                     .or_default()
@@ -80,7 +118,7 @@ impl<'a, 'bump> TypeContext<'a, 'bump> {
     pub fn add_impl_methods(&mut self, target: &str, methods: &[HirFunc<'a, 'bump>]) {
         let table = self.type_methods.entry(target.to_string()).or_default();
         for func in methods {
-            table.insert(func.name.to_string(), *func);
+            table.insert(func.unmangled_name.to_string(), *func);
         }
     }
 
@@ -92,8 +130,6 @@ impl<'a, 'bump> TypeContext<'a, 'bump> {
         self.interfaces.get(name).copied()
     }
 
-    /// Look up a method on a named type.  This is the only place in the
-    /// type checker that should ever need to find methods in structs
     pub fn get_method(&self, type_name: &str, method_name: &str) -> Option<&HirFunc<'a, 'bump>> {
         self.type_methods
             .get(type_name)
@@ -102,6 +138,24 @@ impl<'a, 'bump> TypeContext<'a, 'bump> {
 
     pub fn add_variable(&mut self, name: String, ty: HirType<'a, 'bump>) {
         self.variables.insert(name, ty);
+    }
+
+    pub fn add_variable_with_mutability(
+        &mut self,
+        name: String,
+        ty: HirType<'a, 'bump>,
+        mutable: bool,
+    ) {
+        if mutable {
+            self.mutable_variables.insert(name.clone());
+        } else {
+            self.mutable_variables.remove(&name);
+        }
+        self.variables.insert(name, ty);
+    }
+
+    pub fn is_mutable(&self, name: &str) -> bool {
+        self.mutable_variables.contains(name)
     }
 
     pub fn get_variable(&self, name: &str) -> Option<HirType<'a, 'bump>> {
@@ -120,24 +174,21 @@ impl<'a, 'bump> TypeContext<'a, 'bump> {
         self
     }
 
-    /// Clone everything *except* variables into a child scope.
-    /// Variables start fresh so that inner-scope bindings don't leak out,
-    /// but type/function knowledge is inherited.
     pub fn create_child_scope(&self) -> Self {
         Self {
-            variables: self.variables.clone(), // carry locals into the child
+            variables: self.variables.clone(),
             structs: self.structs.clone(),
             interfaces: self.interfaces.clone(),
-            functions: self.functions.clone(),
+            module_functions: self.module_functions.clone(),
             type_methods: self.type_methods.clone(),
             current_return_type: self.current_return_type,
             in_loop: self.in_loop,
+            current_module_idx: self.current_module_idx,
+            dep_graph: self.dep_graph,
+            bump: self.bump,
+            dangling_locals: self.dangling_locals.clone(),
+            struct_interfaces: self.struct_interfaces.clone(),
+            mutable_variables: self.mutable_variables.clone(),
         }
-    }
-}
-
-impl<'a, 'bump> Default for TypeContext<'a, 'bump> {
-    fn default() -> Self {
-        Self::new()
     }
 }

@@ -4,6 +4,7 @@ mod hir_lowerer_tests {
     use crate::hir_lowerer::monomorphization::Monomorphizer;
     use crate::parser::descent_parser::DescentParser;
     use crate::tokenizer::lexer::Lexer;
+    use codex_dependency_graph::DepGraph;
     use ir::hir::{Hir, HirExpr, HirFunc, HirModule, HirStmt, HirType, StrId};
     use ir::ir_hasher::HashMap;
     use std::mem::transmute;
@@ -12,30 +13,28 @@ mod hir_lowerer_tests {
     use zetaruntime::bump::GrowableBump;
     use zetaruntime::string_pool::StringPool;
 
-    fn create_test_context() -> (Arc<StringPool>, GrowableBump<'static>) {
+    fn create_test_context() -> (Arc<StringPool>, GrowableBump<'static>, &'static DepGraph) {
         let context = Arc::new(StringPool::new().expect("Failed to create StringPool"));
         let bump = GrowableBump::new(4096, 8);
-        (context, bump)
+        let dep_graph = Box::leak(Box::new(Default::default()));
+        (context, bump, dep_graph)
     }
 
-    fn parse_and_lower(source: &str) -> (HirModule<'_, '_>, Arc<StringPool>) {
-        let (context, _bump) = create_test_context();
+    fn parse_and_lower(source: &str) -> (HirModule<'_, '_>, Arc<StringPool>, &'static DepGraph) {
+        let (context, _bump, dep_graph) = create_test_context();
         let lexer = Lexer::new(context.clone());
 
         let parser_bump = Box::new(GrowableBump::new(4096, 8));
         let bump_ref = Box::leak(parser_bump);
         let tokens = Box::leak(Box::new(lexer.tokenize(source, "test.zeta", bump_ref)));
 
-        // Create parser bump allocator
-
         let stmts = DescentParser::parse(context.clone(), bump_ref, tokens).unwrap();
 
-        // Create HIR lowerer
         let atomic_bump = Arc::new(GrowableAtomicBump::new());
-        let mut lowerer = HirLowerer::new(context.clone(), atomic_bump);
-        let module = lowerer.lower_module(stmts);
+        let mut lowerer = HirLowerer::new(context.clone(), atomic_bump, &dep_graph);
+        let module = lowerer.lower_module(stmts, 0);
 
-        (module, context)
+        (module, context, dep_graph)
     }
 
     fn get_functions_from_module<'a, 'bump>(
@@ -79,9 +78,8 @@ mod hir_lowerer_tests {
             }
         "#;
 
-        let (module, context) = parse_and_lower(source);
+        let (module, context, _dep_graph) = parse_and_lower(source);
 
-        // Verify we have one function
         let functions = get_functions_from_module(&module);
         assert_eq!(functions.len(), 1, "Expected exactly one function");
 
@@ -93,7 +91,6 @@ mod hir_lowerer_tests {
         );
         assert!(main_func.body.is_some(), "Expected main to have a body");
 
-        // Verify function body contains let statements
         if let Some(HirStmt::Block { body }) = &main_func.body {
             assert_eq!(body.len(), 2, "Expected exactly 2 statements in main body");
 
@@ -174,13 +171,11 @@ mod hir_lowerer_tests {
             }
         "#;
 
-        let (module, context) = parse_and_lower(source);
+        let (module, context, _dep_graph) = parse_and_lower(source);
 
-        // Verify basic lowering works
         let functions = get_functions_from_module(&module);
         assert!(functions.len() >= 1, "Expected at least one function");
 
-        // Check function names
         let func_names: Vec<String> = functions
             .iter()
             .map(|f| context.resolve_string(&f.name).to_string())
@@ -188,11 +183,9 @@ mod hir_lowerer_tests {
 
         println!("Generated functions: {:?}", func_names);
 
-        // Should have main function
         let has_main = func_names.iter().any(|name| name == "main");
         assert!(has_main, "Should have main function, got: {:?}", func_names);
 
-        // Verify main function structure
         let main_func = functions
             .iter()
             .find(|f| context.resolve_string(&f.name) == "main")
@@ -210,29 +203,25 @@ mod hir_lowerer_tests {
             }
         "#;
 
-        let (module, context) = parse_and_lower(source);
+        let (module, context, _dep_graph) = parse_and_lower(source);
 
-        // Should have struct and function
         let structs = get_structs_from_module(&module);
         let functions = get_functions_from_module(&module);
 
         assert!(structs.len() >= 1, "Should have at least one struct");
         assert!(functions.len() >= 1, "Should have main function");
 
-        // Find Point struct
         let point_struct = structs
             .iter()
             .find(|s| context.resolve_string(&s.name) == "Point")
             .expect("Expected Point struct");
 
-        // Verify struct has two fields
         assert_eq!(
             point_struct.fields.len(),
             2,
             "Expected Point to have 2 fields"
         );
 
-        // Verify field names
         let field_names: Vec<String> = point_struct
             .fields
             .iter()
@@ -242,7 +231,6 @@ mod hir_lowerer_tests {
         assert!(field_names.contains(&"x".to_string()), "Expected 'x' field");
         assert!(field_names.contains(&"y".to_string()), "Expected 'y' field");
 
-        // Find main function
         let main_func = functions
             .iter()
             .find(|f| context.resolve_string(&f.name) == "main")
@@ -253,30 +241,26 @@ mod hir_lowerer_tests {
 
     #[test]
     fn test_monomorphizer_type_substitution() {
-        let (context, _bump) = create_test_context();
+        let (context, _bump, dep_graph) = create_test_context();
         let atomic_bump = Arc::new(GrowableAtomicBump::new());
-        let lowerer = HirLowerer::new(context.clone(), atomic_bump.clone());
+        let lowerer = HirLowerer::new(context.clone(), atomic_bump.clone(), dep_graph);
         let _ = Monomorphizer::new(context.clone(), atomic_bump.clone(), unsafe {
             transmute(&lowerer.ctx)
         });
 
-        // Create type substitutions: T -> i32
         let mut substitutions = HashMap::default();
         let t_name = context.intern("T");
         substitutions.insert(ir::hir::StrId(t_name), HirType::I32);
 
-        // Verify substitutions map was created
         assert_eq!(substitutions.len(), 1);
         assert!(substitutions.contains_key(&ir::hir::StrId(t_name)));
     }
 
     #[test]
     fn test_hir_type_system() {
-        // Test basic HIR type system
         assert_eq!(HirType::I32, HirType::I32);
         assert_ne!(HirType::I32, HirType::String);
 
-        // Test type matching
         let int_type = HirType::I32;
         let string_type = HirType::String;
 
@@ -300,7 +284,7 @@ mod hir_lowerer_tests {
             }
         "#;
 
-        let (module, context) = parse_and_lower(source);
+        let (module, context, _dep_graph) = parse_and_lower(source);
 
         let functions = get_functions_from_module(&module);
         assert!(functions.len() >= 1, "Expected at least one function");
@@ -308,11 +292,9 @@ mod hir_lowerer_tests {
         let main_func = functions[0];
         assert!(main_func.body.is_some(), "Expected main to have a body");
 
-        // Verify we can access the function body and it has the expected statements
         if let Some(HirStmt::Block { body }) = &main_func.body {
             assert_eq!(body.len(), 2, "Expected exactly 2 statements in main");
 
-            // Check first let statement: let x: i32 = 1 + 2;
             if let HirStmt::Let {
                 name, ty, value, ..
             } = &body[0]
@@ -323,7 +305,6 @@ mod hir_lowerer_tests {
                     "Expected first variable named 'x'"
                 );
                 assert_eq!(*ty, HirType::I32, "Expected x to have type i32");
-                // Value should be a binary operation
                 if let HirExpr::Binary { .. } = value {
                     // Expected
                 } else {
@@ -333,7 +314,6 @@ mod hir_lowerer_tests {
                 panic!("Expected first statement to be let");
             }
 
-            // Check second let statement: let y: bool = true;
             if let HirStmt::Let {
                 name, ty, value, ..
             } = &body[1]
@@ -361,21 +341,17 @@ mod hir_lowerer_tests {
     fn test_monomorphization_naming() {
         use crate::hir_lowerer::monomorphization::naming::suffix_for_subs;
 
-        let (context, _bump) = create_test_context();
+        let (context, _bump, _dep_graph) = create_test_context();
 
-        // Create type substitutions: T -> i32
         let mut substitutions: HashMap<StrId, HirType> = HashMap::default();
         let t_name = context.intern("T");
         substitutions.insert(ir::hir::StrId(t_name), HirType::I32);
 
-        // Test suffix generation
         let suffix = suffix_for_subs(context.clone(), &substitutions);
         let suffix_str = context.resolve_string(&suffix);
 
-        // Should generate some kind of suffix for the substitution
         assert!(!suffix_str.is_empty(), "Should generate non-empty suffix");
 
-        // The suffix should contain type information
         assert!(
             suffix_str.contains("i32") || suffix_str.contains("I32"),
             "Expected suffix to contain type info, got: {}",
@@ -387,7 +363,6 @@ mod hir_lowerer_tests {
 
     #[test]
     fn test_actual_generic_function_monomorphization() {
-        // Test with actual generic function that should be monomorphized
         let source = r#"
             T identity<T>(T value) {
                 return value;
@@ -400,7 +375,7 @@ mod hir_lowerer_tests {
             }
         "#;
 
-        let (module, context) = parse_and_lower(source);
+        let (module, context, _dep_graph) = parse_and_lower(source);
         let functions = get_functions_from_module(&module);
 
         println!("All functions in module:");
@@ -409,14 +384,12 @@ mod hir_lowerer_tests {
             println!("  - {}", name);
         }
 
-        // Should have main + multiple monomorphized identity functions
         assert!(
             functions.len() > 1,
             "Should have multiple functions (main + monomorphized identity), got: {}",
             functions.len()
         );
 
-        // Check for monomorphized function names
         let func_names: Vec<String> = functions
             .iter()
             .map(|f| context.resolve_string(&f.name).to_string())
@@ -425,7 +398,6 @@ mod hir_lowerer_tests {
         let has_main = func_names.iter().any(|name| name == "main");
         assert!(has_main, "Should have main function, got: {:?}", func_names);
 
-        // Look for monomorphized identity functions
         let identity_functions: Vec<&String> = func_names
             .iter()
             .filter(|name| name.contains("identity"))
@@ -464,10 +436,10 @@ mod hir_lowerer_tests {
             }
         "#;
 
-        let (_module, _context) = parse_and_lower(source);
+        let (_module, _context, _dep_graph) = parse_and_lower(source);
 
         // The test passes if it compiles and runs without panicking
-        // In a more complete test, we would:
+        // TODO:
         // 1. Get the struct definition from the module
         // 2. Verify the field types include the generic parameters
         // 3. Check that the generic parameters are properly substituted
@@ -489,7 +461,7 @@ mod hir_lowerer_tests {
             }
         "#;
 
-        let (module, context) = parse_and_lower(source);
+        let (module, context, _dep_graph) = parse_and_lower(source);
         let structs = get_structs_from_module(&module);
         let functions = get_functions_from_module(&module);
 
@@ -499,7 +471,6 @@ mod hir_lowerer_tests {
             println!("  - {} (fields: {})", name, s.fields.len());
         }
 
-        // Should have monomorphized Container structs
         assert!(structs.len() >= 1, "Should have at least one struct");
 
         let struct_names: Vec<String> = structs
@@ -519,7 +490,6 @@ mod hir_lowerer_tests {
             struct_names
         );
 
-        // Verify each Container struct has the expected field
         for container_name in &container_structs {
             let container = structs
                 .iter()
@@ -538,7 +508,6 @@ mod hir_lowerer_tests {
             );
         }
 
-        // Verify we have main function
         let has_main = functions
             .iter()
             .any(|f| context.resolve_string(&f.name) == "main");
@@ -558,7 +527,7 @@ mod hir_lowerer_tests {
             }
         "#;
 
-        let (module, context) = parse_and_lower(source);
+        let (module, context, _dep_graph) = parse_and_lower(source);
         let functions = get_functions_from_module(&module);
 
         println!("Functions for add<T> test:");
@@ -567,7 +536,6 @@ mod hir_lowerer_tests {
             println!("  - {}", name);
         }
 
-        // Should have main + monomorphized add functions for i32 and i64
         let func_names: Vec<String> = functions
             .iter()
             .map(|f| context.resolve_string(&f.name).to_string())
@@ -580,25 +548,21 @@ mod hir_lowerer_tests {
 
         println!("Add functions found: {:?}", add_functions);
 
-        // Should have different monomorphized versions
         assert!(
             functions.len() >= 2,
             "Should have main + at least one add function, got: {}",
             functions.len()
         );
 
-        // Verify main function exists
         let has_main = func_names.iter().any(|name| name == "main");
         assert!(has_main, "Should have main function");
 
-        // Verify add functions exist
         assert!(
             add_functions.len() >= 1,
             "Should have at least one add function, got: {:?}",
             func_names
         );
 
-        // Verify each function has a body
         for func in &functions {
             let func_name = context.resolve_string(&func.name);
             assert!(
@@ -624,7 +588,7 @@ mod hir_lowerer_tests {
             }
         "#;
 
-        let (module, context) = parse_and_lower(source);
+        let (module, context, _dep_graph) = parse_and_lower(source);
         let functions = get_functions_from_module(&module);
 
         println!("Functions for caching test:");
@@ -645,8 +609,6 @@ mod hir_lowerer_tests {
 
         println!("Duplicate functions found: {:?}", duplicate_functions);
 
-        // Should cache monomorphizations - expect main + duplicate_i32 + duplicate_String
-        // Not 5 separate functions (which would indicate no caching)
         assert!(
             functions.len() <= 4,
             "Should cache monomorphizations, not create duplicates. Got: {:?}",
@@ -658,11 +620,9 @@ mod hir_lowerer_tests {
             func_names
         );
 
-        // Verify main function exists
         let has_main = func_names.iter().any(|name| name == "main");
         assert!(has_main, "Should have main function");
 
-        // Verify each function has a body
         for func in &functions {
             let func_name = context.resolve_string(&func.name);
             assert!(
@@ -688,7 +648,7 @@ mod hir_lowerer_tests {
             }
         "#;
 
-        let (module, context) = parse_and_lower(source);
+        let (module, context, _dep_graph) = parse_and_lower(source);
         let functions = get_functions_from_module(&module);
         let structs = get_structs_from_module(&module);
 
@@ -704,23 +664,19 @@ mod hir_lowerer_tests {
             println!("  - {}", name);
         }
 
-        // Should have monomorphized both struct and function
         assert!(functions.len() >= 1, "Should have at least one function");
         assert!(structs.len() >= 1, "Should have at least one struct");
 
-        // Verify main function exists
         let has_main = functions
             .iter()
             .any(|f| context.resolve_string(&f.name) == "main");
         assert!(has_main, "Should have main function");
 
-        // Verify Wrapper struct exists
         let has_wrapper = structs
             .iter()
             .any(|s| context.resolve_string(&s.name).contains("Wrapper"));
         assert!(has_wrapper, "Should have Wrapper struct");
 
-        // Verify unwrap function exists
         let has_unwrap = functions
             .iter()
             .any(|f| context.resolve_string(&f.name).contains("unwrap"));

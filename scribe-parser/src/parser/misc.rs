@@ -15,7 +15,6 @@ where
     pub fn parse_generics(
         &mut self,
     ) -> Result<Option<&'bump [Generic<'a, 'bump>]>, DiagnosticError<'a>> {
-        // No generics present
         if self.cursor.peek() != TokenKind::Lt {
             return Ok(None);
         }
@@ -25,7 +24,6 @@ where
         let mut generics = Vec::new_in(self.bump);
 
         loop {
-            // Optional const/static
             let is_const = self.cursor.consume(TokenKind::Const);
             let is_static = if !is_const {
                 self.cursor.consume(TokenKind::Static)
@@ -33,10 +31,8 @@ where
                 false
             };
 
-            // Identifier
             let (name, span) = self.cursor.expect_ident()?;
 
-            // Optional constraints
             let constraints = if self.cursor.consume(TokenKind::Colon) {
                 let mut types = Vec::new_in(self.bump);
 
@@ -160,12 +156,7 @@ where
                 };
 
                 let default_value = if self.cursor.consume(TokenKind::Eq) {
-                    Some(Self::parse_expr_inner(
-                        &mut self.cursor,
-                        self.bump,
-                        0,
-                        true,
-                    )?)
+                    Some(self.parse_expr_inner(0, true)?)
                 } else {
                     None
                 };
@@ -271,18 +262,44 @@ where
                 let token = self.cursor.peek_token();
                 if token.kind == LBracket {
                     let kind: TypeKind<'a, 'bump> = self.process_type_kind_after_lbracket(token)?;
+                    if let TypeKind::UnsafePointer { .. } = kind {
+                        todo!("Handle error when & and [*] are mixed together.")
+                    }
 
                     let nullable = self.cursor.consume(TokenKind::Question);
 
                     return Ok(Type { kind, nullable });
                 } else {
-                    let mutability_token =
-                        self.cursor.expect_or(TokenKind::Mut, TokenKind::Const)?;
-                    let mutability_state = match mutability_token.kind {
-                        TokenKind::Mut => MutabilityState::Mut,
-                        // I wish rust knew that only Mut and Const is possible here :(
-                        _ => MutabilityState::Const,
+                    let mutability_state = if self.cursor.consume(TokenKind::Mut) {
+                        MutabilityState::Mut
+                    } else {
+                        MutabilityState::Const
                     };
+
+                    let is_dyn = self.cursor.consume(TokenKind::Dyn);
+
+                    if is_dyn {
+                        let mut bounds = Vec::new_in(self.bump);
+
+                        bounds.push(self.parse_core_type()?);
+
+                        while self.cursor.consume(TokenKind::Add) {
+                            bounds.push(self.parse_core_type()?);
+                        }
+
+                        return Ok(Type {
+                            kind: TypeKind::Ref {
+                                inner: self.bump.alloc_value(Type {
+                                    kind: TypeKind::Dyn {
+                                        bounds: self.bump.alloc_slice_copy(&bounds),
+                                    },
+                                    nullable: false,
+                                }),
+                                mutability_state: MutabilityState::Const,
+                            },
+                            nullable: false,
+                        });
+                    }
 
                     let inner = self.parse_core_type()?;
 
@@ -298,6 +315,25 @@ where
                 }
             }
             _ => {}
+        }
+
+        let is_dyn = self.cursor.consume(TokenKind::Dyn);
+
+        if is_dyn {
+            let mut bounds = Vec::new_in(self.bump);
+
+            bounds.push(self.parse_core_type()?);
+
+            while self.cursor.consume(TokenKind::Add) {
+                bounds.push(self.parse_core_type()?);
+            }
+
+            return Ok(Type {
+                kind: TypeKind::Dyn {
+                    bounds: self.bump.alloc_slice_copy(&bounds),
+                },
+                nullable: false,
+            });
         }
 
         let mut ty = self.parse_core_type()?;
@@ -422,6 +458,8 @@ where
                 }
                 self.cursor.expect(TokenKind::RParen)?;
 
+                let throws = self.parse_throws()?.map(|decl| decl.error_types);
+
                 let return_type = if self.cursor.peek() == TokenKind::Arrow {
                     self.cursor.advance();
                     self.parse_core_type()?
@@ -434,6 +472,7 @@ where
                 TypeKind::Lambda {
                     params: params_bump,
                     return_type: ret_ref,
+                    throws,
                 }
             }
 

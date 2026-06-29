@@ -1,7 +1,7 @@
-use std::sync::Arc;
 use ir::ast;
 use ir::hir::{self, HirType, Operator, StrId};
 use smallvec::SmallVec;
+use std::sync::Arc;
 use zetaruntime::string_pool::StringPool;
 
 pub const fn lower_visibility(visibility: &ast::Visibility) -> hir::Visibility {

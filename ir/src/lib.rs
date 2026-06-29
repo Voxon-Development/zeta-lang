@@ -1,13 +1,13 @@
 #![feature(allocator_api)]
 
-pub mod ssa_ir;
-pub mod hir;
 pub mod ast;
-pub mod errors;
-pub mod ir_hasher;
-pub mod span;
-pub mod pretty;
-pub mod layout;
-pub mod tokens;
 pub mod diagnostics_context;
+pub mod errors;
+pub mod hir;
+pub mod ir_hasher;
+pub mod layout;
+pub mod pretty;
+pub mod span;
+pub mod ssa_ir;
 pub mod tests;
+pub mod tokens;

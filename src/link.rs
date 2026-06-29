@@ -1,11 +1,7 @@
-use std::process::{Command, ExitStatus};
 use crate::CompilerError;
+use std::process::{Command, ExitStatus};
 
-pub fn link<'a>(
-    objects: &[&str],
-    output: &str,
-    link_libc: bool
-) -> Result<(), CompilerError<'a>> {
+pub fn link<'a>(objects: &[&str], output: &str, link_libc: bool) -> Result<(), CompilerError<'a>> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     let driver = "cc";
 

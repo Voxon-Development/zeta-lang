@@ -63,8 +63,10 @@ impl PartialEq for VmString {
         }
 
         let (a, b): (&[u8], &[u8]) = unsafe {
-            (std::slice::from_raw_parts(self.offset, self.length),
-             std::slice::from_raw_parts(other.offset, other.length))
+            (
+                std::slice::from_raw_parts(self.offset, self.length),
+                std::slice::from_raw_parts(other.offset, other.length),
+            )
         };
 
         a == b
@@ -252,15 +254,12 @@ mod tests {
         let hello2 = pool.intern("hello");
         let world = pool.intern("world");
 
-        // Interned string deduplication
         assert_eq!(hello1, hello2);
         assert_ne!(hello1, world);
 
-        // Resolve
         assert_eq!(pool.resolve_string(&hello1), "hello");
         assert_eq!(pool.resolve_string(&world), "world");
 
-        // Resolve bytes
         assert_eq!(pool.resolve_bytes(&hello1), b"hello");
         assert_eq!(pool.resolve_bytes(&world), b"world");
     }
@@ -269,9 +268,8 @@ mod tests {
     fn test_collision_handling() {
         let pool = StringPool::new().unwrap();
 
-        // Create two strings that produce same hash manually if needed
         let s1 = "abcd";
-        let s2 = "efgh"; // adjust if needed to force hash collision in fxhash_simd
+        let s2 = "efgh";
 
         let v1 = pool.intern(s1);
         let v2 = pool.intern(s2);
@@ -292,7 +290,6 @@ mod tests {
         assert_eq!(short, same);
         assert_ne!(short, diff);
 
-        // Compare resolved bytes
         let bytes = pool.resolve_bytes(&short);
         let same_bytes = pool.resolve_bytes(&same);
         let diff_bytes = pool.resolve_bytes(&diff);

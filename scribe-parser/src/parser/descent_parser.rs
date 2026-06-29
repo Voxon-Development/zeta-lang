@@ -94,7 +94,7 @@ where
                 if self.cursor.peek() == TokenKind::Ident
                     && self.cursor.peek_n(1) == TokenKind::LBrace
                 {
-                    self.parse_module_decl(Visibility::Module)
+                    self.parse_module_decl(visibility)
                 } else {
                     self.parse_stmt(Visibility::Module)
                 }
@@ -116,7 +116,6 @@ where
             TokenKind::Sealed => {
                 // sealed interface Name permits X, Y, Z { ... }
                 self.cursor.advance();
-                self.cursor.expect(TokenKind::Interface)?;
                 self.parse_interface_decl(visibility, true)
             }
 
@@ -128,6 +127,8 @@ where
                     self.parse_expr_stmt()
                 }
             }
+
+            TokenKind::Throw => self.parse_throw_stmt(),
 
             _ => self.parse_expr_stmt(),
         }
@@ -170,7 +171,7 @@ pub fn parse_program<'a, 'bump>(
         diag: ParserDiagnosticsContext::new(false),
     };
 
-    let stmts = match parser.parse_toplevel() {
+    let stmts: Vec<Stmt<'_, '_>, &GrowableBump<'_>> = match parser.parse_toplevel() {
         Ok(s) => s,
         Err(e) => {
             parser.diag.record(e);

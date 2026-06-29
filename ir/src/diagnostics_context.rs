@@ -82,10 +82,6 @@ impl<'a> ParserDiagnosticsContext<'a> {
         self.context_stack.pop();
     }
 
-    /// RAII guard: push a context, run `f`, pop on exit regardless of outcome.
-    ///
-    /// If `f` returns `Err`, the error is *not* automatically recorded
-    /// the caller decides whether to record-and-recover or to propagate.
     pub fn with_context<T, E, F>(&mut self, ctx: ParseContext, f: F) -> Result<T, E>
     where
         F: FnOnce(&mut Self) -> Result<T, E>,
@@ -208,7 +204,7 @@ impl<'a> DiagnosticWarning<'a> {
 pub type ParseResult<T> = Result<T, RecoveredError>;
 
 /// A sentinel indicating that an error was recorded and recovery ran.
-/// Callers propagate this upward with `?`; they do not inspect its contents.
+/// Callers propagate this upward with `try`; they do not inspect its contents.
 #[derive(Debug, Clone, Copy)]
 pub struct RecoveredError;
 

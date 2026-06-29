@@ -164,7 +164,6 @@ impl<'bump> GrowableBump<'bump> {
         }
     }
 
-    /// Allocate and initialize a value of type `T` inside the bump.
     pub fn alloc_value<T>(&self, val: T) -> &'bump mut T {
         let layout = Layout::new::<T>();
         let ptr: NonNull<T> = self.allocate(layout).unwrap().as_non_null_ptr().cast::<T>();
@@ -174,7 +173,6 @@ impl<'bump> GrowableBump<'bump> {
         }
     }
 
-    /// Allocate and initialize a value of type `T` inside the bump.
     pub fn alloc_value_immutable<T>(&self, val: T) -> &'bump T {
         let layout = Layout::new::<T>();
         let ptr: NonNull<T> = self.allocate(layout).unwrap().as_non_null_ptr().cast::<T>();
@@ -186,7 +184,7 @@ impl<'bump> GrowableBump<'bump> {
 
     pub fn alloc_bytes(&self, len: usize) -> &'bump mut [u8] {
         if len == 0 {
-            return &mut []; // no allocation needed
+            return &mut [];
         }
 
         let layout = Layout::array::<u8>(len).expect("invalid layout for bytes");
@@ -199,14 +197,12 @@ impl<'bump> GrowableBump<'bump> {
         unsafe { std::slice::from_raw_parts_mut(ptr.as_ptr(), len) }
     }
 
-    /// Allocate a copy of an existing byte slice inside the bump.
     pub fn alloc_bytes_copy(&self, src: &[u8]) -> &mut [u8] {
         let dst = self.alloc_bytes(src.len());
         dst.copy_from_slice(src);
         dst
     }
 
-    /// Reset all but the first chunk.
     pub fn reset(&mut self) {
         let mut chunks = self.chunks.borrow_mut();
         if let Some(first) = chunks.first_mut() {
@@ -222,7 +218,6 @@ impl<'bump> GrowableBump<'bump> {
 
         let layout = Layout::array::<T>(slice.len()).expect("Failed to create layout for slice");
 
-        // allocate raw bytes large enough and properly aligned for T
         let ptr = self
             .allocate(layout)
             .expect("Failed to allocate slice in bump allocator")
@@ -241,7 +236,6 @@ impl<'bump> GrowableBump<'bump> {
 
         let layout = Layout::array::<T>(slice.len()).expect("Failed to create layout for slice");
 
-        // allocate raw bytes large enough and properly aligned for T
         let ptr = self
             .allocate(layout)
             .expect("Failed to allocate slice in bump allocator")
@@ -283,7 +277,6 @@ unsafe impl<'bump> Allocator for GrowableBump<'bump> {
             }
         }
 
-        // Grow: double the last capacity or at least layout.size()
         self.grow_allocator(layout, &mut chunks)
     }
 

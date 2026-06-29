@@ -3,20 +3,26 @@
 
 mod parser;
 
+use codex_dependency_graph::DepGraph;
 use ir::pretty::IrPrettyPrinter;
 use scribe_parser::parser::parse_program;
 use std::sync::Arc;
 use zetaruntime::arena::GrowableAtomicBump;
 use zetaruntime::string_pool::StringPool;
 
-fn make_context() -> (Arc<StringPool>, Arc<GrowableAtomicBump<'static>>) {
+fn make_context() -> (
+    Arc<StringPool>,
+    Arc<GrowableAtomicBump<'static>>,
+    &'static DepGraph,
+) {
     let context = Arc::new(StringPool::new().unwrap());
     let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
-    (context, bump)
+    let dep_graph = Box::leak(Box::new(Default::default()));
+    (context, bump, dep_graph)
 }
 
 fn parse_and_lower(code: &str) -> (String, Arc<StringPool>) {
-    let (context, atomic_bump) = make_context();
+    let (context, atomic_bump, dep_graph) = make_context();
     let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
 
     assert!(
@@ -25,9 +31,12 @@ fn parse_and_lower(code: &str) -> (String, Arc<StringPool>) {
         result.diagnostics.errors
     );
 
-    let mut hir_lowerer =
-        scribe_parser::hir_lowerer::HirLowerer::new(context.clone(), atomic_bump.clone());
-    let module = hir_lowerer.lower_module(result.statements);
+    let mut hir_lowerer = scribe_parser::hir_lowerer::HirLowerer::new(
+        context.clone(),
+        atomic_bump.clone(),
+        dep_graph,
+    );
+    let module = hir_lowerer.lower_module(result.statements, 0);
 
     let mut printer = IrPrettyPrinter::new(context.clone());
     let printed = printer
@@ -57,7 +66,7 @@ mod hir_tests {
         }
         "#;
 
-        let (context, atomic_bump) = make_context();
+        let (context, atomic_bump, _dep_graph) = make_context();
         let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
 
         assert!(
@@ -171,7 +180,7 @@ mod hir_tests {
         }
         "#;
 
-        let (context, atomic_bump) = make_context();
+        let (context, atomic_bump, _dep_graph) = make_context();
         let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
 
         assert!(
@@ -220,7 +229,7 @@ mod hir_tests {
         }
         "#;
 
-        let (context, atomic_bump) = make_context();
+        let (context, atomic_bump, _dep_graph) = make_context();
         let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
 
         assert!(
@@ -262,7 +271,7 @@ mod hir_tests {
         }
         "#;
 
-        let (context, atomic_bump) = make_context();
+        let (context, atomic_bump, _dep_graph) = make_context();
         let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
 
         assert!(
@@ -301,7 +310,7 @@ mod hir_tests {
         }
         "#;
 
-        let (context, atomic_bump) = make_context();
+        let (context, atomic_bump, _dep_graph) = make_context();
         let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
 
         assert!(
@@ -348,7 +357,7 @@ mod hir_tests {
         }
         "#;
 
-        let (context, atomic_bump) = make_context();
+        let (context, atomic_bump, _dep_graph) = make_context();
         let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
 
         assert!(
@@ -393,7 +402,7 @@ mod hir_tests {
         }
         "#;
 
-        let (context, atomic_bump) = make_context();
+        let (context, atomic_bump, _dep_graph) = make_context();
         let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
 
         assert!(
@@ -452,7 +461,7 @@ mod hir_tests {
         }
         "#;
 
-        let (context, atomic_bump) = make_context();
+        let (context, atomic_bump, _dep_graph) = make_context();
         let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
 
         assert!(
@@ -484,7 +493,7 @@ mod hir_tests {
         }
         "#;
 
-        let (context, atomic_bump) = make_context();
+        let (context, atomic_bump, _dep_graph) = make_context();
         let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
 
         assert!(
@@ -531,7 +540,7 @@ mod hir_tests {
         }
         "#;
 
-        let (context, atomic_bump) = make_context();
+        let (context, atomic_bump, dep_graph) = make_context();
         let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
 
         assert!(
@@ -540,8 +549,8 @@ mod hir_tests {
             result.diagnostics.errors
         );
 
-        let mut hir_lowerer = HirLowerer::new(context.clone(), atomic_bump.clone());
-        let module = hir_lowerer.lower_module(result.statements);
+        let mut hir_lowerer = HirLowerer::new(context.clone(), atomic_bump.clone(), dep_graph);
+        let module = hir_lowerer.lower_module(result.statements, 0);
 
         let functions: Vec<_> = module
             .items
@@ -674,7 +683,7 @@ mod hir_tests {
         }
         "#;
 
-        let (context, atomic_bump) = make_context();
+        let (context, atomic_bump, _dep_graph) = make_context();
         let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
 
         assert!(
@@ -718,7 +727,7 @@ mod hir_tests {
         import std.collections;
         "#;
 
-        let (context, atomic_bump) = make_context();
+        let (context, atomic_bump, _dep_graph) = make_context();
         let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
 
         assert!(

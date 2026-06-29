@@ -37,6 +37,10 @@ pub enum TypeError {
     BreakOutsideLoop,
     ContinueOutsideLoop,
     Generic(String),
+    UndefinedFunctionWithSuggestion {
+        name: String,
+        suggested_modules: Vec<String>,
+    },
 }
 
 impl fmt::Display for TypeError {
@@ -87,6 +91,26 @@ impl fmt::Display for TypeError {
             TypeError::BreakOutsideLoop => write!(f, "Break statement outside loop"),
             TypeError::ContinueOutsideLoop => write!(f, "Continue statement outside loop"),
             TypeError::Generic(msg) => write!(f, "{}", msg),
+            TypeError::UndefinedFunctionWithSuggestion {
+                name,
+                suggested_modules,
+            } => {
+                if suggested_modules.len() == 1 {
+                    write!(
+                                    f,
+                                    "Undefined function: {} (a function with this name exists in module `{}` — did you mean to import it, or use `{}.{}`?)",
+                                    name, suggested_modules[0], suggested_modules[0],
+                                    name.rsplit("::").next().unwrap_or(name)
+                                )
+                } else {
+                    write!(
+                        f,
+                        "Undefined function: {} (a function with this name exists in modules: {})",
+                        name,
+                        suggested_modules.join(", ")
+                    )
+                }
+            }
         }
     }
 }

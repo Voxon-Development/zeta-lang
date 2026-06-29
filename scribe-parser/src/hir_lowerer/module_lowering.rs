@@ -1,4 +1,5 @@
 use super::context::HirLowerer;
+use crate::optimized_string_buffering::build_module_scoped_name;
 use ir::ast::Stmt;
 use ir::ast::{FuncDecl, Path};
 use ir::hir::HirFunc;
@@ -11,7 +12,24 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     pub fn lower_module(
         &mut self,
         stmts: Vec<Stmt<'a, 'bump>, &GrowableBump<'bump>>,
+        module_idx: usize,
     ) -> HirModule<'a, 'bump> {
+        self.ctx.module_idx = module_idx;
+        // Register all modules this file imports so expression lowering
+        // can resolve module-qualified paths.
+        let imported_idxs = self.ctx.dep_graph.get_module_imports(module_idx);
+        for imp_idx in imported_idxs {
+            if let Some(pkg) = self.ctx.dep_graph.get_module_package(imp_idx) {
+                // Last path segment is the local name: std::io -> "io"
+                let local_name = pkg.as_str().split("_").last().unwrap_or(pkg.as_str());
+                let local_id = StrId(self.ctx.context.intern(local_name));
+                self.ctx
+                    .imported_modules
+                    .borrow_mut()
+                    .insert(local_id, imp_idx);
+            }
+        }
+
         self.collect_prototypes(&stmts);
         let (imports, items, pkg_name) = self.lower_function_bodies(stmts);
 
@@ -22,14 +40,14 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         }
     }
 
-    pub fn collect_prototypes(&mut self, stmts: &[Stmt<'a, '_>]) {
+    pub fn collect_prototypes(&mut self, stmts: &[Stmt<'a, 'bump>]) {
         for stmt in stmts {
             if let Stmt::FuncDecl(f) = stmt {
-                self.lower_func_as_proto(f);
+                self.lower_func_as_proto(f, None);
             }
             if let Stmt::StructDecl(struct_decl) = stmt {
                 for x in struct_decl.body {
-                    self.lower_func_as_proto(x);
+                    self.lower_func_as_proto(x, Some(struct_decl.name));
                 }
             }
             if let Stmt::InterfaceDecl(interface_decl) = stmt {
@@ -37,7 +55,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                     continue;
                 };
                 for x in methods {
-                    self.lower_func_as_proto(x);
+                    self.lower_func_as_proto(x, Some(interface_decl.name));
                 }
             }
             if let Stmt::ImplDecl(impl_decl) = stmt {
@@ -45,19 +63,28 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                     continue;
                 };
                 for x in methods {
-                    self.lower_func_as_proto(x);
+                    self.lower_func_as_proto(x, Some(impl_decl.target));
                 }
             }
-            // Recurse into inline module declarations so nested functions
-            // get their prototypes registered before bodies are lowered.
             if let Stmt::Module(module_decl) = stmt {
                 self.collect_prototypes(module_decl.body);
             }
         }
     }
 
-    fn lower_func_as_proto(&mut self, f: &FuncDecl<'a, '_>) {
-        let proto: HirFuncProto = self.lower_func_proto(f);
+    fn lower_func_as_proto(&mut self, f: &FuncDecl<'a, 'bump>, class_name: Option<StrId>) {
+        let mut proto: HirFuncProto = self.lower_func_proto(f);
+
+        let is_extern = matches!(
+            proto.function_metadata.extern_modifier,
+            ir::ast::ExternModifier::Abi(_)
+        );
+        let is_main = self.ctx.context.resolve_string(&proto.name) == "main";
+
+        if !is_extern && !is_main {
+            proto.name = self.mangle_function_name(class_name, proto.name);
+        }
+
         self.ctx.functions.borrow_mut().insert(
             proto.name,
             HirFunc {
@@ -67,13 +94,51 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 body: None,
                 function_metadata: proto.function_metadata,
                 generics: None,
+                unmangled_name: proto.unmangled_name,
             },
         );
     }
 
+    pub(super) fn mangle_function_name(&self, class_name: Option<StrId>, name: StrId) -> StrId {
+        let Some(pkg) = self.ctx.dep_graph.get_module_package(self.ctx.module_idx) else {
+            return match class_name {
+                Some(cls) => build_module_scoped_name(&[cls], name, None, self.ctx.context.clone()),
+                None => name,
+            };
+        };
+
+        let pkg_str = self.ctx.context.resolve_string(&pkg);
+        let mut segments: Vec<StrId> = Vec::new();
+        if let Some(cls) = class_name {
+            segments.push(cls);
+        }
+        segments.extend(
+            pkg_str
+                .split("::")
+                .map(|seg| StrId(self.ctx.context.intern(seg))),
+        );
+
+        build_module_scoped_name(&segments, name, None, self.ctx.context.clone())
+    }
+
+    pub(super) fn mangle_with_module_path(&self, name: StrId) -> StrId {
+        let Some(pkg) = self.ctx.dep_graph.get_module_package(self.ctx.module_idx) else {
+            // No package declaration for this module
+            return name;
+        };
+
+        let pkg_str = self.ctx.context.resolve_string(&pkg);
+        let segments: Vec<StrId> = pkg_str
+            .split("_")
+            .map(|seg| StrId(self.ctx.context.intern(seg)))
+            .collect();
+
+        build_module_scoped_name(&segments, name, None, self.ctx.context.clone())
+    }
+
     pub fn lower_function_bodies(
         &mut self,
-        stmts: Vec<ir::ast::Stmt<'a, '_>, &GrowableBump<'_>>,
+        stmts: Vec<ir::ast::Stmt<'a, 'bump>, &GrowableBump<'bump>>,
     ) -> (Vec<Path<'a, 'bump>>, Vec<Hir<'a, 'bump>>, Option<StrId>) {
         let mut imports: Vec<Path<'a, 'bump>> = Vec::with_capacity(64);
         let mut items: Vec<Hir<'a, 'bump>> = Vec::with_capacity(64);
@@ -85,22 +150,28 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                     imports.push(*import_stmt.path);
                 }
                 Stmt::Package(package_stmt) => {
-                    // Format the dot-joined path string and intern it as the
-                    // module's canonical name (e.g. "com.example.myapp").
                     let joined = format!("{}", package_stmt.path);
                     pkg_name = Some(StrId(self.ctx.context.intern(&joined)));
                 }
                 Stmt::Module(module_decl) => {
-                    // Flatten the inline module's declarations into the parent
-                    // module's item list (they share the same HIR module node).
                     for &body_stmt in module_decl.body {
                         match body_stmt {
                             Stmt::FuncDecl(f) => {
-                                // Lower body first (needs immutable borrow of functions)
                                 let lowered_body = f.body.map(|b| self.lower_block(b));
-                                // Now do mutable borrow to update function
+
+                                let is_extern = matches!(
+                                    f.function_metadata.extern_modifier,
+                                    ir::ast::ExternModifier::Abi(_)
+                                );
+                                let is_main = self.ctx.context.resolve_string(&f.name) == "main";
+                                let lookup_name = if is_extern || is_main {
+                                    f.name
+                                } else {
+                                    self.mangle_with_module_path(f.name)
+                                };
+
                                 let mut func_binding = self.ctx.functions.borrow_mut();
-                                let func = func_binding.get_mut(&f.name).unwrap();
+                                let func = func_binding.get_mut(&lookup_name).unwrap();
                                 func.body = lowered_body;
                                 items.push(Hir::Func(self.ctx.bump.alloc_value(func.clone())));
                             }
@@ -109,13 +180,25 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                     }
                 }
                 Stmt::FuncDecl(f) => {
-                    // Lower body first (needs immutable borrow of functions)
                     let lowered_body = f.body.map(|b| self.lower_block(b));
-                    // Now do mutable borrow to update function
+
+                    let is_extern = matches!(
+                        f.function_metadata.extern_modifier,
+                        ir::ast::ExternModifier::Abi(_)
+                    );
+                    let is_main = f.name.eq("main");
+                    let lookup_name = if is_extern || is_main {
+                        f.name
+                    } else {
+                        self.mangle_with_module_path(f.name)
+                    };
                     let mut func_binding = self.ctx.functions.borrow_mut();
-                    let func = func_binding.get_mut(&f.name).unwrap();
+                    let func = func_binding.get_mut(&lookup_name).unwrap();
+
                     func.body = lowered_body;
-                    items.push(Hir::Func(self.ctx.bump.alloc_value(func.clone())));
+
+                    let hir_func = Hir::Func(self.ctx.bump.alloc_value(func.clone()));
+                    items.push(hir_func);
                 }
                 other => items.push(self.lower_toplevel(other)),
             }
@@ -135,7 +218,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             None => HirType::Void,
         };
 
-        HirFuncProto {
+        let proto = HirFuncProto {
             name: f.name,
             params,
             return_type,
@@ -145,7 +228,10 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             } else {
                 self.lower_generics_slice(f.generics.unwrap())
             },
-        }
+            unmangled_name: f.name,
+        };
+
+        proto
     }
 
     pub fn lower_block(&self, block: &'a ir::ast::Block<'a, 'bump>) -> HirStmt<'a, 'bump> {
@@ -163,15 +249,27 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     pub(super) fn lower_toplevel(&mut self, stmt: Stmt<'a, 'bump>) -> Hir<'a, 'bump> {
         match stmt {
             Stmt::FuncDecl(f) => {
-                let func = self.lower_func_body_from_proto(*f);
+                let func = self.lower_func_body_from_proto(*f, None);
+
+                let is_extern = matches!(
+                    f.function_metadata.extern_modifier,
+                    ir::ast::ExternModifier::Abi(_)
+                );
+                let is_main = self.ctx.context.resolve_string(&f.name) == "main";
+
+                let lookup_name = if is_extern || is_main {
+                    f.name
+                } else {
+                    self.mangle_with_module_path(f.name)
+                };
 
                 // hydrate the global function table
-                self.ctx.functions.borrow_mut().insert(func.name, func);
+                self.ctx.functions.borrow_mut().insert(lookup_name, func);
 
                 Hir::Func(
                     self.ctx
                         .bump
-                        .alloc_value(self.ctx.functions.borrow()[&func.name]),
+                        .alloc_value(self.ctx.functions.borrow()[&lookup_name]),
                 )
             }
             Stmt::StructDecl(c) => {

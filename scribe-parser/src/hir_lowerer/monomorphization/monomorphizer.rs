@@ -10,7 +10,7 @@ use ir::hir::{HirExpr, HirFunc, HirParam, HirStmt, HirType, StrId};
 use ir::ir_hasher::{FxHashMap, HashMap};
 use zetaruntime::arena::GrowableAtomicBump;
 use zetaruntime::string_pool::StringPool;
-/// Handles monomorphization of generic functions and expressions
+
 pub struct Monomorphizer<'a, 'bump> {
     /// Maps (original_name, type_suffix) to instantiated function name
     pub instantiated_functions: RefCell<FxHashMap<(StrId, StrId), StrId>>,
@@ -41,17 +41,14 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
         }
     }
 
-    /// Monomorphize a function with substitutions mapping generic-name -> concrete HirType
     pub fn monomorphize_function(
         &self,
         func: &HirFunc<'a, 'bump>,
         substitutions: &FxHashMap<StrId, HirType<'a, 'bump>>,
     ) -> Option<StrId> {
-        // Create a new function with substitutions applied
         let mut new_func = func.clone();
         self.apply_substitutions_to_func(&mut new_func, substitutions);
 
-        // Generate suffix for the specialized function name
         let suffix = suffix_for_subs(self.context.clone(), substitutions);
         let orig_name = new_func.name.clone();
 
@@ -60,12 +57,10 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
         {
             let instantiated_functions = self.instantiated_functions.borrow();
             if let Some(existing) = instantiated_functions.get(&key) {
-                // Return existing monomorphized function name
                 return Some(*existing);
             }
-        } // Release borrow before proceeding
+        }
 
-        // Generate new monomorphized function name
         const UNDERSCORE_LEN: usize = 1;
         let mut small_vec: SmallVec<u8, 32> =
             SmallVec::with_capacity(orig_name.len() + UNDERSCORE_LEN + suffix.len());
@@ -75,21 +70,17 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
 
         let new_name = StrId(self.context.intern_bytes(small_vec.as_slice()));
 
-        // Update function name and body with monomorphized types
         new_func.name = new_name;
 
-        // Monomorphize body (may trigger recursive monomorphization, so no borrows held)
         if let Some(body) = new_func.body {
             let new_body = self.monomorphize_stmt(&body, substitutions);
             new_func.body = Some(*self.bump.alloc_value_immutable(new_body));
         }
 
-        // Insert the new function into the functions map
         self.functions
             .borrow_mut()
             .insert(new_func.name.clone(), new_func);
 
-        // Cache the monomorphized function name
         self.instantiated_functions
             .borrow_mut()
             .insert(key, new_name);
@@ -184,7 +175,10 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
                 name,
                 ty,
                 value,
+                mutable,
                 is_static,
+                catch_pattern,
+                else_block,
             } => {
                 let new_ty = substitute_type(ty, substitutions, self.bump.clone());
                 let new_value = self.monomorphize_expr(value, substitutions);
@@ -192,7 +186,10 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
                     name: *name,
                     ty: new_ty,
                     value: *self.bump.alloc_value_immutable(new_value),
+                    mutable: *mutable,
                     is_static: *is_static,
+                    catch_pattern: *catch_pattern,
+                    else_block: *else_block,
                 }
             }
             HirStmt::Return(opt) => {

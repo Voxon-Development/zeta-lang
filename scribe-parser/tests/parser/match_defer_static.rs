@@ -17,7 +17,6 @@ mod tests {
         parse_program(src, "<test>", ctx_clone, bump).statements
     }
 
-    /// Drill into `fn main() { <stmt at index> }` and return that inner statement.
     macro_rules! body_stmt {
         ($stmts:expr, $idx:expr) => {{
             match $stmts.into_iter().next().expect("no stmts") {
@@ -26,10 +25,6 @@ mod tests {
             }
         }};
     }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // match statement tests
-    // ═══════════════════════════════════════════════════════════════════════
 
     #[test]
     fn test_match_wildcard_arm() {
@@ -117,7 +112,6 @@ mod tests {
         match body_stmt!(stmts, 0) {
             Stmt::Match(m) => {
                 assert_eq!(m.arms.len(), 2);
-                // First arm: Some(v)
                 match m.arms[0].pattern {
                     Pattern::EnumVariant { name, bindings } => {
                         assert_eq!(name.as_str(), "Some");
@@ -126,7 +120,6 @@ mod tests {
                     }
                     other => panic!("expected EnumVariant, got {:?}", other),
                 }
-                // Second arm: None (no bindings → Ident pattern)
                 assert!(matches!(
                     m.arms[1].pattern,
                     Pattern::Ident(_) | Pattern::EnumVariant { .. }
@@ -165,9 +158,7 @@ mod tests {
         match body_stmt!(stmts, 0) {
             Stmt::Match(m) => {
                 assert_eq!(m.arms.len(), 2);
-                // First arm has a guard
                 assert!(m.arms[0].guard.is_some(), "expected guard on first arm");
-                // Second arm (wildcard) has no guard
                 assert!(m.arms[1].guard.is_none());
             }
             other => panic!("expected Match, got {:?}", other),
@@ -176,7 +167,6 @@ mod tests {
 
     #[test]
     fn test_match_inline_arm_no_braces() {
-        // Inline arms: `case pat -> expr;` without a brace block.
         let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
         let stmts = parse(
             "fn main() { match x { case 1 -> foo(), case _ -> bar() } }",
@@ -185,8 +175,6 @@ mod tests {
         match body_stmt!(stmts, 0) {
             Stmt::Match(m) => {
                 assert_eq!(m.arms.len(), 2);
-                // Each arm body is a single-statement block (the inline expr was
-                // wrapped in a synthetic block by the parser).
                 assert_eq!(m.arms[0].block.block.len(), 1);
                 assert_eq!(m.arms[1].block.block.len(), 1);
             }
@@ -212,18 +200,13 @@ mod tests {
 
     #[test]
     fn test_match_multiple_arms_subject_is_not_struct_init() {
-        // Regression: `match my_var { ... }` must NOT be mis-parsed as struct init.
         let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
         let stmts = parse("fn main() { match result { case _ -> {} } }", bump);
         match body_stmt!(stmts, 0) {
-            Stmt::Match(_) => {} // success
+            Stmt::Match(_) => {}
             other => panic!("expected Match, got {:?}", other),
         }
     }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // defer statement tests
-    // ═══════════════════════════════════════════════════════════════════════
 
     #[test]
     fn test_defer_block_form() {
@@ -272,7 +255,6 @@ mod tests {
 
     #[test]
     fn test_defer_before_other_stmts() {
-        // defer must not consume subsequent statements
         let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
         let stmts = parse("fn main() { defer cleanup(); let x = 1; }", bump);
         match stmts.into_iter().next().expect("no stmts") {
@@ -285,10 +267,6 @@ mod tests {
             _ => panic!("expected FuncDecl"),
         }
     }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // static let tests
-    // ═══════════════════════════════════════════════════════════════════════
 
     #[test]
     fn test_static_let_simple() {
@@ -333,7 +311,6 @@ mod tests {
 
     #[test]
     fn test_plain_let_is_not_static() {
-        // Regression: ordinary `let` must never set is_static.
         let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
         let stmts = parse("fn main() { let x = 1; }", bump);
         match body_stmt!(stmts, 0) {

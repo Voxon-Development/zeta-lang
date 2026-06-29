@@ -152,8 +152,6 @@ mod diagnostic_tests {
 
     #[test]
     fn parser_stops_after_error_limit() {
-        // 25 broken functions; parser should stop at max_errors (20) and add a
-        // RecoveryFailure sentinel.
         let broken = "fn x( {\n".repeat(25);
         let broken = broken.into_boxed_str();
         let broken = Box::leak(broken);

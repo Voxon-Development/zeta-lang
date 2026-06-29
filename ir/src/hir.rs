@@ -1,13 +1,15 @@
+use crate::ast::LambdaModifier;
+use crate::ast::MutabilityState;
 pub use crate::ast::{FuncModifiers, Path, Visibility};
 use crate::span::SourceSpan;
+use std::cell::UnsafeCell;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
-use std::ops::Deref;
-use zetaruntime::string_pool::VmString;
-use std::cell::UnsafeCell;
 use std::hash::Hash;
+use std::ops::Deref;
 use std::str::from_utf8_unchecked;
+use zetaruntime::string_pool::VmString;
 
 /// A reference to an interned string in the global string pool
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -28,12 +30,10 @@ impl Deref for StrId {
 }
 
 impl StrId {
-    /// Create a new string ID from a VmString
     pub fn new(vm_string: VmString) -> Self {
         StrId(vm_string)
     }
 
-    /// Get the underlying VmString
     pub fn into_inner(self) -> VmString {
         self.0
     }
@@ -42,7 +42,6 @@ impl StrId {
         unsafe { from_utf8_unchecked(std::slice::from_raw_parts(self.offset, self.length)) }
     }
 
-    /// Get the length of the string in bytes
     pub fn len(&self) -> usize {
         self.0.length
     }
@@ -121,6 +120,7 @@ where
     pub params: Option<&'bump [HirParam<'a, 'bump>]>,
     pub return_type: Option<HirType<'a, 'bump>>,
     pub body: Option<HirStmt<'a, 'bump>>,
+    pub unmangled_name: StrId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -284,19 +284,28 @@ where
     Boolean,
     String,
     Struct(StrId, &'bump [HirType<'a, 'bump>]),
-    Interface(StrId, &'bump [HirType<'a, 'bump>]),
+    DynInterface(StrId, &'bump [HirType<'a, 'bump>]),
     Enum(StrId, &'bump [HirType<'a, 'bump>]),
     SafePointer(&'a HirType<'a, 'bump>),
+    Ref {
+        inner: &'a HirType<'a, 'bump>,
+        mutability_state: MutabilityState,
+    },
     UnsafePointer(&'a HirType<'a, 'bump>),
     Lambda {
         params: &'bump [HirType<'a, 'bump>],
         return_type: &'a HirType<'a, 'bump>,
-        concurrent: bool,
+        throws: Option<&'bump [HirType<'a, 'bump>]>,
     },
     Generic(StrId),
     Void,
     This,
     Null,
+    Char,
+    Nullable(&'a HirType<'a, 'bump>),
+    Dyn {
+        bounds: &'bump [HirType<'a, 'bump>],
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -318,7 +327,10 @@ where
         name: StrId,
         ty: HirType<'a, 'bump>,
         value: HirExpr<'a, 'bump>,
+        mutable: bool,
         is_static: bool,
+        catch_pattern: Option<HirErrorHandlerPattern<'a, 'bump>>,
+        else_block: Option<&'bump HirStmt<'a, 'bump>>,
     },
     Const(&'bump ConstStmt<'a, 'bump>),
     Return(Option<&'bump HirExpr<'a, 'bump>>),
@@ -351,6 +363,37 @@ where
     Break(Option<&'bump HirExpr<'a, 'bump>>, SourceSpan<'a>),
     Continue(SourceSpan<'a>),
     Defer(&'bump HirStmt<'a, 'bump>),
+    Import(Path<'a, 'bump>, SourceSpan<'a>),
+    Package(Path<'a, 'bump>, SourceSpan<'a>),
+    Throw {
+        inner: HirExpr<'a, 'bump>,
+        span: SourceSpan<'a>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HirErrorHandlerPattern<'a, 'bump>
+where
+    'bump: 'a,
+{
+    Single {
+        error_type: HirType<'a, 'bump>,
+        binding: Option<StrId>,
+        body: &'bump [HirStmt<'a, 'bump>],
+    },
+    Multiple {
+        branches: &'bump [HirErrorHandlerBranch<'a, 'bump>],
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HirErrorHandlerBranch<'a, 'bump>
+where
+    'bump: 'a,
+{
+    pub error_type: HirType<'a, 'bump>,
+    pub binding: Option<StrId>,
+    pub body: &'bump [HirStmt<'a, 'bump>],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -384,6 +427,7 @@ pub struct HirFuncProto<'a, 'bump> {
     pub return_type: HirType<'a, 'bump>,
     pub function_metadata: FuncModifiers,
     pub generics: Option<&'bump [HirGeneric<'a, 'bump>]>,
+    pub unmangled_name: StrId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -454,7 +498,21 @@ where
         expr: &'bump HirExpr<'a, 'bump>,
         span: SourceSpan<'a>,
     },
+    Ref {
+        expr: &'bump HirExpr<'a, 'bump>,
+        mutable: bool,
+        span: SourceSpan<'a>,
+    },
     This {
+        span: SourceSpan<'a>,
+    },
+    ModuleAccess(&'bump HirModuleAccess<'a, 'bump>),
+    Lambda {
+        modifier: Option<LambdaModifier>,
+        params: &'bump [HirLambdaParam<'a, 'bump>],
+        return_type: &'a HirType<'a, 'bump>,
+        throws: Option<&'bump [HirType<'a, 'bump>]>,
+        body: &'bump HirStmt<'a, 'bump>,
         span: SourceSpan<'a>,
     },
 }
@@ -543,24 +601,27 @@ where
             HirType::Boolean => write!(f, "bool"),
             HirType::String => write!(f, "string"),
             HirType::Struct(name, args) => Self::write_args(f, name, args),
-            HirType::Interface(name, args) => Self::write_args(f, name, args),
+            HirType::DynInterface(name, args) => Self::write_args(f, name, args),
             HirType::Enum(name, args) => Self::write_args(f, name, args),
             HirType::Lambda {
                 params,
                 return_type,
-                concurrent,
+                throws,
             } => {
                 let params_str: Vec<_> = params.iter().map(|p| p.to_string()).collect();
-                if *concurrent {
-                    write!(
-                        f,
-                        "concurrent fn({}) -> {}",
-                        params_str.join(", "),
-                        return_type
-                    )
-                } else {
-                    write!(f, "fn({}) -> {}", params_str.join(", "), return_type)
+                write!(f, "fn({})", params_str.join(", "))?;
+
+                if let Some(errs) = throws {
+                    write!(f, " throws ")?;
+                    for (i, e) in errs.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", e)?;
+                    }
                 }
+
+                write!(f, " -> {}", return_type)
             }
             HirType::Generic(name) => write!(f, "{}", name),
             HirType::Void => write!(f, "void"),
@@ -568,6 +629,31 @@ where
             HirType::Null => write!(f, "null"),
             HirType::SafePointer(inner) => write!(f, "*{}", inner),
             HirType::UnsafePointer(inner) => write!(f, "[*]{}", inner),
+            HirType::Char => write!(f, "char"),
+            HirType::Ref {
+                inner,
+                mutability_state,
+            } => {
+                if let MutabilityState::Mut = mutability_state {
+                    write!(f, "&mut {}", inner)
+                } else {
+                    write!(f, "&{}", inner)
+                }
+            }
+            HirType::Nullable(hir_type) => write!(f, "{}?", hir_type),
+            HirType::Dyn { bounds } => {
+                write!(f, "dyn ")?;
+                let mut is_start = true;
+                let mut iter = bounds.into_iter();
+                while let Some(bound) = iter.next() {
+                    write!(f, "{}", bound)?;
+                    if !is_start {
+                        write!(f, " + ")?;
+                    }
+                    is_start = false;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -596,9 +682,17 @@ where
         matches!(self, HirType::UnsafePointer(_))
     }
 
-    /// Returns true if this is any pointer type (safe or unsafe)
-    pub fn is_pointer(&self) -> bool {
+    /// Returns true if this is any pointer type that is literally a pointer (safe or unsafe)
+    pub fn is_pointer_literal(&self) -> bool {
         matches!(self, HirType::SafePointer(_) | HirType::UnsafePointer(_))
+    }
+
+    /// Returns true if this is any pointer type that functions as a pointer (safe, unsafe or reference)
+    pub fn is_pointer_semantics(&self) -> bool {
+        matches!(
+            self,
+            HirType::SafePointer(_) | HirType::UnsafePointer(_) | HirType::Ref { .. }
+        )
     }
 
     /// If this is a safe pointer type, returns the inner type. Otherwise returns None.
@@ -658,8 +752,24 @@ impl<'bump, T> HirSlice<'bump, T> {
     #[inline(always)]
     #[allow(invalid_reference_casting)]
     pub fn as_mut_slice(&self) -> &mut [T] {
-        // Unsafe because multiple mutable borrows would be UB,
+        // SAFETY: multiple mutable borrows would be UB,
         // caller must guarantee exclusive access
         unsafe { &mut *(*self.inner.get() as *const [T] as *mut [T]) }
     }
+}
+
+/// A module-qualified access: `std::io.println` or `std::io.File`.
+/// `path` is the `::` separated module segments, `member` is the name
+/// after the first `.`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HirModuleAccess<'a, 'bump> {
+    pub path: &'bump [StrId], // ["std", "io"]
+    pub member: StrId,        // "println" / "File" / "out"
+    pub span: SourceSpan<'a>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HirLambdaParam<'a, 'bump> {
+    pub name: StrId,
+    pub param_type: Option<HirType<'a, 'bump>>,
 }

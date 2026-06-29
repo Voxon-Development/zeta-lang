@@ -10,8 +10,6 @@ impl<'a, 'bump> DescentParser<'a, 'bump>
 where
     'bump: 'a,
 {
-    /// Parse a function signature with optional body (for interfaces)
-    /// Can end with either `;` (just signature) or `{ ... }` (with body)
     pub fn parse_function_signature(
         &mut self,
         visibility: Visibility,
@@ -58,7 +56,6 @@ where
             None
         };
 
-        // Interface methods can end with just `;` or have a body `{ ... }`
         let body = if self.cursor.consume(TokenKind::Semicolon) {
             None
         } else {
@@ -81,10 +78,6 @@ where
     }
 
     fn parse_return_type(&mut self) -> Option<Type<'a, 'bump>> {
-        // Only attempt to parse a return type if the next token can begin one.
-        // Without this guard, `parse_core_type` would unconditionally `bump()`
-        // and consume `{` or `;`, turning e.g. a bare `void` keyword into
-        // TypeKind::Struct { name: "void", .. } when the lexer emits it as a keyword.
         match self.cursor.peek() {
             TokenKind::Semicolon | TokenKind::LBrace | TokenKind::EOF => None,
             _ => self.parse_type().ok(),
@@ -99,7 +92,6 @@ where
 
         let is_extern = !matches!(func.function_metadata.extern_modifier, ExternModifier::None);
 
-        // Non-extern functions must have a body
         if func.body.is_none() && !is_extern {
             return Err(DiagnosticError::new(
                 ParseErrorKind::ExpectedBlock,
@@ -110,7 +102,7 @@ where
         Ok(Stmt::FuncDecl(self.bump.alloc_value_immutable(func)))
     }
 
-    fn get_func_metadata(
+    pub fn get_func_metadata(
         cursor: &mut Cursor<'a>,
         visibility: Visibility,
     ) -> Result<FuncModifiers, DiagnosticError<'a>> {
@@ -165,21 +157,24 @@ where
         })
     }
 
-    fn parse_throws(&mut self) -> Result<Option<ThrowsDecl<'a, 'bump>>, DiagnosticError<'a>> {
+    pub fn parse_throws(&mut self) -> Result<Option<ThrowsDecl<'a, 'bump>>, DiagnosticError<'a>> {
         let throws_token = self.cursor.peek_token();
         if throws_token.kind != TokenKind::Throws {
             return Ok(None);
-        };
+        }
 
         self.cursor.advance();
 
-        let error_type = match self.cursor.peek() {
-            TokenKind::Semicolon | TokenKind::LBrace => None,
-            _ => Some(self.parse_type()?),
-        };
+        let mut error_types = Vec::new_in(self.bump);
+
+        error_types.push(self.parse_type()?);
+
+        while self.cursor.consume(TokenKind::Comma) {
+            error_types.push(self.parse_type()?);
+        }
 
         Ok(Some(ThrowsDecl {
-            error_type,
+            error_types: self.bump.alloc_slice_copy(&error_types),
             span: throws_token.span,
         }))
     }

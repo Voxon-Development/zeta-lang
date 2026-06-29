@@ -12,7 +12,7 @@ where
     'bump: 'a,
 {
     /// Parse a struct declaration
-    /// ```ignore
+    /// ```rs
     /// pub struct Point<T> {
     ///     x: i32,
     ///     y: i32,
@@ -51,14 +51,12 @@ where
             let mut consts = Vec::new_in(self.bump);
 
             while self.cursor.peek() != TokenKind::RBrace && self.cursor.peek() != TokenKind::EOF {
-                // Check for const
                 if self.cursor.peek() == TokenKind::Const {
                     let const_stmt = self.parse_const_stmt()?;
                     consts.push(const_stmt);
                     continue;
                 }
 
-                // Check for visibility modifiers for fields
                 let field_vis = if self.cursor.peek() == TokenKind::Private
                     || self.cursor.peek() == TokenKind::Module
                     || self.cursor.peek() == TokenKind::Package
@@ -70,7 +68,6 @@ where
                     Visibility::Public
                 };
 
-                // It's a field
                 let (field_name, field_span) = self.cursor.expect_ident()?;
                 self.cursor.expect(TokenKind::Colon)?;
                 let field_type = self.parse_type()?;
@@ -83,7 +80,6 @@ where
                     span: field_span,
                 });
 
-                // Optional trailing comma
                 self.cursor.consume(TokenKind::Comma);
             }
 
@@ -130,14 +126,14 @@ where
     }
 
     /// Parse an impl block
-    /// ```ignore
+    /// ```rs
     /// impl Point {
     ///     fn new(x: i32, y: i32) -> Point {
     ///         return Point { x, y };
     ///     }
     /// }
     ///
-    /// impl Drawable for Point {
+    /// impl Drawable by Point {
     ///     fn draw(&this) { ... }
     /// }
     /// ```
@@ -154,11 +150,9 @@ where
             None
         };
 
-        // Parse target type name
         let (target, _span) = self.cursor.expect_ident()?;
 
-        // Check for trait implementation: impl Interface for Type
-        let interface = if self.cursor.peek() == TokenKind::For {
+        let interface = if self.cursor.peek() == TokenKind::By {
             self.cursor.advance();
             let (trait_name, _) = self.cursor.expect_ident()?;
             Some(trait_name)
@@ -166,13 +160,11 @@ where
             None
         };
 
-        // Parse method bodies
         self.cursor.expect(TokenKind::LBrace)?;
 
         let mut methods = Vec::new_in(self.bump);
 
         while self.cursor.peek() != TokenKind::RBrace && self.cursor.peek() != TokenKind::EOF {
-            // Parse function with visibility
             let method_vis = if self.cursor.peek() == TokenKind::Private
                 || self.cursor.peek() == TokenKind::Module
                 || self.cursor.peek() == TokenKind::Package

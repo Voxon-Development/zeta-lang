@@ -284,6 +284,7 @@ pub enum TokenKind {
     Else,
     While,
     For,
+    By,
     In,
     Return,
     Break,
@@ -317,6 +318,7 @@ pub enum TokenKind {
     Requires,
     Ensures,
     Let,
+    Catch,
     Void,
     Fn,
     Internal,
@@ -326,6 +328,7 @@ pub enum TokenKind {
     Nosuspend,
     Blocking,
     Await,
+    Dyn,
 
     // ===== Types =====
     U8,
@@ -470,6 +473,7 @@ impl fmt::Display for TokenKind {
             Let => "let",
             Void => "void",
             Fn => "fn",
+            Dyn => "dyn",
 
             U8 => "u8",
             U16 => "u16",
@@ -560,6 +564,8 @@ impl fmt::Display for TokenKind {
             Nosuspend => "nosuspend",
             Blocking => "blocking",
             Await => "await",
+            By => "by",
+            Catch => "catch",
         };
         f.write_str(s)
     }

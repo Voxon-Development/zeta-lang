@@ -1,4 +1,5 @@
 use crate::hir_lowerer::monomorphization::Monomorphizer;
+use codex_dependency_graph::dep_graph::DepGraph;
 use ir::errors::reporter::ErrorReporter;
 use ir::hir::HirFuncProto;
 use ir::hir::{HirFunc, HirInterface, HirStruct, HirType, StrId};
@@ -25,7 +26,10 @@ pub struct LoweringCtx<'a, 'bump> {
     pub generic_params: RefCell<HashSet<StrId>>,
 
     pub context: Arc<StringPool>,
+    pub dep_graph: &'a DepGraph,
+    pub imported_modules: RefCell<FxHashMap<StrId, usize>>,
     pub bump: Arc<GrowableAtomicBump<'bump>>,
+    pub module_idx: usize,
 }
 
 pub struct HirLowerer<'a, 'bump> {
@@ -36,7 +40,11 @@ pub struct HirLowerer<'a, 'bump> {
 }
 
 impl<'a, 'bump> HirLowerer<'a, 'bump> {
-    pub fn new(context: Arc<StringPool>, bump: Arc<GrowableAtomicBump<'bump>>) -> Self {
+    pub fn new(
+        context: Arc<StringPool>,
+        bump: Arc<GrowableAtomicBump<'bump>>,
+        dep_graph: &'a DepGraph,
+    ) -> Self {
         let functions: Rc<RefCell<FxHashMap<StrId, HirFunc>>> =
             Rc::new(RefCell::new(FxHashMap::default()));
         Self {
@@ -50,6 +58,9 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 generic_params: RefCell::new(HashSet::default()),
                 context: context.clone(),
                 bump: bump.clone(),
+                imported_modules: RefCell::new(FxHashMap::default()),
+                dep_graph,
+                module_idx: usize::MAX, // This is a sentinel, it's overwritten anyways
             },
             error_reporter: ErrorReporter::new(),
             mono: Monomorphizer::new(context, bump, functions.clone()),

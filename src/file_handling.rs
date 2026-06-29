@@ -1,10 +1,10 @@
-use crate::compilation_passes::{pass_hir_lowering, pass_type_checking};
 use crate::main_structs::{CompilerError, ModuleWithArena};
-use codex_dependency_graph::DepGraph;
+use codex_dependency_graph::dep_graph::{AstModule, DepGraph};
 use emberforge_compiler::midend::ir::module_lowerer::MirModuleLowerer;
 use engraver_assembly_emit::backend::Backend;
 use engraver_assembly_emit::cranelift::cranelift_backend::CraneliftBackend;
-use ir::hir::HirModule;
+use ir::hir::{HirModule, StrId};
+use ir::ir_hasher::HashSet;
 use ir::ssa_ir::Module;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -32,15 +32,12 @@ pub(crate) fn collect_zeta_files<'a>(dir: &Path) -> Result<Vec<PathBuf>, Compile
     let files = WalkDir::new(dir)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            let extension = e.path().extension().and_then(|e| e.to_str());
-            extension == Some("zeta")
-        })
+        .filter(|e| e.path().extension().and_then(|e| e.to_str()) == Some("zeta"))
         .map(|e| e.into_path())
         .collect::<Vec<_>>();
 
     if files.is_empty() {
-        println!(
+        eprintln!(
             "hit `files.is_empty()`, iter: {:?}",
             WalkDir::new(dir).into_iter().collect::<Vec<_>>()
         );
@@ -50,28 +47,23 @@ pub(crate) fn collect_zeta_files<'a>(dir: &Path) -> Result<Vec<PathBuf>, Compile
     Ok(files)
 }
 
-pub(crate) fn compile_files<'a, 'bump>(
+pub(crate) fn parse_files<'a, 'bump>(
     files: Vec<PathBuf>,
     pool: Arc<StringPool>,
 ) -> Result<Vec<ModuleWithArena<'a, 'bump>>, CompilerError<'a>> {
     let modules: Vec<ModuleWithArena> = files
         .iter()
-        .map(|f| process_single_file(pool.clone(), f.clone()))
-        .filter_map(|res: Result<ModuleWithArena<'_, '_>, CompilerError<'_>>| {
-            match &res {
-                Ok(_) => {
-                    return res.ok();
-                }
-                Err(e) => {
-                    println!("{}", e);
-                }
+        .filter_map(|f| match parse_single_file(pool.clone(), f.clone()) {
+            Ok(m) => Some(m),
+            Err(e) => {
+                println!("{}", e);
+                None
             }
-            res.ok()
         })
-        .collect::<Vec<_>>();
+        .collect();
 
     if modules.is_empty() {
-        println!(
+        eprintln!(
             "hit `modules.is_empty()`, iter: {:?}",
             files.iter().collect::<Vec<_>>()
         );
@@ -81,40 +73,27 @@ pub(crate) fn compile_files<'a, 'bump>(
     Ok(modules)
 }
 
-pub(crate) fn emit_all(
-    modules: Vec<HirModule>,
-    backend: &mut CraneliftBackend,
-    pool: Arc<StringPool>,
-) {
-    let mut dep_graph = DepGraph::new();
-
-    dep_graph.build_from_hir(&modules, &pool);
-
-    let len = modules.len();
-    if len > 1 {
-        let stdlib_idx: usize = 0;
-        let user_indices: Vec<usize> = Vec::from_iter(1..len);
-        dep_graph.link_stdlib_to_user(stdlib_idx, &user_indices);
-    }
-
-    let compilation_order: Vec<usize> = dep_graph.get_module_compilation_order();
-
-    for module_idx in compilation_order {
-        if module_idx < len {
-            let hir_module: HirModule = modules[module_idx];
-            let mir_module: Module = MirModuleLowerer::new(pool.clone()).lower_module(hir_module);
-            CraneliftBackend::emit_module(backend, &mir_module);
-        } else {
-            eprintln!(
-                "Warning: index {} is out of bounds for module list of length {}",
-                module_idx, len
-            );
+pub fn collect_extern_c_names<'a, 'bump>(
+    hir_modules: &[ir::hir::HirModule<'a, 'bump>],
+) -> HashSet<StrId> {
+    let mut externs = HashSet::default();
+    for module in hir_modules {
+        for item in module.items {
+            if let ir::hir::Hir::Func(f) = item {
+                if matches!(
+                    f.function_metadata.extern_modifier,
+                    ir::ast::ExternModifier::Abi(_)
+                ) {
+                    externs.insert(f.name);
+                }
+            }
         }
     }
+    externs
 }
 
-pub(crate) fn process_single_file<'a, 'bump>(
-    context: Arc<StringPool>,
+fn parse_single_file<'a, 'bump>(
+    pool: Arc<StringPool>,
     path: PathBuf,
 ) -> Result<ModuleWithArena<'a, 'bump>, CompilerError<'a>>
 where
@@ -124,43 +103,43 @@ where
     let contents = std::fs::read_to_string(&path)
         .map_err(|e| CompilerError::FailedToReadFile(path.clone(), e))?;
 
+    let file_name_str = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| CompilerError::InvalidFileName(Vec::new()))?;
+
+    let name = StrId(pool.intern(file_name_str));
+
     if contents.is_empty() {
         return Ok(ModuleWithArena {
-            parse_and_hir_bump: Arc::new(GrowableAtomicBump::new()),
-            module: HirModule::default(),
+            bump: Arc::new(GrowableAtomicBump::new()),
+            name,
+            stmts: &[],
             parser_diagnostics: scribe_parser::parser::ParserDiagnostics::new(),
-            valid: false,
         });
     }
 
     let contents_bytes = contents.as_bytes();
 
     const BASE: usize = 16 * 1024;
-    const FOUR_KILOBYTES: usize = 4 * 1024;
-    let initial_capacity: usize = std::cmp::max(BASE, contents_bytes.len() * 2 + FOUR_KILOBYTES);
+    const FOUR_KB: usize = 4 * 1024;
+    let initial_capacity = std::cmp::max(BASE, contents_bytes.len() * 2 + FOUR_KB);
 
     let atomic_bump = GrowableAtomicBump::with_capacity_and_aligned(initial_capacity, 8)
         .map_err(|_| CompilerError::FailedToAllocateBump)?;
-
-    let bump: Arc<GrowableAtomicBump<'bump>> = Arc::new(atomic_bump);
+    let bump = Arc::new(atomic_bump);
 
     let file_name_static: &str = {
-        let file_name_string = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| CompilerError::InvalidFileName(Vec::new()))?;
-
-        let bytes = file_name_string.as_bytes();
-        let stored: &mut [u8] = bump
+        let bytes = file_name_str.as_bytes();
+        let stored = bump
             .alloc_many(bytes)
             .ok_or(CompilerError::FailedToAllocateBump)?;
-
         std::str::from_utf8(unsafe { std::slice::from_raw_parts(stored.as_ptr(), bytes.len()) })
             .unwrap()
     };
 
     let contents_static: &str = {
-        let stored: &mut [u8] = bump
+        let stored = bump
             .alloc_many(contents_bytes)
             .ok_or(CompilerError::FailedToAllocateBump)?;
         std::str::from_utf8(unsafe {
@@ -172,20 +151,52 @@ where
     let parse_result = scribe_parser::parser::parse_program(
         contents_static,
         file_name_static,
-        context.clone(),
+        pool.clone(),
         bump.clone(),
     );
 
-    let module = pass_hir_lowering(parse_result.statements, context.clone(), bump.clone())?;
-
-    pass_type_checking(&module, context.clone(), file_name_static)?;
-
-    //pass_monomorphization(&module)?;
+    let stmts: &'bump [ir::ast::Stmt<'a, 'bump>] = bump.alloc_slice(&parse_result.statements);
 
     Ok(ModuleWithArena {
-        parse_and_hir_bump: bump,
-        module,
+        bump,
+        name,
+        stmts,
         parser_diagnostics: parse_result.diagnostics,
-        valid: true,
     })
+}
+
+pub(crate) fn ast_modules_from_parsed<'a, 'bump>(
+    parsed: &'bump [ModuleWithArena<'a, 'bump>],
+) -> Vec<AstModule<'a, 'bump>> {
+    parsed
+        .iter()
+        .map(|m| AstModule {
+            name: m.name,
+            stmts: m.stmts,
+        })
+        .collect()
+}
+
+pub(crate) fn emit_all<'a, 'bump>(
+    hir_modules: &[HirModule<'a, 'bump>],
+    compilation_order: &[usize],
+    backend: &mut CraneliftBackend,
+    pool: Arc<StringPool>,
+    extern_c_names: &HashSet<StrId>,
+    dep_graph: &'a DepGraph,
+) {
+    let len = hir_modules.len();
+    for &module_idx in compilation_order {
+        if module_idx < len {
+            let mir_module: Module =
+                MirModuleLowerer::new(pool.clone(), extern_c_names, dep_graph, module_idx)
+                    .lower_module(hir_modules[module_idx]);
+            CraneliftBackend::emit_module(backend, &mir_module);
+        } else {
+            eprintln!(
+                "Warning: compilation order index {} is out of bounds (have {} modules)",
+                module_idx, len
+            );
+        }
+    }
 }

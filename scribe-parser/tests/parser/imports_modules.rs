@@ -103,11 +103,11 @@ mod tests {
         std::mem::forget(ctx);
         let result = parse_program(src, "<test>", ctx2, bump_arc);
 
-        // Lower to HIR and verify the module name comes from the package declaration.
         let pool2 = Arc::new(StringPool::new().unwrap());
         let hir_bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
-        let mut lowerer = HirLowerer::new(pool2, hir_bump);
-        let module = lowerer.lower_module(result.statements);
+        let dep_graph = Default::default();
+        let mut lowerer = HirLowerer::new(pool2, hir_bump, &dep_graph);
+        let module = lowerer.lower_module(result.statements, 0);
         assert_eq!(
             module.name.as_str(),
             "com.example",
@@ -186,8 +186,6 @@ mod tests {
 
     #[test]
     fn test_module_visibility_modifier_vs_decl() {
-        // `module fn foo() {}` uses `module` as a visibility modifier.
-        // It should NOT be parsed as a module declaration.
         let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
         let stmts = parse("module fn foo() {}", bump);
         match stmts.into_iter().next().expect("no stmts") {
@@ -205,7 +203,6 @@ mod tests {
 
     #[test]
     fn test_module_decl_visibility_stored() {
-        // A module declared with `module` keyword gets `Visibility::Module`.
         let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
         let stmts = parse("module helpers {}", bump);
         match stmts.into_iter().next().expect("no stmts") {
@@ -233,7 +230,6 @@ mod tests {
 
     #[test]
     fn test_import_path_display_roundtrip() {
-        // The Path Display impl should reproduce the dotted path exactly.
         let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
         let stmts = parse("import alpha.beta.gamma;", bump);
         match stmts.into_iter().next().expect("no stmts") {

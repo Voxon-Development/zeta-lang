@@ -48,14 +48,13 @@ enum ByteClass {
 
 const JUMP: [ByteClass; 128] = {
     let mut t = [ByteClass::Unknown; 128];
-    let mut i = 0usize;
     // whitespace
     t[b' ' as usize] = ByteClass::Whitespace;
     t[b'\t' as usize] = ByteClass::Whitespace;
     t[b'\r' as usize] = ByteClass::Whitespace;
     t[b'\n' as usize] = ByteClass::Newline;
     // alpha + underscore
-    i = b'a' as usize;
+    let mut i = b'a' as usize;
     while i <= b'z' as usize {
         t[i] = ByteClass::Alpha;
         i += 1;
@@ -607,6 +606,7 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "else" => TokenKind::Else,
         "while" => TokenKind::While,
         "for" => TokenKind::For,
+        "by" => TokenKind::By,
         "in" => TokenKind::In,
         "return" => TokenKind::Return,
         "break" => TokenKind::Break,
@@ -627,6 +627,7 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "unsafe" => TokenKind::Unsafe,
         "inline" => TokenKind::Inline,
         "noinline" => TokenKind::Noinline,
+        "dyn" => TokenKind::Dyn,
         "sealed" => TokenKind::Sealed,
         "private" => TokenKind::Private,
         "module" => TokenKind::Module,
@@ -646,6 +647,7 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "trait" => TokenKind::Trait,
         "where" => TokenKind::Where,
         "fn" => TokenKind::Fn,
+        "catch" => TokenKind::Catch,
         "requires" => TokenKind::Requires,
         "ensures" => TokenKind::Ensures,
         "uses" => TokenKind::Uses,

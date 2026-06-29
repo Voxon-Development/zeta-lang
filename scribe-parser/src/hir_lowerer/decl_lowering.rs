@@ -4,23 +4,36 @@ use ir::ast::{FuncDecl, Generic, Param, ParamPassingKind, StructDecl};
 use ir::errors::error::TypeError;
 use ir::hir::{
     ConstStmt, HirEnum, HirEnumVariant, HirField, HirFunc, HirGeneric, HirImpl, HirInterface,
-    HirParam, HirStmt, HirStruct, ThisPassingKind,
+    HirParam, HirStmt, HirStruct, StrId, ThisPassingKind,
 };
 
 impl<'a, 'bump> HirLowerer<'a, 'bump> {
     pub(super) fn lower_func_body_from_proto(
         &mut self,
         func: FuncDecl<'a, 'bump>,
+        class_name: Option<StrId>,
     ) -> HirFunc<'a, 'bump> {
-        let binding = self.ctx.functions.borrow();
+        let is_extern = matches!(
+            func.function_metadata.extern_modifier,
+            ir::ast::ExternModifier::Abi(_)
+        );
+        let unmangled_name = func.name;
+        let is_main = self.ctx.context.resolve_string(&unmangled_name) == "main";
+        let lookup_name = if is_extern || is_main {
+            unmangled_name
+        } else {
+            self.mangle_function_name(class_name, unmangled_name)
+        };
 
-        let proto = match binding.get(&func.name) {
+        let binding = self.ctx.functions.borrow();
+        let proto = match binding.get(&lookup_name) {
             Some(p) => p,
             None => {
                 self.error_reporter
                     .add_type_error(TypeError::MissingFunction {
-                        function: func.name,
+                        function: unmangled_name,
                     });
+                drop(binding);
                 return self.make_error_function(func);
             }
         };
@@ -30,21 +43,19 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         let body = func.body.map(|b| {
             let stmts: Vec<HirStmt<'a, 'bump>> =
                 b.block.into_iter().map(|s| self.lower_stmt(*s)).collect();
-
             HirStmt::Block {
                 body: self.ctx.bump.alloc_slice(&stmts),
             }
         });
 
         HirFunc {
-            name: func.name,
+            name: lookup_name,
             function_metadata: func.function_metadata,
-
             params: proto.params,
             return_type: proto.return_type,
-
             generics,
             body,
+            unmangled_name,
         }
     }
 
@@ -111,7 +122,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         let methods_vec: Vec<HirFunc<'a, 'bump>> = c
             .body
             .into_iter()
-            .map(|s| self.lower_func_body_from_proto(*s))
+            .map(|s| self.lower_func_body_from_proto(*s, Some(c.name)))
             .collect();
 
         let methods = self.ctx.bump.alloc_slice(&methods_vec);
@@ -166,7 +177,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             .methods
             .unwrap_or_default()
             .into_iter()
-            .map(|f| self.lower_func_body_from_proto(*f))
+            .map(|f| self.lower_func_body_from_proto(*f, Some(i.name)))
             .collect();
         let methods = self.ctx.bump.alloc_slice(&methods_vec);
 
@@ -189,7 +200,10 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         }
     }
 
-    pub(super) fn lower_impl_decl(&mut self, i: ir::ast::ImplDecl<'a, '_>) -> HirImpl<'a, 'bump> {
+    pub(super) fn lower_impl_decl(
+        &mut self,
+        i: ir::ast::ImplDecl<'a, 'bump>,
+    ) -> HirImpl<'a, 'bump> {
         let generics: Option<&[HirGeneric]> =
             self.lower_generics_slice(i.generics.unwrap_or_default());
 
@@ -197,7 +211,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             .methods
             .unwrap_or_default()
             .into_iter()
-            .map(|f| self.lower_func_body_from_proto(*f))
+            .map(|f| self.lower_func_body_from_proto(*f, Some(i.target)))
             .collect();
         let methods = self.ctx.bump.alloc_slice(&methods_vec);
 
@@ -292,6 +306,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             params: Some(self.ctx.bump.alloc_slice(&[])),
             return_type: None,
             body: None,
+            unmangled_name: func.name, // Not mangled in the first place
         }
     }
 }

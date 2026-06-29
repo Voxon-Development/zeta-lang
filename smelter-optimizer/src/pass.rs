@@ -2,14 +2,11 @@ use ir::ir_hasher::FxHashBuilder;
 use ir::ssa_ir::{BinOp, Function, Instruction, Module, Operand, SsaType, Value};
 use std::collections::{HashMap, HashSet};
 
-// A trait for optimization passes over SSA IR
 pub trait SsaPass {
     fn name(&self) -> &'static str;
-    // Returns true if the pass modified the module
     fn run(&self, module: &mut Module) -> bool;
 }
 
-// An ADT enum to choose optimization passes
 #[derive(Debug, Clone)]
 pub enum OptimizationPass {
     ConstFolding,
@@ -202,14 +199,16 @@ fn dead_code_elimination(module: &mut Module) -> bool {
                     | Instruction::Branch { .. }
                     | Instruction::Ret { .. } => true,
                     Instruction::Const { dest, .. } => used.contains(dest),
-                    Instruction::ClassCall { dest, .. }
-                    | Instruction::InterfaceDispatch { dest, .. } => {
+                    Instruction::InterfaceDispatch { dest, .. } => {
                         dest.map(|d| used.contains(&d)).unwrap_or(true) || has_side_effects(&inst)
                     }
                     Instruction::UpcastToInterface { dest, .. } => used.contains(dest),
                     Instruction::StackAlloc { dest, .. } => used.contains(dest),
                     Instruction::StoreField { .. } => true, // side effect
                     Instruction::LoadField { dest, .. } => used.contains(dest),
+                    Instruction::AddressOf { dest, .. } => used.contains(dest),
+                    Instruction::Load { dest, .. } => used.contains(dest),
+                    Instruction::Store { .. } => true,
                 };
                 if keep {
                     new_insts.push(inst);
@@ -227,9 +226,7 @@ fn dead_code_elimination(module: &mut Module) -> bool {
 fn has_side_effects(inst: &Instruction) -> bool {
     match inst {
         Instruction::StoreField { .. } => true,
-        Instruction::Call { .. }
-        | Instruction::ClassCall { .. }
-        | Instruction::InterfaceDispatch { .. } => {
+        Instruction::Call { .. } | Instruction::InterfaceDispatch { .. } => {
             // Be conservative: assume calls have side effects
             true
         }
@@ -298,12 +295,6 @@ fn compute_used_value(mut used: &mut HashSet<Value>, inst: &Instruction) {
                 collect_val(v, &mut used);
             }
         }
-        Instruction::ClassCall { object, args, .. } => {
-            used.insert(*object);
-            for a in args {
-                collect_val(a, &mut used);
-            }
-        }
         Instruction::InterfaceDispatch { object, args, .. } => {
             used.insert(*object);
             for a in args {
@@ -323,6 +314,9 @@ fn compute_used_value(mut used: &mut HashSet<Value>, inst: &Instruction) {
         Instruction::Jump { .. } => {}
         Instruction::Const { .. } => {}
         Instruction::StackAlloc { .. } => {}
+        Instruction::AddressOf { .. } => {}
+        Instruction::Load { .. } => {}
+        Instruction::Store { .. } => {}
     }
 }
 
@@ -407,14 +401,6 @@ fn rewrite_operands_with_consts(
             }
         }
         Instruction::Const { .. } => {}
-        Instruction::ClassCall {
-            object: _, args, ..
-        } => {
-            /* object is a Value, not Operand; can't rewrite */
-            for a in args {
-                subst(a);
-            }
-        }
         Instruction::InterfaceDispatch {
             object: _, args, ..
         } => {
@@ -430,6 +416,12 @@ fn rewrite_operands_with_consts(
         }
         Instruction::LoadField { base, .. } => {
             subst(base);
+        }
+        Instruction::AddressOf { .. } => {}
+        Instruction::Load { dest: _, ptr } => subst(ptr),
+        Instruction::Store { ptr, value } => {
+            subst(value);
+            subst(ptr);
         }
     }
 

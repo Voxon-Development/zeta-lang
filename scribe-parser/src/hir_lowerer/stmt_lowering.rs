@@ -1,9 +1,11 @@
 use super::context::HirLowerer;
-use ir::ast::{self, ElseBranch, LetStmt, MatchArm, Stmt, Type};
-use ir::hir::{HirMatchArm, HirStmt, HirType};
+use ir::ast::{self, Block, ElseBranch, ErrorHandlerPattern, LetStmt, MatchArm, Stmt, Type};
+use ir::hir::{
+    HirErrorHandlerBranch, HirErrorHandlerPattern, HirMatchArm, HirStmt, HirType, StrId,
+};
 
 impl<'a, 'bump> HirLowerer<'a, 'bump> {
-    pub(super) fn lower_stmt(&self, stmt: Stmt<'a, '_>) -> HirStmt<'a, 'bump> {
+    pub(super) fn lower_stmt(&self, stmt: Stmt<'a, 'bump>) -> HirStmt<'a, 'bump> {
         match stmt {
             Stmt::Let(l) => self.lower_let_stmt(l),
             Stmt::Return(r) => HirStmt::Return(
@@ -63,9 +65,10 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                         variable: _,
                         iterable: _,
                     } => {
-                        // Convert for...in to C-style for loop
-                        // for i in iterable => for (let i = 0; i < iterable.len(); i++)
+                        // `iterable` MUST implement Iterable
+                        // Convert for...in to `iter := elements.iter(); while (element := iter.next()) {}`
                         // For now, just create a simple for loop
+                        // TODO: implement properly
                         HirStmt::For {
                             init: None,
                             condition: None,
@@ -117,8 +120,6 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 HirStmt::Block { body }
             }
 
-            // Declarations should not appear as statements in function bodies
-            // They are handled at module level, not statement level
             Stmt::FuncDecl(_)
             | Stmt::StructDecl(_)
             | Stmt::InterfaceDecl(_)
@@ -128,18 +129,15 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 panic!("Declaration statements should not appear in function bodies");
             }
 
-            // Module-level statements that should be handled separately
-            Stmt::Import(_) => {
+            Stmt::Import(_import_stmt) => {
                 // Import statements are handled at module level for dependency tracking
                 // Return a no-op statement here
-                // TODO: What can we do about here?
                 HirStmt::Block { body: &[] }
             }
 
-            Stmt::Package(_) => {
+            Stmt::Package(_package_stmt) => {
                 // Package statements are handled at module level for dependency tracking
                 // Return a no-op statement here
-                // TODO: What can we do about here?
                 HirStmt::Block { body: &[] }
             }
 
@@ -186,6 +184,10 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 let body = self.ctx.bump.alloc_slice(&body_vec);
                 HirStmt::Block { body }
             }
+            Stmt::Throw(throw_stmt) => HirStmt::Throw {
+                inner: self.lower_expr(&throw_stmt.inner),
+                span: throw_stmt.span,
+            },
         }
     }
 
@@ -233,6 +235,111 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             self.infer_type(&value)
         };
 
+        let catch_pattern = l.catch_pattern.as_ref().map(|pat| {
+            // `catch` is only legal when the value expression's callee declares `throws`.
+            /*
+            let declared_throws = self.ctx.throws_of(&l.value);
+            if declared_throws.is_empty() {
+                self.ctx
+                    .diag
+                    .borrow_mut()
+                    .record_error("`catch` used on an expression that cannot throw", l.span);
+            }
+            */
+
+            let lower_branch = |error_type: &Type<'a, 'bump>,
+                                binding: Option<StrId>,
+                                body: &'bump Block<'a, 'bump>| {
+                let hir_error_type = self.lower_type(error_type);
+
+                // Every named catch branch must correspond to a type the callee actually throws.
+                /*
+                if !declared_throws.iter().any(|t| *t == hir_error_type) {
+                    self.ctx.diag.borrow_mut().record_error(
+                        format!(
+                            "`catch` branch handles `{}`, which this expression never throws",
+                            hir_error_type
+                        ),
+                        l.span,
+                    );
+                }
+                */
+
+                if let Some(b) = binding {
+                    self.ctx
+                        .variable_types
+                        .borrow_mut()
+                        .insert(b, hir_error_type);
+                }
+
+                let body_stmts = self.lower_block(body);
+                (hir_error_type, body_stmts)
+            };
+
+            match pat {
+                ErrorHandlerPattern::Single {
+                    error_type,
+                    binding,
+                    body,
+                } => {
+                    let (hir_error_type, body_stmts) = lower_branch(error_type, *binding, body);
+                    let HirStmt::Block { body } = body_stmts else {
+                        unreachable!()
+                    };
+                    HirErrorHandlerPattern::Single {
+                        error_type: hir_error_type,
+                        binding: *binding,
+                        body,
+                    }
+                }
+                ErrorHandlerPattern::Multiple { branches } => {
+                    let lowered: Vec<_> = branches
+                        .iter()
+                        .map(|b| {
+                            let (hir_error_type, body_stmts) =
+                                lower_branch(&b.error_type, b.binding, b.body);
+                            let HirStmt::Block { body } = body_stmts else {
+                                unreachable!()
+                            };
+                            HirErrorHandlerBranch {
+                                error_type: hir_error_type,
+                                binding: b.binding,
+                                body,
+                            }
+                        })
+                        .collect();
+
+                    /*
+                    for thrown in &declared_throws {
+                        if !lowered.iter().any(|br| br.error_type == *thrown) {
+                            self.ctx.diag.borrow_mut().record_error(
+                                format!("non-exhaustive `catch`: missing branch for `{}`", thrown),
+                                l.span,
+                            );
+                        }
+                    }
+                    */
+
+                    HirErrorHandlerPattern::Multiple {
+                        branches: self.ctx.bump.alloc_slice(&lowered),
+                    }
+                }
+            }
+        });
+
+        let else_block = l.else_block.map(|block| {
+            // `? else` is only legal when final_type (or the catch-unwrapped type) is nullable.
+            /*
+            if final_type.inner_if_nullable().is_none() {
+                self.ctx
+                    .diag
+                    .borrow_mut()
+                    .record_error("`? else` used on a non-nullable type", l.span);
+            }
+            */
+            self.ctx.bump.alloc_value_immutable(self.lower_block(block))
+        });
+
         self.ctx
             .variable_types
             .borrow_mut()
@@ -242,7 +349,10 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             name: l.ident,
             ty: final_type,
             value,
+            mutable: l.mutable,
             is_static: l.is_static,
+            catch_pattern,
+            else_block,
         }
     }
 }

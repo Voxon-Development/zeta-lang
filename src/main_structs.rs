@@ -1,64 +1,63 @@
-use engraver_assembly_emit::cranelift::cranelift_backend::EmitError;
-use ir::errors::error::DiagnosticError;
-use ir::hir::HirModule;
+use ir::ast::Stmt;
+use ir::hir::StrId;
 use scribe_parser::parser::ParserDiagnostics;
+use std::fmt;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
-use thiserror::Error;
 use zetaruntime::arena::GrowableAtomicBump;
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct ModuleWithArena<'a, 'bump> {
-    #[allow(dead_code)]
-    // This simply prevents parser and HIR bump from UB, doesn't need to be used
-    pub(crate) parse_and_hir_bump: Arc<GrowableAtomicBump<'bump>>,
-
-    pub(crate) module: HirModule<'a, 'bump>,
-
-    pub(crate) parser_diagnostics: ParserDiagnostics<'a>,
-
-    pub(crate) valid: bool,
+    /// The arena that owns all AST memory for this file.
+    pub bump: Arc<GrowableAtomicBump<'bump>>,
+    /// Interned file / module name (used as the `AstModule::name` field).
+    pub name: StrId,
+    /// Top-level statements produced by the parser.
+    pub stmts: &'bump [Stmt<'a, 'bump>],
+    /// Non-fatal diagnostics from the parser.
+    pub parser_diagnostics: ParserDiagnostics<'a>,
 }
 
-#[derive(Error, Debug)]
+#[derive(Debug)]
 pub enum CompilerError<'a> {
-    #[error("Source not found: {0:?}")]
     SourceNotFound(PathBuf),
-
-    #[error("No source files found")]
     NoSourceFiles,
-
-    #[error("Invalid source file: {0}")]
-    InvalidSourceFile(String),
-
-    #[error("Failed to read file {0}: {1}")]
     FailedToReadFile(PathBuf, io::Error),
-
-    #[error("Failed to allocate string pool.")]
-    FailedToAllocateStringPool,
-
-    #[error("Failed to allocate bump allocator")]
     FailedToAllocateBump,
-
-    #[error("Failed to compile module due to type errors: {0:?}")]
-    TypeCheckerErrors(Vec<String>),
-
-    #[error("Invalid UTF-8 filename: {0:?}")]
+    FailedToAllocateStringPool,
     InvalidFileName(Vec<u8>),
-
-    #[error("Parser error: {0:#?}")]
-    ParserError(Vec<DiagnosticError<'a>>),
-
-    #[error("Failed to emit module: {0}")]
-    FinishError(EmitError),
-
-    #[error("Linking failed")]
-    LinkFailed,
-
-    #[error("Type error: {0}")]
+    ParserError(Vec<&'a str>),
     TypeError(String),
-
-    #[error("Type checking failed")]
     TypeCheckError,
+    FinishError(Box<dyn std::error::Error>),
+    LinkFailed,
+}
+
+impl<'a> fmt::Display for CompilerError<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CompilerError::SourceNotFound(p) => write!(f, "Source not found: {}", p.display()),
+            CompilerError::NoSourceFiles => write!(f, "No .zeta source files found"),
+            CompilerError::FailedToReadFile(p, e) => {
+                write!(f, "Failed to read {}: {}", p.display(), e)
+            }
+            CompilerError::FailedToAllocateBump => write!(f, "Failed to allocate bump arena"),
+            CompilerError::FailedToAllocateStringPool => {
+                write!(f, "Failed to allocate string pool")
+            }
+            CompilerError::InvalidFileName(b) => {
+                write!(f, "Invalid file name bytes: {:?}", b)
+            }
+            CompilerError::ParserError(errs) => {
+                write!(f, "Parser errors: {:?}", errs)
+            }
+            CompilerError::TypeError(e) => write!(f, "Type error: {}", e),
+            CompilerError::TypeCheckError => write!(f, "Type check failed"),
+            CompilerError::FinishError(e) => write!(f, "Backend finish error: {}", e),
+            CompilerError::LinkFailed => {
+                write!(f, "Backend could not link the stdlib to the binary.")
+            }
+        }
+    }
 }

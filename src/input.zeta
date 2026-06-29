@@ -1,29 +1,48 @@
-struct Vec3f { x: i64, y: i64, z: i64 }
+package zeta::input;
+
+public struct Vec3f { x: i64, y: i64, z: i64 }
+
+public interface Printable {
+    fn print(&this) -> void;
+}
 
 impl Vec3f {
-    fn multiply(&this, by: Vec3f) Vec3f {
-        return Vec3f { x: this.x * by.x, y: this.y * by.y, z: this.z * by.z };
+    fn multiply(&this, by_vec: Vec3f) -> Vec3f {
+        return Vec3f { x: this.x * by_vec.x, y: this.y * by_vec.y, z: this.z * by_vec.z };
     }
 
-    fn sum(&this) i64 {
+    fn sum(&this) -> i64 {
         return this.x + this.y + this.z;
     }
 }
 
-struct Vec9f { x: Vec3f, y: Vec3f, z: Vec3f }
+public struct Vec9f { x: Vec3f, y: Vec3f, z: Vec3f }
 
 impl Vec9f {
-    fn multiply(&this, by: Vec3f) Vec9f {
+    fn multiply(&this, by_vec: Vec3f) -> Vec9f {
         return Vec9f {
-            x: this.x.multiply(by),
-            y: this.y.multiply(by),
-            z: this.z.multiply(by)
+            x: this.x.multiply(by_vec),
+            y: this.y.multiply(by_vec),
+            z: this.z.multiply(by_vec)
         };
     }
 
-    fn sum(&this) i64 {
+    fn sum(&this) -> i64 {
         return this.x.sum() + this.y.sum() + this.z.sum();
     }
+}
+
+impl Vec3f by Printable {
+    fn print(&this) {
+        zeta::repro.println_str("Vec3f data:     ");
+        zeta::repro.println_int(this.x);
+        zeta::repro.println_int(this.y);
+        zeta::repro.println_int(this.z);
+    }
+}
+
+fn abc() -> i64? {
+    return null;
 }
 
 fn main() {
@@ -33,6 +52,17 @@ fn main() {
         z: Vec3f { x: 1, y: 1, z: 1 }
     };
     let secondSum: i64 = vec9f.sum();
-    println_int(secondSum);
-    println_int(secondSum + secondSum);
+    zeta::repro.println_int(secondSum);
+    zeta::repro.println_int(secondSum + secondSum);
+
+    let a: Vec3f = Vec3f { x: 2, y: 3, z: 4 };
+
+    let dyn_a: &dyn Printable = &a;
+    dyn_a.print();
+
+    zeta::repro.println_int(12345);
+
+    let x: i64 = abc()? else {
+        zeta::repro.println_int(33964);
+    }
 }

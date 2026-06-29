@@ -1,32 +1,46 @@
 use crate::type_context::TypeContext;
 use crate::type_error::{TypeCheckResult, TypeError};
-use ir::hir::{Hir, HirExpr, HirFunc, HirModule, HirParam, HirStmt, HirType, Operator, StrId};
+use codex_dependency_graph::DepGraph;
+use ir::ast::MutabilityState;
+use ir::hir::{
+    Hir, HirExpr, HirFunc, HirModule, HirParam, HirStmt, HirType, Operator, StrId, ThisPassingKind,
+};
+use zetaruntime::bump::GrowableBump;
 
 pub struct TypeChecker<'a, 'bump> {
     context: TypeContext<'a, 'bump>,
 }
 
 impl<'a, 'bump> TypeChecker<'a, 'bump> {
-    pub fn new() -> Self {
+    pub fn new(dep_graph: &'a DepGraph, bump: &'bump GrowableBump<'bump>) -> Self {
         Self {
-            context: TypeContext::new(),
+            context: TypeContext::new(dep_graph, bump),
         }
     }
 
-    /// Check a complete HIR module for type correctness
-    pub fn check_module(&mut self, module: &HirModule<'a, 'bump>) -> TypeCheckResult<()> {
+    pub fn register_module(&mut self, module: &HirModule<'a, 'bump>, module_idx: usize) {
+        let prev_module_idx = self.context.current_module_idx;
+        self.context.current_module_idx = module_idx;
+
         for item in module.items {
             match item {
                 Hir::Struct(s) => {
                     let name = s.name.to_string();
-                    // add_struct already pulls in struct-body methods
-                    self.context.add_struct(name, **s);
+                    self.context.add_struct(name.clone(), **s);
+                    if let Some(interfaces) = s.interfaces {
+                        for iface in interfaces {
+                            self.context.add_struct_interface(&name, iface.to_string());
+                        }
+                    }
                 }
                 Hir::Impl(i) => {
-                    // target is the unmangled type name, e.g. "Vec9f"
                     let target = i.target.to_string();
                     if let Some(methods) = i.methods {
                         self.context.add_impl_methods(&target, methods);
+                    }
+                    if let Some(interface) = i.interface {
+                        self.context
+                            .add_struct_interface(&target, interface.to_string());
                     }
                 }
                 Hir::Interface(i) => {
@@ -34,26 +48,33 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     self.context.add_interface(name, **i);
                 }
                 Hir::Func(f) => {
-                    let name = f.name.to_string();
-                    self.context.add_function(name, **f);
+                    let name = f.unmangled_name.to_string();
+                    self.context.add_function(module_idx, name, **f);
                 }
                 _ => {}
             }
         }
 
+        self.context.current_module_idx = prev_module_idx;
+    }
+
+    pub fn check_module_body(
+        &mut self,
+        module: &HirModule<'a, 'bump>,
+        module_idx: usize,
+    ) -> TypeCheckResult<()> {
+        self.context.current_module_idx = module_idx;
         for item in module.items {
             if let Hir::Func(func) = item {
                 self.check_function(func)?;
             }
         }
-
         Ok(())
     }
 
     fn check_function(&mut self, func: &HirFunc<'a, 'bump>) -> TypeCheckResult<()> {
         let mut func_context = self.context.create_child_scope();
 
-        // Add parameters to context
         if let Some(params) = func.params {
             for param in params {
                 match param {
@@ -66,13 +87,16 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             }
         }
 
-        // Set return type for this function
         func_context.current_return_type = func.return_type;
 
-        // Check function body
         if let Some(body) = func.body {
             let old_context = std::mem::replace(&mut self.context, func_context);
-            self.check_stmt(&body)?;
+            let HirStmt::Block { body } = body else {
+                unreachable!()
+            };
+            for stmt in body {
+                self.check_stmt(&stmt)?;
+            }
             self.context = old_context;
         }
 
@@ -85,17 +109,35 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
     ) -> TypeCheckResult<Option<HirType<'a, 'bump>>> {
         match stmt {
             HirStmt::Let {
-                name, ty, value, ..
+                name,
+                ty,
+                value,
+                mutable,
+                else_block,
+                ..
             } => {
                 let value_type = self.check_expr(value)?;
-                self.types_compatible(ty, &value_type)?;
+
+                if let Some(else_block) = else_block {
+                    self.check_stmt(else_block)?;
+                    // TODO: Check if the type of the variable is the non-null version of this
+                } else {
+                    self.types_compatible(ty, &value_type)?;
+                }
                 let var_name = self.str_id_to_string(*name);
-                self.context.add_variable(var_name, *ty);
+
+                if self.expr_is_dangling(value) {
+                    self.context.mark_dangling(var_name.clone());
+                }
+
+                self.context
+                    .add_variable_with_mutability(var_name, *ty, *mutable);
                 Ok(None)
             }
             HirStmt::Return(expr) => {
                 if let Some(e) = expr {
                     let expr_type = self.check_expr(e)?;
+                    self.check_no_dangling_pointer(e)?;
                     if let Some(expected_return) = self.context.current_return_type {
                         self.types_compatible(&expected_return, &expr_type)?;
                     }
@@ -216,7 +258,13 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 }
                 Ok(None)
             }
-            _ => Ok(None),
+            HirStmt::Const(const_stmt) => todo!(),
+            HirStmt::Match { expr, arms } => todo!(),
+            HirStmt::UnsafeBlock { body } => todo!(),
+            HirStmt::Defer(hir_stmt) => todo!(),
+            HirStmt::Import(path, source_span) => Ok(None),
+            HirStmt::Package(path, source_span) => Ok(None),
+            HirStmt::Throw { inner, span } => todo!(),
         }
     }
 
@@ -238,7 +286,6 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 for e in *exprs {
                     types.push(self.check_expr(e)?);
                 }
-                // For now, return the first type as a simplification
                 Ok(types.first().copied().unwrap_or(HirType::Void))
             }
             HirExpr::Binary {
@@ -248,63 +295,74 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 let right_type = self.check_expr(right)?;
                 self.check_binary_op(&left_type, op, &right_type)
             }
-            HirExpr::Call { callee, args } => {
-                match &callee {
-                    HirExpr::Ident(func_name) => {
-                        let name = self.str_id_to_string(*func_name);
-                        let func = self
-                            .context
-                            .get_function(&name)
-                            .ok_or_else(|| TypeError::UndefinedFunction(name))?;
+            HirExpr::Call { callee, args } => match &callee {
+                HirExpr::Ident(func_name) => {
+                    let name = self.str_id_to_string(*func_name);
+                    let func = self
+                        .context
+                        .get_function(&name)
+                        .ok_or_else(|| TypeError::UndefinedFunction(name))?;
 
-                        let expected_args = func.params.map(|p| p.len()).unwrap_or(0);
-                        if args.len() != expected_args {
-                            return Err(TypeError::InvalidFunctionCall {
-                                expected_args,
-                                found_args: args.len(),
-                            });
-                        }
-
-                        if let Some(params) = func.params {
-                            for (arg, param) in args.iter().zip(params.iter()) {
-                                let arg_type = self.check_expr(arg)?;
-                                if let Some(param_type) = param.get_type() {
-                                    self.types_compatible(param_type, &arg_type)?;
-                                }
-                            }
-                        }
-
-                        Ok(func.return_type.unwrap_or(HirType::Void))
+                    let expected_args = func.params.map(|p| p.len()).unwrap_or(0);
+                    if args.len() != expected_args {
+                        return Err(TypeError::InvalidFunctionCall {
+                            expected_args,
+                            found_args: args.len(),
+                        });
                     }
 
-                    HirExpr::FieldAccess { object, field, .. } => {
-                        let obj_type = self.check_expr(object)?;
-
-                        let type_name = match obj_type {
-                            HirType::Struct(name, _) => name.to_string(),
-                            _ => {
-                                return Err(TypeError::Generic(format!(
-                                    "cannot call method on non-struct type: {}",
-                                    self.type_to_string(&obj_type)
-                                )))
+                    if let Some(params) = func.params {
+                        for (arg, param) in args.iter().zip(params.iter()) {
+                            let arg_type = self.check_expr(arg)?;
+                            if let Some(param_type) = param.get_type() {
+                                self.types_compatible(param_type, &arg_type)?;
                             }
-                        };
+                        }
+                    }
 
+                    Ok(func.return_type.unwrap_or(HirType::Void))
+                }
+
+                HirExpr::FieldAccess { object, field, .. } => {
+                    let obj_type = self.check_expr(object)?;
+                    let stripped = Self::strip_ref(&obj_type);
+
+                    let interface_name = match stripped {
+                        HirType::DynInterface(name, _) => Some(name.to_string()),
+                        HirType::Dyn { bounds } => bounds.iter().find_map(|b| match b {
+                            HirType::DynInterface(name, _) => Some(name.to_string()),
+                            HirType::Struct(name, _) => {
+                                let name_str = name.to_string();
+                                self.context.get_interface(&name_str).map(|_| name_str)
+                            }
+                            _ => None,
+                        }),
+                        _ => None,
+                    };
+
+                    if let Some(iface_name) = interface_name {
                         let method_name = field.to_string();
-
-                        let func = self
+                        let iface = self
                             .context
-                            .get_method(&type_name, &method_name)
-                            .copied()
+                            .get_interface(&iface_name)
+                            .ok_or_else(|| TypeError::UndefinedType(iface_name.clone()))?;
+
+                        let method = iface
+                            .methods
+                            .and_then(|methods| {
+                                methods
+                                    .iter()
+                                    .find(|m| m.unmangled_name.to_string() == method_name)
+                            })
                             .ok_or_else(|| {
                                 TypeError::Generic(format!(
-                                    "no method `{}` on `{}`",
-                                    method_name, type_name
+                                    "no method `{}` on interface `{}`",
+                                    method_name, iface_name
                                 ))
                             })?;
 
-                        let total_params = func.params.map(|p| p.len()).unwrap_or(0);
-                        let expected_args = total_params.saturating_sub(1);
+                        let total_params = method.params.map(|p| p.len()).unwrap_or(0);
+                        let expected_args = total_params.saturating_sub(1); // skip `this`
                         if args.len() != expected_args {
                             return Err(TypeError::InvalidFunctionCall {
                                 expected_args,
@@ -312,7 +370,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                             });
                         }
 
-                        if let Some(params) = func.params {
+                        if let Some(params) = method.params {
                             for (arg, param) in args.iter().zip(params.iter().skip(1)) {
                                 let arg_type = self.check_expr(arg)?;
                                 if let Some(param_type) = param.get_type() {
@@ -321,24 +379,141 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                             }
                         }
 
-                        Ok(func.return_type.unwrap_or(HirType::Void))
+                        return Ok(method.return_type.unwrap_or(HirType::Void));
                     }
 
-                    // Any other callee shape (e.g. a closure stored in a variable),
-                    // check the callee expression and, once you have lambda types wired up,
-                    // extract the return type from HirType::Lambda here
-                    other => {
-                        let callee_type = self.check_expr(&other)?;
-                        match callee_type {
-                            HirType::Lambda { return_type, .. } => Ok(*return_type),
-                            _ => Err(TypeError::Generic(format!(
-                                "Expression of type `{}` is not callable",
-                                self.type_to_string(&callee_type)
-                            ))),
+                    let type_name = match stripped {
+                        HirType::Struct(name, _) => name.to_string(),
+                        _ => {
+                            return Err(TypeError::Generic(format!(
+                                "cannot call method on non-struct type: {}",
+                                self.type_to_string(&obj_type)
+                            )))
+                        }
+                    };
+
+                    let method_name = field.to_string();
+                    let func = self
+                        .context
+                        .get_method(&type_name, &method_name)
+                        .copied()
+                        .ok_or_else(|| {
+                            TypeError::Generic(format!(
+                                "no method `{}` on `{}`",
+                                method_name, type_name
+                            ))
+                        })?;
+
+                    let total_params = func.params.map(|p| p.len()).unwrap_or(0);
+                    let expected_args = total_params.saturating_sub(1);
+                    if args.len() != expected_args {
+                        return Err(TypeError::InvalidFunctionCall {
+                            expected_args,
+                            found_args: args.len(),
+                        });
+                    }
+
+                    if let Some(params) = func.params {
+                        if let Some(HirParam::This { kind }) = params.first() {
+                            let requires_mut = matches!(
+                                kind,
+                                ThisPassingKind::RefMut
+                                    | ThisPassingKind::MutSafePtr
+                                    | ThisPassingKind::MoveMut
+                            );
+                            if requires_mut {
+                                self.check_receiver_is_mutable(object, &method_name)?;
+                            }
+                        }
+
+                        for (arg, param) in args.iter().zip(params.iter().skip(1)) {
+                            let arg_type = self.check_expr(arg)?;
+                            if let Some(param_type) = param.get_type() {
+                                self.types_compatible(param_type, &arg_type)?;
+                            }
                         }
                     }
+
+                    Ok(func.return_type.unwrap_or(HirType::Void))
                 }
-            }
+                HirExpr::ModuleAccess(access) => {
+                    let member_name = access.member.to_string();
+                    let resolved_module_idx =
+                        self.context.dep_graph.resolve_module_path(access.path);
+
+                    let free_func = resolved_module_idx
+                        .and_then(|midx| self.context.get_module_function(midx, &member_name));
+
+                    let method_func = if free_func.is_none() {
+                        access.path.last().and_then(|last_segment| {
+                            let type_name = last_segment.to_string();
+                            self.context.get_method(&type_name, &member_name).copied()
+                        })
+                    } else {
+                        None
+                    };
+
+                    let func = match free_func.or(method_func) {
+                        Some(f) => f,
+                        None => {
+                            let path_str = access
+                                .path
+                                .iter()
+                                .map(|s| s.to_string())
+                                .collect::<Vec<_>>()
+                                .join("::");
+                            let qualified_name = format!("{}::{}", path_str, member_name);
+                            let candidate_modules = self
+                                .context
+                                .dep_graph
+                                .find_function_by_name_anywhere(access.member);
+                            return if candidate_modules.is_empty() {
+                                Err(TypeError::UndefinedFunction(qualified_name))
+                            } else {
+                                let suggestion_paths: Vec<String> = candidate_modules
+                                    .iter()
+                                    .filter_map(|&midx| {
+                                        self.context.dep_graph.get_module_package(midx)
+                                    })
+                                    .map(|pkg| pkg.to_string())
+                                    .collect();
+                                Err(TypeError::UndefinedFunctionWithSuggestion {
+                                    name: qualified_name,
+                                    suggested_modules: suggestion_paths,
+                                })
+                            };
+                        }
+                    };
+
+                    let expected_args = func.params.map(|p| p.len()).unwrap_or(0);
+                    if args.len() != expected_args {
+                        return Err(TypeError::InvalidFunctionCall {
+                            expected_args,
+                            found_args: args.len(),
+                        });
+                    }
+                    if let Some(params) = func.params {
+                        for (arg, param) in args.iter().zip(params.iter()) {
+                            let arg_type = self.check_expr(arg)?;
+                            if let Some(param_type) = param.get_type() {
+                                self.types_compatible(param_type, &arg_type)?;
+                            }
+                        }
+                    }
+                    Ok(func.return_type.unwrap_or(HirType::Void))
+                }
+
+                other => {
+                    let callee_type = self.check_expr(other)?;
+                    match callee_type {
+                        HirType::Lambda { return_type, .. } => Ok(*return_type),
+                        _ => Err(TypeError::Generic(format!(
+                            "Expression of type `{}` is not callable",
+                            self.type_to_string(&callee_type)
+                        ))),
+                    }
+                }
+            },
             HirExpr::FieldAccess {
                 object,
                 field,
@@ -382,8 +557,139 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 };
                 Ok(HirType::Struct(*name, &[]))
             }
+            HirExpr::InterfaceCall {
+                callee,
+                args,
+                interface,
+            } => todo!(),
+            HirExpr::Assignment {
+                target,
+                op,
+                value,
+                span,
+            } => todo!(),
+            HirExpr::InterpolatedString(interpolation_parts) => todo!(),
+            HirExpr::EnumInit {
+                enum_name,
+                variant,
+                args,
+            } => todo!(),
+            HirExpr::ExprList { list, span } => todo!(),
+            HirExpr::Get {
+                object,
+                field,
+                span,
+            } => todo!(),
+            HirExpr::Comparison {
+                left,
+                op,
+                right,
+                span,
+            } => todo!(),
+            HirExpr::Deref { expr, span } => todo!(),
+            HirExpr::Ref {
+                expr,
+                mutable,
+                span,
+            } => {
+                let expr = self.check_expr(expr)?;
+                Ok(HirType::Ref {
+                    inner: self.context.bump.alloc_value(expr),
+                    mutability_state: if *mutable {
+                        MutabilityState::Mut
+                    } else {
+                        MutabilityState::Const
+                    },
+                })
+            }
+            HirExpr::This { span } => todo!(),
+            HirExpr::ModuleAccess(hir_module_access) => todo!(),
+            HirExpr::Lambda {
+                modifier,
+                params,
+                return_type,
+                throws,
+                body,
+                span,
+            } => todo!(),
+        }
+    }
 
-            _ => Ok(HirType::Void),
+    fn check_receiver_is_mutable(
+        &self,
+        receiver: &HirExpr<'a, 'bump>,
+        method_name: &str,
+    ) -> TypeCheckResult<()> {
+        let Some(root_name) = self.find_root_local_ident(receiver) else {
+            return Ok(());
+        };
+
+        if !self.context.is_mutable(&root_name) {
+            return Err(TypeError::Generic(format!(
+                "cannot call `{}` on `{}`: `{}` is not declared `mut`",
+                method_name, root_name, root_name
+            )));
+        }
+
+        Ok(())
+    }
+
+    fn expr_is_dangling(&self, expr: &HirExpr<'a, 'bump>) -> bool {
+        match expr {
+            HirExpr::Ref { expr: inner, .. } => match self.find_root_local_ident(inner) {
+                Some(root_name) => match self.context.get_variable(&root_name) {
+                    Some(root_type) => !root_type.is_pointer_semantics(),
+                    None => false,
+                },
+                None => false,
+            },
+            HirExpr::Ident(name) => {
+                let var_name = self.str_id_to_string(*name);
+                self.context.is_dangling(&var_name)
+            }
+            _ => false,
+        }
+    }
+
+    fn check_no_dangling_pointer(&self, expr: &HirExpr<'a, 'bump>) -> TypeCheckResult<()> {
+        // Direct case: `return &local;`
+        if let HirExpr::Ref { expr: inner, .. } = expr {
+            if let Some(root_name) = self.find_root_local_ident(inner) {
+                if let Some(root_type) = self.context.get_variable(&root_name) {
+                    if !root_type.is_pointer_semantics() {
+                        return Err(TypeError::Generic(format!(
+                            "cannot return a pointer to local variable `{}`: its storage does not outlive this function",
+                            root_name
+                        )));
+                    }
+                }
+            }
+            return Ok(());
+        }
+
+        // Indirect case: `return i;` where `i` was assigned `&local` earlier.
+        if let HirExpr::Ident(name) = expr {
+            let var_name = self.str_id_to_string(*name);
+            if self.context.is_dangling(&var_name) {
+                return Err(TypeError::Generic(format!(
+                    "cannot return `{}`: it holds a pointer to local stack memory that does not outlive this function",
+                    var_name
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn find_root_local_ident(&self, expr: &HirExpr<'a, 'bump>) -> Option<String> {
+        match expr {
+            HirExpr::Ident(name) => Some(self.str_id_to_string(*name)),
+            HirExpr::FieldAccess { object, .. } | HirExpr::Get { object, .. } => {
+                self.find_root_local_ident(object)
+            }
+            HirExpr::Deref { expr: inner, .. } => self.find_root_local_ident(inner),
+            // Call results, literals, etc: not a named local's address.
+            _ => None,
         }
     }
 
@@ -440,12 +746,80 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         found: &HirType<'a, 'bump>,
     ) -> TypeCheckResult<()> {
         if expected == found {
-            Ok(())
-        } else {
-            Err(TypeError::TypeMismatch {
-                expected: self.type_to_string(expected),
-                found: self.type_to_string(found),
-            })
+            return Ok(());
+        }
+
+        if self.struct_satisfies_interface_type(expected, found)
+            || self.struct_satisfies_interface_type(found, expected)
+        {
+            return Ok(());
+        }
+
+        if let HirType::Nullable(_) = expected {
+            if found == &HirType::Null {
+                return Ok(());
+            }
+        }
+
+        Err(TypeError::TypeMismatch {
+            expected: self.type_to_string(expected),
+            found: self.type_to_string(found),
+        })
+    }
+
+    /// Returns true if `found` is a struct (possibly behind a Ref/pointer) that
+    /// implements the interface named by `expected` (possibly behind a Ref/
+    /// pointer, possibly wrapped in `Dyn { bounds }`). Checks one direction;
+    /// callers should check both directions since either operand position can
+    /// be the interface or the concrete type depending on call context.
+    fn struct_satisfies_interface_type(
+        &self,
+        expected: &HirType<'a, 'bump>,
+        found: &HirType<'a, 'bump>,
+    ) -> bool {
+        let expected_inner = Self::strip_ref(expected);
+        let found_inner = Self::strip_ref(found);
+
+        let interface_name = match expected_inner {
+            // Lowerer represents interface bounds as Struct(name, []) inside Dyn,
+            // not as a separate DynInterface variant — confirm by name against
+            // the interfaces table rather than trusting the HirType shape alone.
+            HirType::DynInterface(name, _) => Some(name.to_string()),
+            HirType::Dyn { bounds } => bounds.iter().find_map(|b| match b {
+                HirType::DynInterface(name, _) => Some(name.to_string()),
+                HirType::Struct(name, _) => {
+                    let name_str = name.to_string();
+                    if self.context.get_interface(&name_str).is_some() {
+                        Some(name_str)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }),
+            _ => None,
+        };
+
+        let Some(interface_name) = interface_name else {
+            return false;
+        };
+
+        let struct_name = match found_inner {
+            HirType::Struct(name, _) => name.to_string(),
+            _ => return false,
+        };
+
+        self.context
+            .struct_implements(&struct_name, &interface_name)
+    }
+
+    /// Unwraps a single layer of `Ref` to get at the underlying type, since
+    /// `&Vec3f` vs `&dyn Printable` need to be compared on their pointee types.
+    fn strip_ref<'x>(ty: &'x HirType<'a, 'bump>) -> &'x HirType<'a, 'bump> {
+        match ty {
+            HirType::Ref { inner, .. } => inner,
+            HirType::SafePointer(inner) => inner,
+            _ => ty,
         }
     }
 
@@ -493,7 +867,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             HirType::String => "string".to_string(),
             HirType::Void => "void".to_string(),
             HirType::Struct(name, _) => format!("struct {}", self.str_id_to_string(*name)),
-            HirType::Interface(name, _) => format!("interface {}", self.str_id_to_string(*name)),
+            HirType::DynInterface(name, _) => format!("interface {}", self.str_id_to_string(*name)),
             HirType::Enum(name, _) => format!("enum {}", self.str_id_to_string(*name)),
             HirType::Generic(name) => format!("generic {}", self.str_id_to_string(*name)),
             HirType::SafePointer(_) => "*Ptr".to_string(),
@@ -501,13 +875,46 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             HirType::Lambda { .. } => "lambda".to_string(),
             HirType::This => "this".to_string(),
             HirType::Null => "null".to_string(),
+            HirType::Char => "char".to_string(),
+            HirType::Ref {
+                inner,
+                mutability_state,
+            } => {
+                if let MutabilityState::Mut = mutability_state {
+                    format!("&mut {}", inner)
+                } else {
+                    format!("&{}", inner)
+                }
+            }
+            HirType::Nullable(hir_type) => format!("{}?", hir_type),
+            HirType::Dyn { bounds } => {
+                let mut bounds_str = String::new();
+                let mut start = true;
+                for bound in *bounds {
+                    bounds_str.push_str(&bound.to_string());
+                    if start {
+                        start = false;
+                    } else {
+                        bounds_str.push_str(" + ");
+                    }
+                }
+                format!("dyn {}", bounds_str)
+            } /*
+              HirType::Dyn { bounds } => {
+                  write!(f, "dyn ")?;
+                  let mut is_start = true;
+                  let mut iter = bounds.into_iter();
+                  while let Some(bound) = iter.next() {
+                      write!(f, "{}", bound)?;
+                      if !is_start {
+                          write!(f, " + ")?;
+                      }
+                      is_start = false;
+                  }
+                  Ok(())
+              }
+               */
         }
-    }
-}
-
-impl<'a, 'bump> Default for TypeChecker<'a, 'bump> {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -517,13 +924,18 @@ mod tests {
 
     #[test]
     fn test_type_checker_creation() {
-        let checker = TypeChecker::new();
+        let dep_graph = DepGraph::new();
+
+        let bump = GrowableBump::new(4096, 8);
+        let checker = TypeChecker::new(&dep_graph, &bump);
         assert_eq!(checker.context.variables.len(), 0);
     }
 
     #[test]
     fn test_is_numeric() {
-        let checker = TypeChecker::new();
+        let dep_graph = DepGraph::new();
+        let bump = GrowableBump::new(4096, 8);
+        let checker = TypeChecker::new(&dep_graph, &bump);
         assert!(checker.is_numeric(&HirType::I32));
         assert!(checker.is_numeric(&HirType::F64));
         assert!(!checker.is_numeric(&HirType::Boolean));
@@ -532,7 +944,9 @@ mod tests {
 
     #[test]
     fn test_is_comparable() {
-        let checker = TypeChecker::new();
+        let dep_graph = DepGraph::new();
+        let bump = GrowableBump::new(4096, 8);
+        let checker = TypeChecker::new(&dep_graph, &bump);
         assert!(checker.is_comparable(&HirType::I32));
         assert!(checker.is_comparable(&HirType::Boolean));
         assert!(checker.is_comparable(&HirType::String));
@@ -540,7 +954,9 @@ mod tests {
 
     #[test]
     fn test_type_to_string() {
-        let checker = TypeChecker::new();
+        let dep_graph = DepGraph::new();
+        let bump = GrowableBump::new(4096, 8);
+        let checker = TypeChecker::new(&dep_graph, &bump);
         assert_eq!(checker.type_to_string(&HirType::I32), "i32");
         assert_eq!(checker.type_to_string(&HirType::Boolean), "bool");
         assert_eq!(checker.type_to_string(&HirType::String), "string");
@@ -549,21 +965,27 @@ mod tests {
 
     #[test]
     fn test_types_compatible_same_type() {
-        let checker = TypeChecker::new();
+        let dep_graph = DepGraph::new();
+        let bump = GrowableBump::new(4096, 8);
+        let checker = TypeChecker::new(&dep_graph, &bump);
         let result = checker.types_compatible(&HirType::I32, &HirType::I32);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_types_compatible_different_type() {
-        let checker = TypeChecker::new();
+        let dep_graph = DepGraph::new();
+        let bump = GrowableBump::new(4096, 8);
+        let checker = TypeChecker::new(&dep_graph, &bump);
         let result = checker.types_compatible(&HirType::I32, &HirType::I64);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_binary_op_addition() {
-        let checker = TypeChecker::new();
+        let dep_graph = DepGraph::new();
+        let bump = GrowableBump::new(4096, 8);
+        let checker = TypeChecker::new(&dep_graph, &bump);
         let result = checker.check_binary_op(&HirType::I32, &Operator::Add, &HirType::I32);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), HirType::I32);
@@ -571,7 +993,9 @@ mod tests {
 
     #[test]
     fn test_binary_op_comparison() {
-        let checker = TypeChecker::new();
+        let dep_graph = DepGraph::new();
+        let bump = GrowableBump::new(4096, 8);
+        let checker = TypeChecker::new(&dep_graph, &bump);
         let result = checker.check_binary_op(&HirType::I32, &Operator::LessThan, &HirType::I32);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), HirType::Boolean);
@@ -579,7 +1003,9 @@ mod tests {
 
     #[test]
     fn test_binary_op_logical() {
-        let checker = TypeChecker::new();
+        let dep_graph = DepGraph::new();
+        let bump = GrowableBump::new(4096, 8);
+        let checker = TypeChecker::new(&dep_graph, &bump);
         let result =
             checker.check_binary_op(&HirType::Boolean, &Operator::LogicalAnd, &HirType::Boolean);
         assert!(result.is_ok());
@@ -588,7 +1014,9 @@ mod tests {
 
     #[test]
     fn test_binary_op_type_mismatch() {
-        let checker = TypeChecker::new();
+        let dep_graph = DepGraph::new();
+        let bump = GrowableBump::new(4096, 8);
+        let checker = TypeChecker::new(&dep_graph, &bump);
         let result = checker.check_binary_op(&HirType::I32, &Operator::Add, &HirType::String);
         assert!(result.is_err());
     }

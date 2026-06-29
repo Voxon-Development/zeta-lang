@@ -154,6 +154,9 @@ pub enum ParseErrorKind {
     /// An identifier token had empty text (lexer bug).
     EmptyIdent,
 
+    /// A package statement that does something like `foo::bar.Baz` which means importing some sort of type or function.
+    PackageStmtCannotImport,
+
     /// The parser entered recovery and could not synchronise.
     RecoveryFailure,
 
@@ -223,6 +226,9 @@ impl fmt::Display for ParseErrorKind {
                     f,
                     "Expected a type after keyword `throws` in function signature"
                 )
+            }
+            ParseErrorKind::PackageStmtCannotImport => {
+                write!(f, "package path cannot contain a trailing `.Ident`")
             }
         }
     }
