@@ -1,6 +1,5 @@
 use crate::backend::Backend;
 use crate::cranelift::{clif_type, cranelift_intrinsics};
-use cranelift_codegen::ir::AbiParam;
 use cranelift_codegen::ir::Block;
 use cranelift_codegen::ir::Block as ClifBlock;
 use cranelift_codegen::ir::BlockArg;
@@ -11,12 +10,13 @@ use cranelift_codegen::ir::Signature;
 use cranelift_codegen::ir::Type;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types;
+use cranelift_codegen::ir::{AbiParam, SigRef};
 use cranelift_codegen::isa;
 use cranelift_codegen::settings::Configurable;
-use cranelift_frontend::{FuncInstBuilder, FunctionBuilder, FunctionBuilderContext, Variable};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClifModule};
 use cranelift_object::{ObjectBuilder, ObjectModule, ObjectProduct, object};
-use ir::ast::InlineModifier;
+use ir::ast::{ExternModifier, InlineModifier};
 use ir::hir::StrId;
 use ir::ir_hasher::FxHashBuilder;
 use ir::layout::TargetInfo;
@@ -47,6 +47,8 @@ pub struct CraneliftBackend {
     target: TargetInfo,
     emit_asm: bool,
     main_emitted: bool,
+    #[allow(dead_code)] // TODO remove
+    sig_cache: HashMap<(usize, usize), SigRef, FxHashBuilder>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +116,9 @@ impl CraneliftBackend {
             .declare_function("__enum_tag", Linkage::Import, &sig_enum_tag)
             .unwrap();
 
+        let sig_cache: HashMap<(usize, usize), SigRef, FxHashBuilder> =
+            HashMap::with_hasher(FxHashBuilder);
+
         CraneliftBackend {
             module,
             string_data: HashMap::new(),
@@ -123,8 +128,9 @@ impl CraneliftBackend {
             func_ids: HashMap::with_hasher(FxHashBuilder),
             context,
             target: TargetInfo { ptr_bytes: 8 },
-            emit_asm: true,
+            emit_asm: false,
             main_emitted: false,
+            sig_cache,
         }
     }
 
@@ -245,8 +251,9 @@ impl CraneliftBackend {
                     .get(&(curr_bb, *dest))
                     .expect("phi param missing");
                 let param = builder.block_params(*clif_bb)[*idx];
-                let var = builder.declare_var(types::I64);
-                let param_i64 = if builder.func.dfg.value_type(param) != types::I64 {
+                let value_type = builder.func.dfg.value_type(param);
+                let var = builder.declare_var(value_type);
+                let param_i64 = if value_type != types::I64 {
                     builder.ins().uextend(types::I64, param)
                 } else {
                     param
@@ -403,7 +410,8 @@ impl CraneliftBackend {
 
                 let ptr = cranelift_intrinsics::stack_alloc(builder, &mut self.module, size_bytes);
 
-                let var = builder.declare_var(types::I64);
+                let clif_ty = clif_type(ty);
+                let var = builder.declare_var(clif_ty);
                 builder.def_var(var, ptr);
 
                 var_map.insert(*dest, var);
@@ -430,7 +438,7 @@ impl CraneliftBackend {
                 let flags = MemFlags::new();
                 let loaded = builder.ins().load(clif_ty, flags, addr, 0);
 
-                let var = builder.declare_var(types::I64);
+                let var = builder.declare_var(clif_ty);
                 builder.def_var(var, loaded);
                 var_map.insert(*dest, var);
             }
@@ -475,11 +483,9 @@ impl CraneliftBackend {
                 for a in args {
                     let val = match a {
                         Operand::Value(v) => {
-                            let var = var_map.get(v).unwrap_or_else(|| {
-                                println!("undefined call arg: {:?}", v);
-                                println!("var map {:?}", var_map);
-                                panic!("undefined call arg")
-                            });
+                            let var = var_map
+                                .get(v)
+                                .unwrap_or_else(|| panic!("undefined call arg"));
                             let val = builder.use_var(*var);
                             let val_type = builder.func.dfg.value_type(val);
                             if val_type != types::I64 {
@@ -531,6 +537,7 @@ impl CraneliftBackend {
                         if dest.is_some() {
                             sig.returns.push(AbiParam::new(types::I64));
                         }
+
                         let fid = ObjectModule::declare_function(
                             &mut self.module,
                             func_name,
@@ -545,7 +552,7 @@ impl CraneliftBackend {
                     };
 
                     let callee = self.module.declare_func_in_func(func_id, &mut builder.func);
-                    let call_inst = FuncInstBuilder::call(builder.ins(), callee, &arg_vals);
+                    let call_inst = builder.ins().call(callee, &arg_vals);
 
                     let results = builder.inst_results(call_inst);
                     if let Some(d) = dest {
@@ -592,43 +599,157 @@ impl CraneliftBackend {
                 var_map.insert(*dest, var);
             }
 
-            Instruction::ClassCall {
-                dest,
-                object,
-                method_id: _,
-                args,
-            } => {
-                let obj = match Operand::Value(*object) {
+            Instruction::AddressOf { dest, source } => {
+                let src_var = *var_map
+                    .get(source)
+                    .expect("AddressOf: source value undefined");
+
+                let src_val = builder.use_var(src_var);
+
+                let var = builder.declare_var(types::I64);
+                builder.def_var(var, src_val);
+
+                var_map.insert(*dest, var);
+            }
+
+            Instruction::Load { dest, ptr } => {
+                let ptr_val = match ptr {
                     Operand::Value(v) => {
-                        let var = var_map.get(&v).expect("object undefined");
+                        let var = var_map.get(v).expect("Load: pointer value undefined");
+
                         builder.use_var(*var)
                     }
-                    _ => unimplemented!(),
+
+                    Operand::ConstInt(i) => builder.ins().iconst(types::I64, *i),
+
+                    _ => panic!("Load: invalid pointer operand"),
                 };
 
-                let mut arg_vals: Vec<cranelift_codegen::ir::Value> = vec![obj];
+                let ty = func
+                    .value_types
+                    .get(dest)
+                    .expect("Load: destination type missing");
+
+                let clif_ty = clif_type(ty);
+
+                let loaded = builder.ins().load(clif_ty, MemFlags::new(), ptr_val, 0);
+
+                let var = builder.declare_var(clif_ty);
+                builder.def_var(var, loaded);
+
+                var_map.insert(*dest, var);
+            }
+
+            Instruction::Store { ptr, value } => {
+                let ptr_val = match ptr {
+                    Operand::Value(v) => {
+                        let var = var_map.get(v).expect("Store: pointer value undefined");
+
+                        builder.use_var(*var)
+                    }
+
+                    Operand::ConstInt(i) => builder.ins().iconst(types::I64, *i),
+
+                    _ => panic!("Store: invalid pointer operand"),
+                };
+
+                let value_val = match value {
+                    Operand::Value(v) => {
+                        let var = var_map.get(v).expect("Store: value undefined");
+
+                        builder.use_var(*var)
+                    }
+
+                    Operand::ConstInt(i) => builder.ins().iconst(types::I64, *i),
+
+                    Operand::ConstBool(b) => {
+                        builder.ins().iconst(types::I8, if *b { 1 } else { 0 })
+                    }
+
+                    Operand::ConstFloat(f) => builder.ins().f64const(*f),
+
+                    _ => unimplemented!("Store operand type"),
+                };
+
+                builder.ins().store(MemFlags::new(), value_val, ptr_val, 0);
+            }
+
+            Instruction::InterfaceDispatch {
+                dest,
+                object,
+                method_slot,
+                args,
+            } => {
+                let obj = match var_map.get(object) {
+                    Some(v) => builder.use_var(*v),
+                    None => panic!("InterfaceDispatch: undefined object"),
+                };
+
+                let flags = MemFlags::new();
+                // data_ptr   = load object[0]
+                let data_ptr = builder.ins().load(types::I64, flags, obj, 0);
+
+                // vtable_ptr = load object[PTR_SIZE]
+                let ptr_size: i64 = self.target.ptr_bytes as i64;
+                let vtable_addr = builder.ins().iadd_imm(obj, ptr_size);
+                let vtable_ptr = builder.ins().load(types::I64, flags, vtable_addr, 0);
+
+                // fnptr = load vtable_ptr[method_slot * PTR_SIZE]
+                let slot_index = *method_slot as i64;
+                let slot_offset = slot_index * ptr_size;
+                let fnptr_idx = builder.ins().iadd_imm(vtable_ptr, slot_offset);
+                let fnptr_addr = builder.ins().load(types::I64, flags, fnptr_idx, 0);
+                let fn_ptr = builder.ins().load(types::I64, flags, fnptr_addr, 0);
+
+                let mut call_args = Vec::new();
+                call_args.push(data_ptr);
+
                 for arg in args {
                     let val = match arg {
                         Operand::Value(v) => {
-                            let var = var_map.get(v).expect("argument undefined");
+                            let var = var_map.get(v).expect("arg undefined");
                             builder.use_var(*var)
                         }
                         Operand::ConstInt(i) => builder.ins().iconst(types::I64, *i),
-                        _ => unimplemented!(),
+                        Operand::ConstFloat(f) => builder.ins().f64const(*f),
+                        Operand::ConstBool(b) => {
+                            builder.ins().iconst(types::I8, if *b { 1 } else { 0 })
+                        }
+                        Operand::ConstString(_str_id) => unimplemented!(),
+                        Operand::FunctionRef(_str_id) => unimplemented!(),
+                        Operand::GlobalRef(_str_id) => unimplemented!(),
                     };
-                    arg_vals.push(val);
+                    call_args.push(val);
                 }
 
-                // TODO: needs proper vtable implementation
+                let mut sig = self.module.make_signature();
+                sig.params.push(AbiParam::new(types::I64)); // object + args
+                for _ in args {
+                    sig.params.push(AbiParam::new(types::I64));
+                }
+
+                if dest.is_some() {
+                    sig.returns.push(AbiParam::new(types::I64));
+                }
+
+                let sig_ref = builder.func.import_signature(sig);
+
+                // call_indirect fnptr(data_ptr, args...)
+                let call = builder.ins().call_indirect(sig_ref, fn_ptr, &call_args);
+
                 if let Some(d) = dest {
+                    let res = builder.inst_results(call).get(0).copied();
+
+                    let value = match res {
+                        Some(v) => v,
+                        None => builder.ins().iconst(types::I64, 0),
+                    };
+
                     let var = builder.declare_var(types::I64);
-                    let dummy = builder.ins().iconst(types::I64, 0);
-                    builder.def_var(var, dummy);
+                    builder.def_var(var, value);
                     var_map.insert(*d, var);
                 }
             }
-
-            Instruction::InterfaceDispatch { .. } => {}
             Instruction::UpcastToInterface { .. } => {}
             Instruction::Interpolate { .. } => {}
             Instruction::EnumConstruct { .. } => {}
@@ -645,7 +766,7 @@ impl CraneliftBackend {
         let id = self
             .module
             .declare_data(
-                &format!(".str.{}", self.string_data.len()),
+                &format!("t_str_{}", self.string_data.len()),
                 Linkage::Local,
                 false,
                 false,
@@ -724,14 +845,22 @@ impl Backend for CraneliftBackend {
 
             let resolved_name = self.context.resolve_string(&*name);
 
+            let linkage = if matches!(
+                func.function_metadata.extern_modifier,
+                ExternModifier::Abi(_)
+            ) {
+                Linkage::Import
+            } else {
+                Linkage::Local
+            };
+
             let (actual_name, linkage) = if resolved_name == "main" && !self.main_emitted {
                 zeta_main_fid = Some(name.clone());
                 ("_zeta_main", Linkage::Local)
             } else if resolved_name == "main" && self.main_emitted {
-                // Skip — another module already owns main
                 continue;
             } else {
-                (resolved_name, Linkage::Local)
+                (resolved_name, linkage)
             };
 
             let fid = self
@@ -743,17 +872,17 @@ impl Backend for CraneliftBackend {
 
         for func in module.functions.values() {
             if func.name.eq("main") && !self.func_ids.contains_key(&func.name) {
-                // This module's main was skipped above
                 continue;
             }
-            if !func.name.eq("main") {
+            if let ExternModifier::Abi(_) = func.function_metadata.extern_modifier {
+                self.emit_extern(func);
+            } else if !func.name.eq("main") {
                 self.emit_function(func);
             }
         }
 
         if let Some(zeta_main_name) = zeta_main_fid {
             if !self.main_emitted {
-                // emit the actual _zeta_main body
                 let main_func = module
                     .functions
                     .values()
@@ -771,7 +900,6 @@ impl Backend for CraneliftBackend {
     fn emit_function(&mut self, func: &Function) {
         let mut sig = Signature::new(self.module.isa().default_call_conv());
         for param in &func.params {
-            //sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(clif_type(&param.1)));
         }
         if func.ret_type != SsaType::Void {
@@ -822,16 +950,15 @@ impl Backend for CraneliftBackend {
             HashMap::with_hasher(FxHashBuilder);
 
         let mut next_var_idx: usize = 0;
-        for (i, &(v, _)) in func.params.iter().enumerate() {
+        for (i, &(v, ref ty)) in func.params.iter().enumerate() {
+            let clif_ty = clif_type(ty);
+
             let var =
-                CraneliftBackend::make_and_declare_var(&mut builder, &mut next_var_idx, types::I64);
+                CraneliftBackend::make_and_declare_var(&mut builder, &mut next_var_idx, clif_ty);
+
             let pv = builder.block_params(entry)[i];
-            let pv_i64 = if builder.func.dfg.value_type(pv) != types::I64 {
-                builder.ins().uextend(types::I64, pv)
-            } else {
-                pv
-            };
-            builder.def_var(var, pv_i64);
+
+            builder.def_var(var, pv);
             var_map.insert(v, var);
         }
 
@@ -888,9 +1015,9 @@ impl Backend for CraneliftBackend {
 
         builder.seal_all_blocks();
         builder.finalize();
+
         self.module.define_function(fid, &mut ctx).unwrap();
 
-        /*
         if self.emit_asm {
             println!("==========================");
             println!("Assembly for function `{}`:", &func.name);
@@ -898,7 +1025,7 @@ impl Backend for CraneliftBackend {
             println!("--- Cranelift IR ---");
             println!("{}", ctx.func.display());
         }
-         */
+
         self.module.clear_context(&mut ctx);
     }
 

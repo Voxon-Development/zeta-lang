@@ -44,13 +44,6 @@ pub enum Intrinsic {
     AtomicCmpXchg, // Atomic compare-and-swap
 }
 
-/// Resolves a function name to its corresponding intrinsic operation
-///
-/// # Arguments
-/// * `name` - The name of the intrinsic to resolve
-///
-/// # Returns
-/// `Some(Intrinsic)` if the name matches a known intrinsic, `None` otherwise
 pub fn resolve_intrinsic(name: &str) -> Option<Intrinsic> {
     use Intrinsic::*;
 
@@ -161,7 +154,7 @@ pub(super) fn clif_type_of(ty: &HirType) -> SsaType {
         HirType::Boolean => SsaType::Bool,
         HirType::String => SsaType::String,
         HirType::Struct(name, args)
-        | HirType::Interface(name, args)
+        | HirType::DynInterface(name, args)
         | HirType::Enum(name, args) => {
             SsaType::User(name.clone(), args.iter().map(clif_type_of).collect())
         }
@@ -170,6 +163,7 @@ pub(super) fn clif_type_of(ty: &HirType) -> SsaType {
     }
 }
 
+#[allow(dead_code)] // TODO: implement properly as Linux uses real syscalls, unlike systems like Windows which need to call into their OS API
 fn lower_syscall(
     builder: &mut FunctionBuilder,
     call: &mut ClFunction,
