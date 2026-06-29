@@ -13,6 +13,7 @@ zetaruntime = { path = "../zeta_utilities" }
 smallvec = "2.0.0-alpha.12"
 is-terminal = "0.4.17"
 owo-colors = "4.2.3"
+arrayvec = "0.7.6"
 
 [dev-dependencies]
 rstest = "0.26.1"

@@ -10,3 +10,5 @@ opt-level = 3
 ir = { path = "../ir" }
 zetaruntime = { path = "../zeta_utilities" }
 smallvec = "2.0.0-alpha.12"
+codex-dependency-graph = { path = "../codex-dependency-graph" }
+arrayvec = "0.7.7"

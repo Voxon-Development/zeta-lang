@@ -12,3 +12,4 @@ zetaruntime = { path = "../zeta_utilities" }
 ir = { path = "../ir" }
 smallvec = "2.0.0-alpha.12"
 arrayvec = "0.7.6"
+codex-dependency-graph = { path = "../codex-dependency-graph" }
