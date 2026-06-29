@@ -97,7 +97,7 @@ Pros over JIT:
 
 Pros over AOT:
 - Can use profile-guided optimization at runtime to even rival AOT compiled languages like C/C++/Rust/Zig/Go
-- WIT can optimize only what runs often — ideal for large programs where 90% of code is cold
+- WIT can optimize only what runs often, ideal for large programs where 90% of code is cold
 
 Pros over Both:
 - WIT IR can be pure and direct. You don’t need intermediate stack-based bytecode or virtual machine state juggling, which reduces complexity and overhead.
