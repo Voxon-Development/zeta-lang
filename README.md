@@ -52,7 +52,7 @@ fn main() throws GameError, RandomNumberError -> void {
     
     try *game.print()
     *game.play_game() else (err) {
-        match (err) {
+        match err {
             case Game { msg } => {
                 try std::io.out.println(msg);
             },
@@ -63,7 +63,7 @@ fn main() throws GameError, RandomNumberError -> void {
                 try std::io.out.println("Please input a real number!");
             }
         }
-    }
+    };
     
     try std::io.out.println("Thanks for playing!");
 }
