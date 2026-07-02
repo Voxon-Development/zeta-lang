@@ -21,8 +21,7 @@ public struct GuessGame {
 impl GuessGame {
     fn play_game(&this) throws GameError -> void {    
         for _ in 0..5 {    
-            try std::io.out.print("Enter your guess: ");
-            input := try std.io.read();
+            input := try std::io.out.readln("Enter your guess: "");
             guess := try input.parse<i32>();
             match guess {    
                 g if g == this.target => {    
