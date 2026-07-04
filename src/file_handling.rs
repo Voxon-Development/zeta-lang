@@ -4,8 +4,9 @@ use emberforge_compiler::midend::ir::module_lowerer::MirModuleLowerer;
 use engraver_assembly_emit::backend::Backend;
 use engraver_assembly_emit::cranelift::cranelift_backend::CraneliftBackend;
 use ir::hir::{HirModule, StrId};
-use ir::ir_hasher::HashSet;
-use ir::ssa_ir::Module;
+use ir::ir_hasher::{FxHashBuilder, HashSet};
+use ir::ssa_ir::{Function, Module};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use walkdir::WalkDir;
@@ -116,6 +117,7 @@ where
             name,
             stmts: &[],
             parser_diagnostics: scribe_parser::parser::ParserDiagnostics::new(),
+            source: StrId(pool.intern(contents.as_str())),
         });
     }
 
@@ -138,22 +140,10 @@ where
             .unwrap()
     };
 
-    let contents_static: &str = {
-        let stored = bump
-            .alloc_many(contents_bytes)
-            .ok_or(CompilerError::FailedToAllocateBump)?;
-        std::str::from_utf8(unsafe {
-            std::slice::from_raw_parts(stored.as_ptr(), contents_bytes.len())
-        })
-        .unwrap()
-    };
+    let source = StrId(pool.intern_bytes(contents_bytes));
 
-    let parse_result = scribe_parser::parser::parse_program(
-        contents_static,
-        file_name_static,
-        pool.clone(),
-        bump.clone(),
-    );
+    let parse_result =
+        scribe_parser::parser::parse_program(source, file_name_static, pool.clone(), bump.clone());
 
     let stmts: &'bump [ir::ast::Stmt<'a, 'bump>] = bump.alloc_slice(&parse_result.statements);
 
@@ -162,6 +152,7 @@ where
         name,
         stmts,
         parser_diagnostics: parse_result.diagnostics,
+        source,
     })
 }
 
@@ -186,11 +177,27 @@ pub(crate) fn emit_all<'a, 'bump>(
     dep_graph: &'a DepGraph,
 ) {
     let len = hir_modules.len();
+
+    let mut global_funcs: HashMap<StrId, Function, FxHashBuilder> =
+        HashMap::with_hasher(FxHashBuilder);
+
     for &module_idx in compilation_order {
         if module_idx < len {
-            let mir_module: Module =
-                MirModuleLowerer::new(pool.clone(), extern_c_names, dep_graph, module_idx)
-                    .lower_module(hir_modules[module_idx]);
+            // Snapshot: MirModuleLowerer borrows this for its lifetime,
+            // which ends when lower_module returns. Then we can mutate global_funcs.
+            let funcs_snapshot = global_funcs.clone();
+
+            let mir_module: Module = MirModuleLowerer::new(
+                pool.clone(),
+                extern_c_names,
+                dep_graph,
+                module_idx,
+                &funcs_snapshot,
+            )
+            .lower_module(hir_modules[module_idx]);
+
+            global_funcs.extend(mir_module.functions.iter().map(|(k, v)| (*k, v.clone())));
+
             CraneliftBackend::emit_module(backend, &mir_module);
         } else {
             eprintln!(

@@ -80,7 +80,7 @@ pub enum SsaType {
     Void,   // Unit type, zero size
 
     // Composite types
-    User(StrId, Vec<SsaType>), // User-defined type with generic parameters
+    User(StrId, Vec<SsaType>), // User-defined type with fields
     Interface(StrId),
     Enum(Vec<SsaType>),  // Tagged union of types
     Tuple(Vec<SsaType>), // Fixed-size collection of heterogeneous types

@@ -34,7 +34,7 @@ pub struct LoweringCtx<'a, 'bump> {
 
 pub struct HirLowerer<'a, 'bump> {
     pub ctx: LoweringCtx<'a, 'bump>,
-    pub error_reporter: ErrorReporter<'a, 'bump>,
+    pub error_reporter: ErrorReporter<'a>,
     pub(crate) mono: Monomorphizer<'a, 'bump>,
     _phantom: PhantomData<&'bump ()>,
 }

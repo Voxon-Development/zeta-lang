@@ -295,13 +295,16 @@ where
     Lambda {
         params: &'bump [HirType<'a, 'bump>],
         return_type: &'a HirType<'a, 'bump>,
-        throws: Option<&'bump [HirType<'a, 'bump>]>,
     },
     Generic(StrId),
     Void,
     This,
     Null,
     Char,
+    /// Placeholder used when a type couldn't be determined, e.g. after a
+    /// type error has already been reported for the expression, so callers
+    /// don't cascade a second complaint about the same root cause.
+    Infer,
     Nullable(&'a HirType<'a, 'bump>),
     Dyn {
         bounds: &'bump [HirType<'a, 'bump>],
@@ -365,10 +368,6 @@ where
     Defer(&'bump HirStmt<'a, 'bump>),
     Import(Path<'a, 'bump>, SourceSpan<'a>),
     Package(Path<'a, 'bump>, SourceSpan<'a>),
-    Throw {
-        inner: HirExpr<'a, 'bump>,
-        span: SourceSpan<'a>,
-    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -435,13 +434,13 @@ pub enum HirExpr<'a, 'bump>
 where
     'bump: 'a,
 {
-    Null,
-    Number(i64),
-    String(StrId),
-    Boolean(bool),
-    Ident(StrId),
-    Tuple(&'bump [HirExpr<'a, 'bump>]),
-    Decimal(f64),
+    Null(SourceSpan<'a>),
+    Number(i64, SourceSpan<'a>),
+    String(StrId, SourceSpan<'a>),
+    Boolean(bool, SourceSpan<'a>),
+    Ident(StrId, SourceSpan<'a>),
+    Tuple(&'bump [HirExpr<'a, 'bump>], SourceSpan<'a>),
+    Decimal(f64, SourceSpan<'a>),
     Binary {
         left: &'bump HirExpr<'a, 'bump>,
         op: Operator,
@@ -451,11 +450,13 @@ where
     Call {
         callee: &'bump HirExpr<'a, 'bump>,
         args: &'bump [HirExpr<'a, 'bump>],
+        span: SourceSpan<'a>,
     },
     InterfaceCall {
         callee: &'bump HirExpr<'a, 'bump>,
         args: &'bump [HirExpr<'a, 'bump>],
         interface: StrId,
+        span: SourceSpan<'a>,
     },
     FieldAccess {
         object: &'bump HirExpr<'a, 'bump>,
@@ -473,6 +474,7 @@ where
         enum_name: StrId,
         variant: StrId,
         args: &'bump [HirExpr<'a, 'bump>],
+        span: SourceSpan<'a>,
     },
     ExprList {
         list: &'bump [HirExpr<'a, 'bump>],
@@ -511,7 +513,6 @@ where
         modifier: Option<LambdaModifier>,
         params: &'bump [HirLambdaParam<'a, 'bump>],
         return_type: &'a HirType<'a, 'bump>,
-        throws: Option<&'bump [HirType<'a, 'bump>]>,
         body: &'bump HirStmt<'a, 'bump>,
         span: SourceSpan<'a>,
     },
@@ -606,20 +607,9 @@ where
             HirType::Lambda {
                 params,
                 return_type,
-                throws,
             } => {
                 let params_str: Vec<_> = params.iter().map(|p| p.to_string()).collect();
                 write!(f, "fn({})", params_str.join(", "))?;
-
-                if let Some(errs) = throws {
-                    write!(f, " throws ")?;
-                    for (i, e) in errs.iter().enumerate() {
-                        if i > 0 {
-                            write!(f, ", ")?;
-                        }
-                        write!(f, "{}", e)?;
-                    }
-                }
 
                 write!(f, " -> {}", return_type)
             }
@@ -654,6 +644,7 @@ where
                 }
                 Ok(())
             }
+            HirType::Infer => write!(f, "infer"),
         }
     }
 }

@@ -1,6 +1,6 @@
 use codex_dependency_graph::DepGraph;
 use ir::{
-    hir::{HirFunc, HirInterface, HirStruct, HirType},
+    hir::{HirEnum, HirFunc, HirInterface, HirStruct, HirType},
     ir_hasher::HashSet,
 };
 use std::collections::HashMap;
@@ -25,6 +25,7 @@ impl<'a, 'bump> TypeMethodTable<'a, 'bump> {
 pub struct TypeContext<'a, 'bump> {
     pub variables: HashMap<String, HirType<'a, 'bump>>,
     pub structs: HashMap<String, HirStruct<'a, 'bump>>,
+    pub enums: HashMap<String, HirEnum<'a, 'bump>>,
     pub interfaces: HashMap<String, HirInterface<'a, 'bump>>,
     pub module_functions: HashMap<usize, HashMap<String, HirFunc<'a, 'bump>>>,
     pub type_methods: HashMap<String, TypeMethodTable<'a, 'bump>>,
@@ -43,6 +44,7 @@ impl<'a, 'bump> TypeContext<'a, 'bump> {
         Self {
             variables: HashMap::new(),
             structs: HashMap::new(),
+            enums: HashMap::new(),
             interfaces: HashMap::new(),
             module_functions: HashMap::new(),
             type_methods: HashMap::new(),
@@ -115,6 +117,14 @@ impl<'a, 'bump> TypeContext<'a, 'bump> {
         self.structs.get(name).copied()
     }
 
+    pub fn add_enum(&mut self, name: String, enum_def: HirEnum<'a, 'bump>) {
+        self.enums.insert(name, enum_def);
+    }
+
+    pub fn get_enum(&self, name: &str) -> Option<HirEnum<'a, 'bump>> {
+        self.enums.get(name).copied()
+    }
+
     pub fn add_impl_methods(&mut self, target: &str, methods: &[HirFunc<'a, 'bump>]) {
         let table = self.type_methods.entry(target.to_string()).or_default();
         for func in methods {
@@ -178,6 +188,7 @@ impl<'a, 'bump> TypeContext<'a, 'bump> {
         Self {
             variables: self.variables.clone(),
             structs: self.structs.clone(),
+            enums: self.enums.clone(),
             interfaces: self.interfaces.clone(),
             module_functions: self.module_functions.clone(),
             type_methods: self.type_methods.clone(),

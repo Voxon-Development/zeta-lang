@@ -434,16 +434,16 @@ impl IrPrettyPrinter {
         expr: &HirExpr<'_, '_>,
     ) -> Result<(), fmt::Error> {
         match expr {
-            HirExpr::Ident(name) => {
+            HirExpr::Ident(name, _) => {
                 write!(output, "{}", self.resolve_str(*name))?;
             }
-            HirExpr::Number(n) => {
+            HirExpr::Number(n, _) => {
                 write!(output, "{}", n)?;
             }
-            HirExpr::String(s) => {
+            HirExpr::String(s, _) => {
                 write!(output, "\"{}\"", self.resolve_str(*s))?;
             }
-            HirExpr::Boolean(b) => {
+            HirExpr::Boolean(b, _) => {
                 write!(output, "{}", b)?;
             }
             HirExpr::StructInit { name, args, .. } => {
@@ -457,7 +457,7 @@ impl IrPrettyPrinter {
                 }
                 write!(output, "}}")?;
             }
-            HirExpr::Call { callee, args } => {
+            HirExpr::Call { callee, args, .. } => {
                 self.format_hir_expression(output, callee)?;
                 write!(output, "(")?;
                 for (i, arg) in args.iter().enumerate() {
@@ -548,7 +548,6 @@ impl IrPrettyPrinter {
             HirType::Lambda {
                 params,
                 return_type,
-                throws,
             } => {
                 write!(output, "fn(")?;
                 for (i, param) in params.iter().enumerate() {
@@ -558,17 +557,6 @@ impl IrPrettyPrinter {
                     self.format_hir_type(output, param)?;
                 }
                 write!(output, ")")?;
-
-                if let Some(throws) = throws {
-                    write!(output, " throws ")?;
-                    let len = throws.len();
-                    for i in 0..len {
-                        write!(output, "{}", throws[i])?;
-                        if i + 1 < len {
-                            write!(output, ", ")?;
-                        }
-                    }
-                }
 
                 write!(output, " -> ")?;
                 self.format_hir_type(output, return_type)?;

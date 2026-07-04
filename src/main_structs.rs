@@ -17,6 +17,7 @@ pub struct ModuleWithArena<'a, 'bump> {
     pub stmts: &'bump [Stmt<'a, 'bump>],
     /// Non-fatal diagnostics from the parser.
     pub parser_diagnostics: ParserDiagnostics<'a>,
+    pub source: StrId,
 }
 
 #[derive(Debug)]
@@ -28,7 +29,6 @@ pub enum CompilerError<'a> {
     FailedToAllocateStringPool,
     InvalidFileName(Vec<u8>),
     ParserError(Vec<&'a str>),
-    TypeError(String),
     TypeCheckError,
     FinishError(Box<dyn std::error::Error>),
     LinkFailed,
@@ -52,7 +52,6 @@ impl<'a> fmt::Display for CompilerError<'a> {
             CompilerError::ParserError(errs) => {
                 write!(f, "Parser errors: {:?}", errs)
             }
-            CompilerError::TypeError(e) => write!(f, "Type error: {}", e),
             CompilerError::TypeCheckError => write!(f, "Type check failed"),
             CompilerError::FinishError(e) => write!(f, "Backend finish error: {}", e),
             CompilerError::LinkFailed => {

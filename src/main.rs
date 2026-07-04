@@ -275,7 +275,7 @@ fn lower_all_from_refs<'a, 'bump>(
     let mut errors: Vec<CompilerError<'a>> = Vec::new();
     let type_checker = Rc::new(RefCell::new(TypeChecker::new(dep_graph, bump)));
 
-    let mut file_names: Vec<&str> = Vec::with_capacity(modules.len());
+    let mut file_names_and_contents: Vec<(StrId, StrId)> = Vec::with_capacity(modules.len());
     let lowered_modules = modules
         .iter()
         .enumerate()
@@ -285,7 +285,7 @@ fn lower_all_from_refs<'a, 'bump>(
                 stmt_vec.push(*stmt);
             }
 
-            file_names.push(m.name.as_str());
+            file_names_and_contents.push((m.name, m.source));
 
             match pass_hir_lowering(
                 stmt_vec,
@@ -308,7 +308,7 @@ fn lower_all_from_refs<'a, 'bump>(
 
     if let Err(e) = check_all_module_bodies(
         lowered_modules.as_slice(),
-        file_names.as_slice(),
+        file_names_and_contents.as_slice(),
         type_checker,
     ) {
         errors.push(e);
