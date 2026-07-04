@@ -142,7 +142,6 @@ mod tests {
                 assert_eq!(s.name.as_str(), "Point");
                 assert!(s.params.is_some());
                 assert_eq!(s.params.unwrap().len(), 2); // x and y fields
-                assert!(s.body.is_empty()); // no methods in struct
             }
             _ => panic!("Expected StructDecl"),
         }

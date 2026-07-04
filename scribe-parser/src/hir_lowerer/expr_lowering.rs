@@ -454,33 +454,30 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     pub(super) fn find_interface_method(&self, object: &HirExpr, method: StrId) -> Option<StrId> {
         let class_name: StrId = match object {
             HirExpr::Ident(var, _span) => {
-                if let Some(_) = self.ctx.variable_types.borrow().get(var) {
-                    Some(var.clone())
+                if self.ctx.variable_types.borrow().get(var).is_some() {
+                    Some(*var)
+                } else if self.ctx.classes.borrow().contains_key(var) {
+                    Some(*var)
                 } else {
-                    if self.ctx.classes.borrow().contains_key(var) {
-                        Some(var.clone())
-                    } else {
-                        None
-                    }
+                    None
                 }
             }
             _ => None,
         }?;
 
-        let binding = self.ctx.classes.borrow();
-        let class = binding.get(&class_name)?;
-        let Some(interfaces) = class.interfaces else {
-            return None;
-        };
+        let struct_interfaces = self.ctx.struct_interfaces.borrow();
+        let iface_names = struct_interfaces.get(&class_name)?;
 
-        for iface_name in interfaces {
+        for iface_name in iface_names {
             let if_binding = self.ctx.interfaces.borrow();
-            let iface = if_binding.get(iface_name)?;
+            let Some(iface) = if_binding.get(iface_name) else {
+                continue;
+            };
             let Some(methods) = iface.methods else {
-                return None;
+                continue;
             };
             if methods.iter().any(|m| m.name == method) {
-                return Some(iface_name.clone());
+                return Some(*iface_name);
             }
         }
         None

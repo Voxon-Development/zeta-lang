@@ -646,8 +646,6 @@ mod tests {
             name: struct_name,
             generics: None,
             params: None,
-            body: &[],
-            constants: &[],
             span: dummy_span(),
         }));
 
@@ -745,6 +743,7 @@ mod tests {
             interface: None,
             target: impl_target,
             methods: None,
+            constants: None,
             span: dummy_span(),
         }));
 

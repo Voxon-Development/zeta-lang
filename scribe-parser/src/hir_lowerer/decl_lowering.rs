@@ -114,20 +114,6 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             .collect();
 
         let fields = self.ctx.bump.alloc_slice(&fields_vec);
-        let methods_vec: Vec<HirFunc<'a, 'bump>> = c
-            .body
-            .into_iter()
-            .map(|s| self.lower_func_body_from_proto(*s, Some(c.name)))
-            .collect();
-
-        let methods = self.ctx.bump.alloc_slice(&methods_vec);
-
-        let constants_vec: Vec<ConstStmt<'a, 'bump>> = c
-            .constants
-            .into_iter()
-            .map(|b| self.lower_const_stmt(*b))
-            .collect();
-        let constants: &mut [ConstStmt] = self.ctx.bump.alloc_slice(&constants_vec);
 
         HirStruct {
             name: c.name,
@@ -138,17 +124,6 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 Some(generics.unwrap())
             },
             fields,
-            interfaces: None,
-            methods: if methods.is_empty() {
-                None
-            } else {
-                Some(methods)
-            },
-            constants: if constants.is_empty() {
-                None
-            } else {
-                Some(constants)
-            },
         }
     }
 

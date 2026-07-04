@@ -101,16 +101,6 @@ impl<'a, 'bump> TypeContext<'a, 'bump> {
 
     pub fn add_struct(&mut self, name: String, struct_def: HirStruct<'a, 'bump>) {
         self.structs.insert(name.clone(), struct_def);
-
-        if let Some(methods) = struct_def.methods {
-            for func in methods {
-                let method_name = func.unmangled_name.to_string();
-                self.type_methods
-                    .entry(name.clone())
-                    .or_default()
-                    .insert(method_name, *func);
-            }
-        }
     }
 
     pub fn get_struct(&self, name: &str) -> Option<HirStruct<'a, 'bump>> {

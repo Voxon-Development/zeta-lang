@@ -33,30 +33,21 @@ where
             None
         };
 
-        let (params, body, constants) = if self.cursor.consume(TokenKind::Semicolon) {
+        let params = if self.cursor.consume(TokenKind::Semicolon) {
             // Unit struct: `struct Foo;`
-            let consts: &[ConstStmt] = &[];
-            (None, &[], consts)
+            None
         } else if self.cursor.peek() == TokenKind::LParen {
             // Tuple struct: `struct Foo(i32, i32);`
             let tuple_fields = self.parse_tuple_struct_fields()?;
             self.cursor.expect(TokenKind::Semicolon)?;
-            let consts: &[ConstStmt] = &[];
-            (Some(tuple_fields), &[], consts)
+            Some(tuple_fields)
         } else {
             // Regular struct with braces
             self.cursor.expect(TokenKind::LBrace)?;
 
             let mut fields = Vec::new_in(self.bump);
-            let mut consts = Vec::new_in(self.bump);
 
             while self.cursor.peek() != TokenKind::RBrace && self.cursor.peek() != TokenKind::EOF {
-                if self.cursor.peek() == TokenKind::Const {
-                    let const_stmt = self.parse_const_stmt()?;
-                    consts.push(const_stmt);
-                    continue;
-                }
-
                 let field_vis = if self.cursor.peek() == TokenKind::Private
                     || self.cursor.peek() == TokenKind::Module
                     || self.cursor.peek() == TokenKind::Package
@@ -99,15 +90,11 @@ where
                 })
                 .collect();
 
-            (
-                if fields_as_params.is_empty() {
-                    None
-                } else {
-                    Some(self.bump.alloc_slice_copy(&fields_as_params))
-                },
-                &[],
-                self.bump.alloc_slice_copy(&consts),
-            )
+            if fields_as_params.is_empty() {
+                None
+            } else {
+                Some(self.bump.alloc_slice_copy(&fields_as_params))
+            }
         };
 
         let struct_decl = StructDecl {
@@ -115,8 +102,6 @@ where
             name,
             generics,
             params,
-            body,
-            constants,
             span: token.span,
         };
 
@@ -163,8 +148,15 @@ where
         self.cursor.expect(TokenKind::LBrace)?;
 
         let mut methods = Vec::new_in(self.bump);
+        let mut constants = Vec::new_in(self.bump);
 
         while self.cursor.peek() != TokenKind::RBrace && self.cursor.peek() != TokenKind::EOF {
+            if self.cursor.peek() == TokenKind::Const {
+                let const_stmt = self.parse_const_stmt()?;
+                constants.push(const_stmt);
+                continue;
+            }
+
             let method_vis = if self.cursor.peek() == TokenKind::Private
                 || self.cursor.peek() == TokenKind::Module
                 || self.cursor.peek() == TokenKind::Package
@@ -202,6 +194,11 @@ where
                 None
             } else {
                 Some(self.bump.alloc_slice_copy(&methods))
+            },
+            constants: if constants.is_empty() {
+                None
+            } else {
+                Some(self.bump.alloc_slice_copy(&constants))
             },
             span: token.span,
         };

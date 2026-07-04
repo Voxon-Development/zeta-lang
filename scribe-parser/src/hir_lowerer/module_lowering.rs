@@ -6,6 +6,7 @@ use ir::hir::HirFunc;
 use ir::hir::HirFuncProto;
 use ir::hir::{Hir, HirModule, HirStmt, StrId};
 use ir::hir::{HirParam, HirType};
+use ir::ir_hasher::FxHashMap;
 use zetaruntime::bump::GrowableBump;
 
 impl<'a, 'bump> HirLowerer<'a, 'bump> {
@@ -41,7 +42,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     }
 
     pub fn collect_prototypes(&mut self, stmts: &[Stmt<'a, 'bump>]) {
-        // First sub-pass: register all struct declarations so that lower_type_inner
+        // register all struct declarations so that lower_type_inner
         // can look up field types when processing function signatures below.
         for stmt in stmts {
             if let Stmt::StructDecl(struct_decl) = stmt {
@@ -58,15 +59,9 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             }
         }
 
-        // Second sub-pass: now function prototypes can resolve struct field types.
         for stmt in stmts {
             if let Stmt::FuncDecl(f) = stmt {
                 self.lower_func_as_proto(f, None);
-            }
-            if let Stmt::StructDecl(struct_decl) = stmt {
-                for x in struct_decl.body {
-                    self.lower_func_as_proto(x, Some(struct_decl.name));
-                }
             }
             if let Stmt::InterfaceDecl(interface_decl) = stmt {
                 let Some(methods) = interface_decl.methods else {
@@ -77,11 +72,26 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 }
             }
             if let Stmt::ImplDecl(impl_decl) = stmt {
+                if let Some(iface) = impl_decl.interface {
+                    self.ctx
+                        .struct_interfaces
+                        .borrow_mut()
+                        .entry(impl_decl.target)
+                        .or_insert_with(Vec::new)
+                        .push(iface);
+                }
+
                 let Some(methods) = impl_decl.methods else {
                     continue;
                 };
                 for x in methods {
-                    self.lower_func_as_proto(x, Some(impl_decl.target));
+                    let hir_func = self.lower_func_as_proto(x, Some(impl_decl.target));
+                    self.ctx
+                        .struct_methods
+                        .borrow_mut()
+                        .entry(impl_decl.target)
+                        .or_insert_with(FxHashMap::default)
+                        .insert(hir_func.unmangled_name, hir_func);
                 }
             }
             if let Stmt::Module(module_decl) = stmt {
@@ -90,31 +100,33 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         }
     }
 
-    fn lower_func_as_proto(&mut self, f: &FuncDecl<'a, 'bump>, class_name: Option<StrId>) {
+    fn lower_func_as_proto(
+        &mut self,
+        f: &FuncDecl<'a, 'bump>,
+        class_name: Option<StrId>,
+    ) -> HirFunc<'a, 'bump> {
         let mut proto: HirFuncProto = self.lower_func_proto(f);
-
         let is_extern = matches!(
             proto.function_metadata.extern_modifier,
             ir::ast::ExternModifier::Abi(_)
         );
         let is_main = self.ctx.context.resolve_string(&proto.name) == "main";
-
         if !is_extern && !is_main {
             proto.name = self.mangle_function_name(class_name, proto.name);
         }
 
-        self.ctx.functions.borrow_mut().insert(
-            proto.name,
-            HirFunc {
-                name: proto.name,
-                params: proto.params,
-                return_type: Some(proto.return_type),
-                body: None,
-                function_metadata: proto.function_metadata,
-                generics: None,
-                unmangled_name: proto.unmangled_name,
-            },
-        );
+        let hir_func = HirFunc {
+            name: proto.name,
+            params: proto.params,
+            return_type: Some(proto.return_type),
+            body: None,
+            function_metadata: proto.function_metadata,
+            generics: None,
+            unmangled_name: proto.unmangled_name,
+        };
+
+        self.ctx.functions.borrow_mut().insert(proto.name, hir_func);
+        hir_func
     }
 
     pub(super) fn mangle_function_name(&self, class_name: Option<StrId>, name: StrId) -> StrId {

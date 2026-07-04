@@ -132,9 +132,6 @@ where
     pub visibility: Visibility,
     pub generics: Option<&'bump [HirGeneric<'a, 'bump>]>,
     pub fields: &'bump [HirField<'a, 'bump>],
-    pub interfaces: Option<&'bump [StrId]>, // implemented interfaces
-    pub methods: Option<&'bump [HirFunc<'a, 'bump>]>,
-    pub constants: Option<&'bump [ConstStmt<'a, 'bump>]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -17,19 +17,18 @@ pub type FxHashSet<T> = HashSet<T, FxHashBuilder>;
 pub struct LoweringCtx<'a, 'bump> {
     pub classes: RefCell<FxHashMap<StrId, HirStruct<'a, 'bump>>>,
     pub interfaces: RefCell<FxHashMap<StrId, HirInterface<'a, 'bump>>>,
-
     pub functions: Rc<RefCell<FxHashMap<StrId, HirFunc<'a, 'bump>>>>,
     pub func_protos: RefCell<FxHashMap<StrId, HirFuncProto<'a, 'bump>>>,
-
     pub type_bindings: RefCell<FxHashMap<StrId, HirType<'a, 'bump>>>,
     pub variable_types: RefCell<FxHashMap<StrId, HirType<'a, 'bump>>>,
     pub generic_params: RefCell<HashSet<StrId>>,
-
     pub context: Arc<StringPool>,
     pub dep_graph: &'a DepGraph,
     pub imported_modules: RefCell<FxHashMap<StrId, usize>>,
     pub bump: Arc<GrowableAtomicBump<'bump>>,
     pub module_idx: usize,
+    pub struct_interfaces: RefCell<FxHashMap<StrId, Vec<StrId>>>,
+    pub struct_methods: RefCell<FxHashMap<StrId, FxHashMap<StrId, HirFunc<'a, 'bump>>>>,
 }
 
 pub struct HirLowerer<'a, 'bump> {
@@ -61,6 +60,8 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 imported_modules: RefCell::new(FxHashMap::default()),
                 dep_graph,
                 module_idx: usize::MAX, // This is a sentinel, it's overwritten anyways
+                struct_interfaces: RefCell::new(FxHashMap::default()),
+                struct_methods: RefCell::new(FxHashMap::default()),
             },
             error_reporter: ErrorReporter::new(),
             mono: Monomorphizer::new(context, bump, functions.clone()),

@@ -33,6 +33,7 @@ where
     extern_c_names: &'a HashSet<StrId>,
 
     enum_variant_tags: HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
+    struct_interfaces: HashMap<StrId, Vec<StrId>, FxHashBuilder>,
     pub dep_graph: &'a DepGraph,
     pub module_idx: usize,
     global_funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
@@ -81,9 +82,11 @@ where
             class_method_slots: HashMap::with_hasher(FxHashBuilder),
             class_field_offsets: HashMap::with_hasher(FxHashBuilder),
             enum_variant_tags,
+            struct_interfaces: HashMap::with_hasher(FxHashBuilder),
             phantom_data: PhantomData,
             context,
             extern_c_names,
+
             dep_graph,
             module_idx,
             global_funcs,
@@ -98,19 +101,32 @@ where
         self.enum_variant_tags.insert(hir_enum.name, tags);
     }
 
+    /// Lowers all contents of the module in a very specific order, first enums, interfaces and interface implementations,
+    /// then structs and free functions/impl methods, then vtables generation.
+    ///
+    /// This is done in three passes so that you can safely reference anything from anything else.
     pub fn lower_module(mut self, hir_mod: HirModule<'a, 'bump>) -> Module<'a, 'bump> {
-        // populate enum_variant_tags first
+        // enum tags, interfaces, and struct_interfaces
         for item in hir_mod.items {
             match item {
                 Hir::Enum(hir_enum) => self.register_enum(*hir_enum),
+                Hir::Interface(iface) => self.lower_interface(*iface),
+                Hir::Impl(impl_block) => {
+                    if let Some(iface) = impl_block.interface {
+                        self.struct_interfaces
+                            .entry(impl_block.target)
+                            .or_insert_with(Vec::new)
+                            .push(iface);
+                    }
+                }
                 _ => {}
             }
         }
 
+        // register structs (field offsets, module.classes) and lower every free function / impl method
         for item in hir_mod.items {
             match item {
-                Hir::Struct(class) => self.lower_class(*class),
-                Hir::Interface(iface) => self.lower_interface(*iface),
+                Hir::Struct(class) => self.register_class(*class),
                 Hir::Func(func) => self.lower_function(*func),
                 Hir::Impl(impl_block) => {
                     if let Some(methods) = impl_block.methods {
@@ -129,7 +145,26 @@ where
             }
         }
 
+        // build vtables now
+        for item in hir_mod.items {
+            if let Hir::Struct(class) = item {
+                self.build_class_vtable(class);
+            }
+        }
+
         self.module
+    }
+
+    fn register_class(&mut self, hir_class: &HirStruct<'a, 'bump>) {
+        self.compute_field_offsets(hir_class);
+
+        self.class_mangled_map
+            .entry(hir_class.name)
+            .or_insert_with(|| HashMap::with_hasher(FxHashBuilder));
+
+        self.module
+            .classes
+            .insert(hir_class.name, hir_class.clone());
     }
 
     fn lower_interface(&mut self, hir_iface: &HirInterface<'a, 'bump>) {
@@ -167,36 +202,6 @@ where
             .insert(hir_iface.name, hir_iface.clone());
     }
 
-    fn lower_class(&mut self, hir_class: &HirStruct<'a, 'bump>) {
-        self.compute_field_offsets(hir_class);
-
-        self.build_mangled_map(hir_class);
-
-        self.build_class_vtable(hir_class);
-
-        self.module
-            .classes
-            .insert(hir_class.name, hir_class.clone());
-
-        if let Some(methods) = hir_class.methods {
-            for method in methods {
-                self.lower_class_method(method, hir_class.name);
-            }
-        }
-    }
-
-    fn build_mangled_map(&mut self, hir_class: &HirStruct<'a, 'bump>) {
-        let mut mmap: HashMap<StrId, StrId, FxHashBuilder> = HashMap::with_hasher(FxHashBuilder);
-
-        if let Some(methods) = hir_class.methods {
-            for method in methods {
-                mmap.insert(method.unmangled_name, method.name);
-            }
-        }
-
-        self.class_mangled_map.insert(hir_class.name, mmap);
-    }
-
     fn compute_field_offsets(&mut self, hir_class: &HirStruct<'a, 'bump>) {
         let mut offsets = HashMap::with_hasher(FxHashBuilder);
 
@@ -208,7 +213,7 @@ where
     }
 
     fn build_class_vtable(&mut self, hir_class: &HirStruct<'a, 'bump>) {
-        let Some(interfaces) = hir_class.interfaces else {
+        let Some(interfaces) = self.struct_interfaces.get(&hir_class.name).cloned() else {
             return;
         };
 
@@ -217,7 +222,7 @@ where
             .get(&hir_class.name)
             .unwrap_or_else(|| panic!("Missing mangled method map for class {}", hir_class.name));
 
-        for iface_name in interfaces {
+        for iface_name in &interfaces {
             let iface_methods = self.interface_methods.get(iface_name).unwrap_or_else(|| {
                 panic!(
                     "Class {} implements unknown interface {}",
@@ -225,16 +230,38 @@ where
                 )
             });
 
+            // `iface_methods` stores each method's name mangled against the
+            // *interface's* name (see `lower_interface`), but `class_methods` is
+            // keyed by each method's *unmangled* name (see the `Hir::Impl`
+            // branch of `lower_module`). Pull the real unmangled names from the
+            // interface's own HirFunc list — same enumeration order as
+            // `lower_interface` built `iface_methods` from, so zipping by index
+            // lines them up correctly.
+            let hir_iface = self.module.interfaces.get(iface_name).unwrap_or_else(|| {
+                panic!(
+                    "Class {} implements unknown interface {}",
+                    hir_class.name, iface_name
+                )
+            });
+            let unmangled_names: Vec<StrId> = hir_iface
+                .methods
+                .unwrap_or(&[])
+                .iter()
+                .map(|m| m.unmangled_name)
+                .collect();
+
             let mut vtable_slots = Vec::new();
             let mut slot_map = HashMap::with_hasher(FxHashBuilder);
 
             for (slot, (method_name, _, _)) in iface_methods.iter().enumerate() {
+                let unmangled_name = unmangled_names.get(slot).copied().unwrap_or(*method_name);
+
                 let mangled = class_methods
-                    .get(method_name)
+                    .get(&unmangled_name)
                     .unwrap_or_else(|| {
                         panic!(
                             "Class {} implements interface {} but does not provide method {}",
-                            hir_class.name, iface_name, method_name
+                            hir_class.name, iface_name, unmangled_name
                         )
                     })
                     .clone();

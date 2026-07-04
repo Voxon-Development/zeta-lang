@@ -81,11 +81,6 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 Hir::Struct(s) => {
                     let name = s.name.to_string();
                     self.context.add_struct(name.clone(), **s);
-                    if let Some(interfaces) = s.interfaces {
-                        for iface in interfaces {
-                            self.context.add_struct_interface(&name, iface.to_string());
-                        }
-                    }
                 }
                 Hir::Impl(i) => {
                     let target = i.target.to_string();
@@ -369,6 +364,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 self.check_stmt(hir_stmt);
                 None
             }
+            // TODO: Check if they reference valid paths
             HirStmt::Import(_path, span) => {
                 self.set_span(*span);
                 None

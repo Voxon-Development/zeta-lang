@@ -118,15 +118,7 @@ pub fn direct_method_lookup<'a, 'bump>(
         instantiate_class_for_types(ctx, monomorphizer, *class_name, class_args, bump.clone())?.name
     };
 
-    let classes_binding = ctx.classes.borrow();
-    let class = classes_binding.get(&concrete_name)?;
-
-    let Some(methods) = class.methods else {
-        return None;
-    };
-
-    methods
-        .iter()
-        .find(|m| m.name == *method_name)
-        .map(|m| m.name)
+    let struct_methods = ctx.struct_methods.borrow();
+    let methods = struct_methods.get(&concrete_name)?;
+    methods.get(method_name).map(|m| m.name)
 }

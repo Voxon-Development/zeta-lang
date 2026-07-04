@@ -100,6 +100,7 @@ where
     pub target: StrId,
     pub methods: Option<&'bump [FuncDecl<'a, 'bump>]>,
     pub span: SourceSpan<'a>,
+    pub constants: Option<&'bump [ConstStmt<'a, 'bump>]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -285,8 +286,6 @@ where
     pub name: StrId,
     pub generics: Option<&'bump [Generic<'a, 'bump>]>,
     pub params: Option<&'bump [Param<'a, 'bump>]>,
-    pub body: &'bump [FuncDecl<'a, 'bump>],
-    pub constants: &'bump [ConstStmt<'a, 'bump>],
     pub span: SourceSpan<'a>,
 }
 

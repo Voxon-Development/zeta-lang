@@ -508,16 +508,6 @@ impl DepGraph {
                 }
             }
         }
-        for method in s.body {
-            // Inline method signature types
-            self.walk_func_signature(method, from_node, module_idx, pool);
-            if let Some(body) = method.body {
-                self.walk_block(body, from_node, module_idx, pool);
-            }
-        }
-        for c in s.constants {
-            self.walk_const_stmt(c, from_node, module_idx, pool);
-        }
     }
 
     fn walk_enum_decl<'a, 'bump>(
@@ -596,6 +586,11 @@ impl DepGraph {
                 if let Some(body) = m.body {
                     self.walk_block(body, from_node, module_idx, pool);
                 }
+            }
+        }
+        if let Some(constants) = i.constants {
+            for c in constants {
+                self.walk_const_stmt(c, from_node, module_idx, pool);
             }
         }
     }

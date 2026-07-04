@@ -50,18 +50,6 @@ impl<'a, 'bump> LambdaHoister<'a, 'bump> {
                 let rewritten = self.rewrite_func(*f);
                 Hir::Func(self.bump.alloc_value(rewritten))
             }
-            Hir::Struct(s) => {
-                if let Some(methods) = s.methods {
-                    let rewritten_methods: Vec<HirFunc<'a, 'bump>> =
-                        methods.iter().map(|m| self.rewrite_func(*m)).collect();
-                    let methods_slice = self.bump.alloc_slice_immutable(&rewritten_methods);
-                    let mut new_struct = *s;
-                    new_struct.methods = Some(methods_slice);
-                    Hir::Struct(self.bump.alloc_value(new_struct))
-                } else {
-                    item
-                }
-            }
             Hir::Impl(i) => {
                 if let Some(methods) = i.methods {
                     let rewritten_methods: Vec<HirFunc<'a, 'bump>> =
