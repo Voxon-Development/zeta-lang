@@ -144,32 +144,32 @@ impl Lexer {
     {
         let bytes = src.as_bytes();
         let len = bytes.len();
-        #[allow(unused_mut)] // Used by macros like `push`
+        #[allow(unused_mut)]
         let mut tokens: Vec<Token<'bump>> = Vec::with_capacity(len / 4);
 
-        let mut pos = 0usize; // byte offset into src
+        let mut pos = 0usize;
         let mut line = 1usize;
         let mut column = 1usize;
 
         macro_rules! span {
-            () => {
-                SourceSpan::new(file_name, line, column)
+            ($start_line:expr, $start_col:expr) => {
+                SourceSpan::new(file_name, $start_line, $start_col)
             };
         }
 
         macro_rules! push {
-            ($kind:expr) => {
+            ($kind:expr, $start_line:expr, $start_col:expr) => {
                 tokens.push(Token {
                     kind: $kind,
                     text: None,
-                    span: span!(),
+                    span: span!($start_line, $start_col),
                 });
             };
-            ($kind:expr, $id:expr) => {
+            ($kind:expr, $id:expr, $start_line:expr, $start_col:expr) => {
                 tokens.push(Token {
                     kind: $kind,
                     text: Some($id),
-                    span: span!(),
+                    span: span!($start_line, $start_col),
                 });
             };
         }
@@ -186,6 +186,8 @@ impl Lexer {
 
         while pos < len {
             let b = bytes[pos];
+            let start_line = line;
+            let start_col = column;
 
             match byte_class(b) {
                 ByteClass::Whitespace => {
@@ -213,22 +215,23 @@ impl Lexer {
                     let kind = keyword_or_ident(text);
                     if kind == TokenKind::Ident {
                         let id = self.context.intern_bytes(text.as_bytes());
-                        push!(TokenKind::Ident, StrId(id));
+                        push!(TokenKind::Ident, StrId(id), start_line, start_col);
                     } else {
-                        push!(kind);
+                        push!(kind, start_line, start_col);
                     }
                 }
 
                 ByteClass::Digit => {
                     let (kind, id) = lex_number(src, bytes, &mut pos, &mut column, &self.context);
-                    push!(kind, id);
+                    push!(kind, id, start_line, start_col);
                 }
 
                 ByteClass::Quote => {
                     pos += 1; // consume opening "
                     column += 1;
-                    let id = lex_string(src, bytes, &mut pos, &mut column, &self.context);
-                    push!(TokenKind::String, id);
+                    let id =
+                        lex_string(src, bytes, &mut pos, &mut line, &mut column, &self.context);
+                    push!(TokenKind::String, id, start_line, start_col);
                 }
 
                 ByteClass::Plus => {
@@ -237,9 +240,9 @@ impl Lexer {
                     if peek!(0) == b'=' {
                         pos += 1;
                         column += 1;
-                        push!(TokenKind::AddAssign);
+                        push!(TokenKind::AddAssign, start_line, start_col);
                     } else {
-                        push!(TokenKind::Add);
+                        push!(TokenKind::Add, start_line, start_col);
                     }
                 }
 
@@ -250,15 +253,15 @@ impl Lexer {
                         b'=' => {
                             pos += 1;
                             column += 1;
-                            push!(TokenKind::SubAssign);
+                            push!(TokenKind::SubAssign, start_line, start_col);
                         }
                         b'>' => {
                             pos += 1;
                             column += 1;
-                            push!(TokenKind::Arrow);
+                            push!(TokenKind::Arrow, start_line, start_col);
                         }
                         _ => {
-                            push!(TokenKind::Sub);
+                            push!(TokenKind::Sub, start_line, start_col);
                         }
                     }
                 }
@@ -269,9 +272,9 @@ impl Lexer {
                     if peek!(0) == b'=' {
                         pos += 1;
                         column += 1;
-                        push!(TokenKind::MulAssign);
+                        push!(TokenKind::MulAssign, start_line, start_col);
                     } else {
-                        push!(TokenKind::Mul);
+                        push!(TokenKind::Mul, start_line, start_col);
                     }
                 }
 
@@ -294,16 +297,16 @@ impl Lexer {
                             } else {
                                 TokenKind::LineComment
                             };
-                            push!(kind, id);
+                            push!(kind, id, start_line, start_col);
                         }
                         b'*' => panic!("Block comments are not supported"),
                         b'=' => {
                             pos += 1;
                             column += 1;
-                            push!(TokenKind::DivAssign);
+                            push!(TokenKind::DivAssign, start_line, start_col);
                         }
                         _ => {
-                            push!(TokenKind::Div);
+                            push!(TokenKind::Div, start_line, start_col);
                         }
                     }
                 }
@@ -314,9 +317,9 @@ impl Lexer {
                     if peek!(0) == b'=' {
                         pos += 1;
                         column += 1;
-                        push!(TokenKind::ModAssign);
+                        push!(TokenKind::ModAssign, start_line, start_col);
                     } else {
-                        push!(TokenKind::Mod);
+                        push!(TokenKind::Mod, start_line, start_col);
                     }
                 }
 
@@ -326,9 +329,9 @@ impl Lexer {
                     if peek!(0) == b'=' {
                         pos += 1;
                         column += 1;
-                        push!(TokenKind::XorAssign);
+                        push!(TokenKind::XorAssign, start_line, start_col);
                     } else {
-                        push!(TokenKind::BitXor);
+                        push!(TokenKind::BitXor, start_line, start_col);
                     }
                 }
 
@@ -339,15 +342,15 @@ impl Lexer {
                         b'&' => {
                             pos += 1;
                             column += 1;
-                            push!(TokenKind::AndAnd);
+                            push!(TokenKind::AndAnd, start_line, start_col);
                         }
                         b'=' => {
                             pos += 1;
                             column += 1;
-                            push!(TokenKind::AndAssign);
+                            push!(TokenKind::AndAssign, start_line, start_col);
                         }
                         _ => {
-                            push!(TokenKind::BitAnd);
+                            push!(TokenKind::BitAnd, start_line, start_col);
                         }
                     }
                 }
@@ -359,15 +362,15 @@ impl Lexer {
                         b'|' => {
                             pos += 1;
                             column += 1;
-                            push!(TokenKind::OrOr);
+                            push!(TokenKind::OrOr, start_line, start_col);
                         }
                         b'=' => {
                             pos += 1;
                             column += 1;
-                            push!(TokenKind::OrAssign);
+                            push!(TokenKind::OrAssign, start_line, start_col);
                         }
                         _ => {
-                            push!(TokenKind::BitOr);
+                            push!(TokenKind::BitOr, start_line, start_col);
                         }
                     }
                 }
@@ -382,18 +385,18 @@ impl Lexer {
                             if peek!(0) == b'=' {
                                 pos += 1;
                                 column += 1;
-                                push!(TokenKind::ShlAssign);
+                                push!(TokenKind::ShlAssign, start_line, start_col);
                             } else {
-                                push!(TokenKind::Shl);
+                                push!(TokenKind::Shl, start_line, start_col);
                             }
                         }
                         b'=' => {
                             pos += 1;
                             column += 1;
-                            push!(TokenKind::Le);
+                            push!(TokenKind::Le, start_line, start_col);
                         }
                         _ => {
-                            push!(TokenKind::Lt);
+                            push!(TokenKind::Lt, start_line, start_col);
                         }
                     }
                 }
@@ -412,28 +415,28 @@ impl Lexer {
                                     if peek!(0) == b'=' {
                                         pos += 1;
                                         column += 1;
-                                        push!(TokenKind::UnsignedShrAssign);
+                                        push!(TokenKind::UnsignedShrAssign, start_line, start_col);
                                     } else {
-                                        push!(TokenKind::UnsignedShr);
+                                        push!(TokenKind::UnsignedShr, start_line, start_col);
                                     }
                                 }
                                 b'=' => {
                                     pos += 1;
                                     column += 1;
-                                    push!(TokenKind::ShrAssign);
+                                    push!(TokenKind::ShrAssign, start_line, start_col);
                                 }
                                 _ => {
-                                    push!(TokenKind::Shr);
+                                    push!(TokenKind::Shr, start_line, start_col);
                                 }
                             }
                         }
                         b'=' => {
                             pos += 1;
                             column += 1;
-                            push!(TokenKind::Ge);
+                            push!(TokenKind::Ge, start_line, start_col);
                         }
                         _ => {
-                            push!(TokenKind::Gt);
+                            push!(TokenKind::Gt, start_line, start_col);
                         }
                     }
                 }
@@ -441,47 +444,47 @@ impl Lexer {
                 ByteClass::Semi => {
                     pos += 1;
                     column += 1;
-                    push!(TokenKind::Semicolon);
+                    push!(TokenKind::Semicolon, start_line, start_col);
                 }
                 ByteClass::LParen => {
                     pos += 1;
                     column += 1;
-                    push!(TokenKind::LParen);
+                    push!(TokenKind::LParen, start_line, start_col);
                 }
                 ByteClass::RParen => {
                     pos += 1;
                     column += 1;
-                    push!(TokenKind::RParen);
+                    push!(TokenKind::RParen, start_line, start_col);
                 }
                 ByteClass::LBracket => {
                     pos += 1;
                     column += 1;
-                    push!(TokenKind::LBracket);
+                    push!(TokenKind::LBracket, start_line, start_col);
                 }
                 ByteClass::RBracket => {
                     pos += 1;
                     column += 1;
-                    push!(TokenKind::RBracket);
+                    push!(TokenKind::RBracket, start_line, start_col);
                 }
                 ByteClass::LBrace => {
                     pos += 1;
                     column += 1;
-                    push!(TokenKind::LBrace);
+                    push!(TokenKind::LBrace, start_line, start_col);
                 }
                 ByteClass::RBrace => {
                     pos += 1;
                     column += 1;
-                    push!(TokenKind::RBrace);
+                    push!(TokenKind::RBrace, start_line, start_col);
                 }
                 ByteClass::Comma => {
                     pos += 1;
                     column += 1;
-                    push!(TokenKind::Comma);
+                    push!(TokenKind::Comma, start_line, start_col);
                 }
                 ByteClass::Question => {
                     pos += 1;
                     column += 1;
-                    push!(TokenKind::Question);
+                    push!(TokenKind::Question, start_line, start_col);
                 }
 
                 ByteClass::Colon => {
@@ -491,13 +494,13 @@ impl Lexer {
                     if peeked == b'=' {
                         pos += 1;
                         column += 1;
-                        push!(TokenKind::ColonAssign);
+                        push!(TokenKind::ColonAssign, start_line, start_col);
                     } else if peeked == b':' {
                         pos += 1;
                         column += 1;
-                        push!(TokenKind::ColonColon);
+                        push!(TokenKind::ColonColon, start_line, start_col);
                     } else {
-                        push!(TokenKind::Colon);
+                        push!(TokenKind::Colon, start_line, start_col);
                     }
                 }
 
@@ -507,16 +510,16 @@ impl Lexer {
                     if peek!(0) == b'=' {
                         pos += 1;
                         column += 1;
-                        push!(TokenKind::NotAssign);
+                        push!(TokenKind::NotAssign, start_line, start_col);
                     } else {
-                        push!(TokenKind::BitNot);
+                        push!(TokenKind::BitNot, start_line, start_col);
                     }
                 }
 
                 ByteClass::Bang => {
                     pos += 1;
                     column += 1;
-                    push!(TokenKind::LogicalNot);
+                    push!(TokenKind::LogicalNot, start_line, start_col);
                 }
 
                 ByteClass::Eq => {
@@ -526,15 +529,15 @@ impl Lexer {
                         b'=' => {
                             pos += 1;
                             column += 1;
-                            push!(TokenKind::Eq);
+                            push!(TokenKind::Eq, start_line, start_col);
                         }
                         b'>' => {
                             pos += 1;
                             column += 1;
-                            push!(TokenKind::FatArrow);
+                            push!(TokenKind::FatArrow, start_line, start_col);
                         }
                         _ => {
-                            push!(TokenKind::Assign);
+                            push!(TokenKind::Assign, start_line, start_col);
                         }
                     }
                 }
@@ -549,31 +552,32 @@ impl Lexer {
                             b'<' => {
                                 pos += 1;
                                 column += 1;
-                                push!(TokenKind::DotDotLt);
+                                push!(TokenKind::DotDotLt, start_line, start_col);
                             }
                             b'.' => {
                                 pos += 1;
                                 column += 1;
-                                push!(TokenKind::Ellipsis);
+                                push!(TokenKind::Ellipsis, start_line, start_col);
                             }
                             _ => {
-                                push!(TokenKind::DotDot);
+                                push!(TokenKind::DotDot, start_line, start_col);
                             }
                         }
                     } else {
-                        push!(TokenKind::Dot);
+                        push!(TokenKind::Dot, start_line, start_col);
                     }
                 }
 
                 ByteClass::Unknown => {
                     pos += 1;
                     column += 1;
-                    push!(TokenKind::Unknown);
+                    push!(TokenKind::Unknown, start_line, start_col);
                 }
             }
         }
 
-        push!(TokenKind::EOF);
+        push!(TokenKind::EOF, line, column);
+
         Tokens::new(bump, tokens)
     }
 }
@@ -814,6 +818,7 @@ fn lex_string(
     _src: &str,
     bytes: &[u8],
     pos: &mut usize,
+    line: &mut usize,
     column: &mut usize,
     ctx: &Arc<StringPool>,
 ) -> StrId {
@@ -821,10 +826,18 @@ fn lex_string(
     while *pos < bytes.len() {
         let b = bytes[*pos];
         *pos += 1;
-        *column += 1;
         match b {
-            b'"' => break,
+            b'"' => {
+                *column += 1;
+                break;
+            }
+            b'\n' => {
+                *line += 1;
+                *column = 1;
+                text.push(b'\n');
+            }
             b'\\' => {
+                *column += 1;
                 let esc = bytes[*pos];
                 *pos += 1;
                 *column += 1;
@@ -837,7 +850,10 @@ fn lex_string(
                     other => other,
                 });
             }
-            other => text.push(other),
+            other => {
+                *column += 1;
+                text.push(other);
+            }
         }
     }
     StrId(ctx.intern_bytes(&text))
