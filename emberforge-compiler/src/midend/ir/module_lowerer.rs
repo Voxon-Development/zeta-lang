@@ -32,8 +32,10 @@ where
     context: Arc<StringPool>,
     extern_c_names: &'a HashSet<StrId>,
 
+    enum_variant_tags: HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
     pub dep_graph: &'a DepGraph,
     pub module_idx: usize,
+    global_funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
 }
 
 impl<'a, 'cx, 'bump> MirModuleLowerer<'a, 'cx, 'bump>
@@ -47,7 +49,28 @@ where
         extern_c_names: &'a HashSet<StrId>,
         dep_graph: &'a DepGraph,
         module_idx: usize,
+        global_funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
     ) -> Self {
+        let mut enum_variant_tags: HashMap<
+            StrId,
+            HashMap<StrId, usize, FxHashBuilder>,
+            FxHashBuilder,
+        > = HashMap::with_hasher(FxHashBuilder);
+
+        let nullable_enum_name = StrId(context.intern("__nullable"));
+        let mut nullable_tags = HashMap::with_hasher(FxHashBuilder);
+        nullable_tags.insert(StrId(context.intern("null")), 0usize);
+        nullable_tags.insert(StrId(context.intern("some")), 1usize);
+        enum_variant_tags.insert(nullable_enum_name, nullable_tags);
+
+        // Tag 0 reserved for "success" (no throw); every distinct thrown error
+        // type gets a stable index starting at 1, shared across the whole
+        // module so catch-site and call-site tags always agree.
+        let throws_enum_name = StrId(context.intern("__throws"));
+        let mut throws_tags = HashMap::with_hasher(FxHashBuilder);
+        throws_tags.insert(StrId(context.intern("__success")), 0usize);
+        enum_variant_tags.insert(throws_enum_name, throws_tags);
+
         Self {
             module: Module::new(),
             interface_methods: HashMap::with_hasher(FxHashBuilder),
@@ -57,15 +80,33 @@ where
             class_vtable_slots: HashMap::with_hasher(FxHashBuilder),
             class_method_slots: HashMap::with_hasher(FxHashBuilder),
             class_field_offsets: HashMap::with_hasher(FxHashBuilder),
+            enum_variant_tags,
             phantom_data: PhantomData,
             context,
             extern_c_names,
             dep_graph,
             module_idx,
+            global_funcs,
         }
     }
 
+    fn register_enum(&mut self, hir_enum: &ir::hir::HirEnum<'a, 'bump>) {
+        let mut tags = HashMap::with_hasher(FxHashBuilder);
+        for (i, variant) in hir_enum.variants.iter().enumerate() {
+            tags.insert(variant.name, i);
+        }
+        self.enum_variant_tags.insert(hir_enum.name, tags);
+    }
+
     pub fn lower_module(mut self, hir_mod: HirModule<'a, 'bump>) -> Module<'a, 'bump> {
+        // populate enum_variant_tags first
+        for item in hir_mod.items {
+            match item {
+                Hir::Enum(hir_enum) => self.register_enum(*hir_enum),
+                _ => {}
+            }
+        }
+
         for item in hir_mod.items {
             match item {
                 Hir::Struct(class) => self.lower_class(*class),
@@ -227,6 +268,7 @@ where
         let mut fl: FunctionLowerer<'s, 'bump> = FunctionLowerer::new(
             hir_fn,
             &self.module.functions,
+            self.global_funcs,
             &self.class_field_offsets,
             &self.class_method_slots,
             &self.class_mangled_map,
@@ -234,6 +276,7 @@ where
             &self.interface_id_map,
             &self.interface_method_slots,
             &self.module.classes,
+            &self.enum_variant_tags,
             self.context.clone(),
             self.extern_c_names,
             self.dep_graph,
@@ -262,6 +305,7 @@ where
             hir_fn,
             class_name,
             &self.module.functions,
+            self.global_funcs,
             &self.class_field_offsets,
             &self.class_method_slots,
             &self.class_mangled_map,
@@ -269,6 +313,7 @@ where
             &self.interface_id_map,
             &self.interface_method_slots,
             &self.module.classes,
+            &self.enum_variant_tags,
             Arc::clone(&self.context),
             self.extern_c_names,
             self.dep_graph,

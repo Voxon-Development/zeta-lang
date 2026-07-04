@@ -215,6 +215,19 @@ impl CraneliftBackend {
                     Operand::ConstInt(i) => builder.ins().iconst(types::I64, *i),
                     _ => unimplemented!(),
                 };
+
+                let lt = builder.func.dfg.value_type(l);
+                let rt = builder.func.dfg.value_type(r);
+                let (l, r) = if lt != rt {
+                    if lt.bits() < rt.bits() {
+                        (l, builder.ins().ireduce(lt, r))
+                    } else {
+                        (builder.ins().ireduce(rt, l), r)
+                    }
+                } else {
+                    (l, r)
+                };
+
                 let res = match op {
                     BinOp::Add => builder.ins().iadd(l, r),
                     BinOp::Sub => builder.ins().isub(l, r),
@@ -395,15 +408,19 @@ impl CraneliftBackend {
             }
 
             Instruction::Ret { value } => {
-                let rv = match value {
-                    Some(Operand::Value(v)) => {
-                        let var = var_map.get(v).expect("ret references undefined value");
-                        builder.use_var(*var)
-                    }
-                    Some(Operand::ConstInt(i)) => builder.ins().iconst(types::I64, *i),
-                    _ => builder.ins().iconst(types::I64, 0),
-                };
-                builder.ins().return_(&[rv]);
+                if func.ret_type == SsaType::Void {
+                    builder.ins().return_(&[]);
+                } else {
+                    let rv = match value {
+                        Some(Operand::Value(v)) => {
+                            let var = var_map.get(v).expect("ret references undefined value");
+                            builder.use_var(*var)
+                        }
+                        Some(Operand::ConstInt(i)) => builder.ins().iconst(types::I64, *i),
+                        _ => builder.ins().iconst(types::I64, 0),
+                    };
+                    builder.ins().return_(&[rv]);
+                }
             }
             Instruction::StackAlloc { dest, ty, count: _ } => {
                 let size_bytes = sizeof_ssa(ty, self.target).unwrap();
@@ -750,10 +767,10 @@ impl CraneliftBackend {
                     var_map.insert(*d, var);
                 }
             }
-            Instruction::UpcastToInterface { .. } => {}
-            Instruction::Interpolate { .. } => {}
-            Instruction::EnumConstruct { .. } => {}
-            Instruction::MatchEnum { .. } => {}
+            Instruction::UpcastToInterface { .. } => todo!(),
+            Instruction::Interpolate { .. } => todo!(),
+            Instruction::EnumConstruct { .. } => todo!(),
+            Instruction::MatchEnum { .. } => todo!(),
         }
     }
 
@@ -984,6 +1001,14 @@ impl Backend for CraneliftBackend {
                 match func.ret_type {
                     SsaType::Void => {
                         builder.ins().return_(&[]);
+                    }
+                    SsaType::Nullable(_)
+                    | SsaType::Pointer(_)
+                    | SsaType::User(_, _)
+                    | SsaType::Enum(_)
+                    | SsaType::Null => {
+                        let z = builder.ins().iconst(types::I64, 0);
+                        builder.ins().return_(&[z]);
                     }
                     SsaType::I32 | SsaType::U32 => {
                         let z = builder.ins().iconst(types::I32, 0);

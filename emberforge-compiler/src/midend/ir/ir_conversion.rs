@@ -72,6 +72,7 @@ pub fn lower_type_hir(ty: &HirType) -> SsaType {
         } => SsaType::Pointer(Box::new(lower_type_hir(inner))),
         HirType::Nullable(hir_type) => SsaType::Nullable(Box::new(lower_type_hir(hir_type))),
         HirType::Dyn { bounds: _ } => todo!(),
+        HirType::Infer => todo!(),
     }
 }
 

@@ -49,6 +49,16 @@ impl CurrentBlockData {
         id
     }
 
+    pub fn new_block(&mut self) -> BlockId {
+        let id = BlockId(self.next_block);
+        self.next_block += 1;
+        self.func.blocks.push(BasicBlock {
+            id,
+            instructions: Vec::new(),
+        });
+        id
+    }
+
     pub fn bb(&mut self) -> &mut BasicBlock {
         self.func
             .blocks

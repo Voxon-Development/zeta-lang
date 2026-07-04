@@ -2,6 +2,7 @@ use crate::midend::ir::block_data::CurrentBlockData;
 use crate::midend::ir::ir_conversion::{assign_op_to_bin_op, lower_operator_bin, lower_type_hir};
 use crate::optimized_string_buffering;
 use codex_dependency_graph::DepGraph;
+use core::panic;
 use ir::hir::{AssignmentOperator, HirExpr, HirStruct, HirType, Operator, StrId};
 use ir::ir_hasher::{FxHashBuilder, HashSet};
 use ir::ssa_ir::{Function, Instruction, Operand, SsaType, Value};
@@ -35,6 +36,7 @@ pub struct MirExprLowerer<'el, 'a, 'cx, 'bump> {
     pub extern_c_names: &'a HashSet<StrId>,
     pub dep_graph: &'a DepGraph,
     pub module_idx: usize,
+    global_funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
 }
 
 impl<'el, 'a, 'cx, 'bump> MirExprLowerer<'el, 'a, 'cx, 'bump>
@@ -45,6 +47,7 @@ where
     pub fn new(
         current_block_data: &'el mut CurrentBlockData,
         funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
+        global_funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
         var_map: &'el mut HashMap<StrId, Value, FxHashBuilder>,
         context: Arc<StringPool>,
         class_field_offsets: &'a HashMap<
@@ -69,6 +72,7 @@ where
         Self {
             current_block_data,
             funcs,
+            global_funcs,
             var_map,
             context,
             class_field_offsets,
@@ -115,8 +119,8 @@ where
 
     pub fn lower_expr(&mut self, expr: &HirExpr<'a, 'bump>) -> Value {
         match expr {
-            HirExpr::Null => self.lower_expr_null(),
-            HirExpr::Number(n) => self.lower_expr_number(*n),
+            HirExpr::Null(_) => self.lower_expr_null(),
+            HirExpr::Number(n, _) => self.lower_expr_number(*n),
 
             HirExpr::Binary {
                 left,
@@ -125,7 +129,7 @@ where
                 span: _,
             } => self.lower_expr_binary(left, op, right),
 
-            HirExpr::Ident(name) => *self.var_map.get(name).unwrap_or_else(|| {
+            HirExpr::Ident(name, _) => *self.var_map.get(name).unwrap_or_else(|| {
                 panic!(
                     "lower_expr: variable {:?} referenced before definition",
                     name
@@ -149,12 +153,17 @@ where
                 span: _,
             } => self.lower_field_access(object, *field),
 
-            HirExpr::Call { callee, args } => self.lower_call(callee, args),
+            HirExpr::Call {
+                callee,
+                args,
+                span: _,
+            } => self.lower_call(callee, args),
 
             HirExpr::InterfaceCall {
                 callee,
                 args,
                 interface,
+                span: _,
             } => self.lower_interface_call(callee, args, *interface),
 
             HirExpr::Assignment {
@@ -164,7 +173,7 @@ where
                 span: _,
             } => self.lower_expr_assignment(target, *op, value),
 
-            HirExpr::String(s) => {
+            HirExpr::String(s, _) => {
                 let v = self.current_block_data.fresh_value();
                 self.emit(Instruction::Const {
                     dest: v,
@@ -177,7 +186,7 @@ where
                 v
             }
 
-            HirExpr::Boolean(b) => {
+            HirExpr::Boolean(b, _) => {
                 let v = self.current_block_data.fresh_value();
                 self.emit(Instruction::Const {
                     dest: v,
@@ -188,7 +197,7 @@ where
                 v
             }
 
-            HirExpr::Decimal(d) => {
+            HirExpr::Decimal(d, _) => {
                 let v = self.current_block_data.fresh_value();
                 self.emit(Instruction::Const {
                     dest: v,
@@ -199,7 +208,7 @@ where
                 v
             }
 
-            HirExpr::Tuple(elements) => {
+            HirExpr::Tuple(elements, _) => {
                 if elements.is_empty() {
                     let v = self.current_block_data.fresh_value();
                     self.current_block_data.value_types.insert(v, SsaType::I64);
@@ -227,6 +236,7 @@ where
                 enum_name,
                 variant: _,
                 args,
+                span: _,
             } => {
                 let v = self.current_block_data.fresh_value();
 
@@ -238,7 +248,7 @@ where
                 self.emit(Instruction::StackAlloc {
                     dest: v,
                     ty: SsaType::User(*enum_name, vec![]),
-                    count: 0,
+                    count: 1,
                 });
 
                 self.current_block_data
@@ -397,7 +407,7 @@ where
         let rhs = self.lower_expr(value);
 
         match target {
-            HirExpr::Ident(name) => self.handle_ident(op, rhs, *name),
+            HirExpr::Ident(name, _) => self.handle_ident(op, rhs, *name),
 
             HirExpr::FieldAccess {
                 object,
@@ -416,6 +426,11 @@ where
 
     fn lower_expr_null(&mut self) -> Value {
         let v = self.current_block_data.fresh_value();
+        self.emit(Instruction::Const {
+            dest: v,
+            ty: SsaType::I64,
+            value: Operand::ConstInt(0),
+        });
         self.current_block_data.value_types.insert(v, SsaType::Null);
         v
     }
@@ -577,36 +592,39 @@ where
 
     fn lower_class_init(&mut self, name: &HirExpr, args: &[HirExpr<'a, 'bump>]) -> Value {
         let class_name = match name {
-            HirExpr::Ident(n) => n.clone(),
+            HirExpr::Ident(n, _) => *n,
             other => panic!("ClassInit name must be identifier; got {:?}", other),
         };
 
         let obj = self.new_value();
 
         let mut arg_values: Vec<Value> = Vec::with_capacity(args.len());
-        let mut types: Vec<SsaType> = Vec::with_capacity(args.len());
         for arg in args {
-            let v = self.lower_expr(arg);
-            let ty = self
-                .current_block_data
-                .value_types
-                .get(&v)
-                .cloned()
-                .unwrap_or(SsaType::I32);
-
-            arg_values.push(v);
-            types.push(ty);
+            arg_values.push(self.lower_expr(arg));
         }
+
+        // Use the declared field types from the HIR class definition, not the
+        // runtime value types of the args, those may be stripped (e.g. User(Vec3f, [])
+        // instead of User(Vec3f, [I64, I64, I64])) when they came from a call result.
+        let field_types: Vec<SsaType> = if let Some(hir_class) = self.classes.get(&class_name) {
+            hir_class
+                .fields
+                .iter()
+                .map(|f| lower_type_hir(&f.field_type))
+                .collect()
+        } else {
+            panic!("Class {} not found", class_name)
+        };
+
+        let alloc_ty = SsaType::User(class_name, field_types.clone());
 
         self.emit(Instruction::StackAlloc {
             dest: obj,
-            ty: SsaType::User(class_name, types.clone()),
+            ty: alloc_ty.clone(),
             count: 0,
         });
 
-        self.current_block_data
-            .value_types
-            .insert(obj, SsaType::User(class_name, types.clone()));
+        self.current_block_data.value_types.insert(obj, alloc_ty);
 
         if !arg_values.is_empty() {
             self.init_class_fields_from_args(obj, class_name, &arg_values);
@@ -663,13 +681,12 @@ where
     fn lower_field_access(&mut self, object: &HirExpr<'a, 'bump>, field: StrId) -> Value {
         let obj_val = self.lower_expr_as_receiver(object);
 
-        // Unwrap one pointer indirection if needed (for &this / *this fields)
         let cls_name = match self.current_block_data.value_types.get(&obj_val) {
             Some(SsaType::User(name, _)) => {
                 let resolved = self.context.resolve_string(name);
                 StrId(
                     self.context
-                        .intern(resolved.split('_').last().unwrap_or(resolved)),
+                        .intern(resolved.split('_').next().unwrap_or(resolved)),
                 )
             }
             Some(SsaType::Pointer(inner)) => {
@@ -677,7 +694,7 @@ where
                     let resolved = self.context.resolve_string(name);
                     StrId(
                         self.context
-                            .intern(resolved.split('_').last().unwrap_or(resolved)),
+                            .intern(resolved.split('_').next().unwrap_or(resolved)),
                     )
                 } else {
                     panic!("FieldAccess through pointer to non-User type: {:?}", inner)
@@ -705,18 +722,24 @@ where
             offset,
         });
 
-        if let Some(hir_class) = self.classes.get(&cls_name) {
-            if let Some(hir_field) = hir_class.fields.iter().find(|f| f.name == field) {
-                let field_type = lower_type_hir(&hir_field.field_type);
-                self.current_block_data.value_types.insert(dest, field_type);
-            }
-        }
+        let field_type = self
+            .classes
+            .get(&cls_name)
+            .and_then(|hir_class| hir_class.fields.iter().find(|f| f.name == field))
+            .map(|hir_field| lower_type_hir(&hir_field.field_type))
+            .unwrap_or_else(|| {
+                eprintln!(
+                    "WARNING: lower_field_access could not find field {:?} on class {:?}, defaulting to I64",
+                    field, cls_name
+                );
+                SsaType::I64
+            });
+        self.current_block_data.value_types.insert(dest, field_type);
+
         dest
     }
 
     fn lower_call(&mut self, callee: &HirExpr<'a, 'bump>, args: &[HirExpr<'a, 'bump>]) -> Value {
-        // Module-qualified call: `zeta::io::files.File.open(...)` or
-        // `zeta::io.println(...)`. Flatten to one mangled function name.
         if let Some(mangled) = self.try_flatten_module_path(callee) {
             let arg_ops: SmallVec<Operand, 8> = args
                 .iter()
@@ -729,14 +752,27 @@ where
                 func: Operand::FunctionRef(mangled),
                 args: arg_ops,
             });
-            self.current_block_data
-                .value_types
-                .insert(dest, SsaType::I64);
+
+            let ret_ty = if self.extern_c_names.contains(&mangled) {
+                SsaType::I64
+            } else {
+                self.funcs
+                    .get(&mangled)
+                    .or_else(|| self.global_funcs.get(&mangled))
+                    .map(|f| f.ret_type.clone())
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "lower_call: unknown non-extern function `{:?}`, not in funcs table or global_funcs",
+                            mangled
+                        )
+                    })
+            };
+            self.current_block_data.value_types.insert(dest, ret_ty);
             return dest;
         }
 
         match callee {
-            HirExpr::Ident(fname) => {
+            HirExpr::Ident(fname, _) => {
                 let arg_ops: SmallVec<Operand, 8> = args
                     .iter()
                     .map(|a| Operand::Value(self.lower_expr(a)))
@@ -749,9 +785,17 @@ where
                     args: arg_ops,
                 });
 
-                self.current_block_data
-                    .value_types
-                    .insert(dest, SsaType::I64);
+                let ret_ty = self
+                    .funcs
+                    .get(fname)
+                    .map(|f| f.ret_type.clone())
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "lower_call: unknown function `{:?}`, not in funcs table",
+                            fname
+                        )
+                    });
+                self.current_block_data.value_types.insert(dest, ret_ty);
 
                 dest
             }
@@ -780,7 +824,7 @@ where
         field: StrId,
         args: &[HirExpr<'a, 'bump>],
     ) -> Value {
-        if let HirExpr::Ident(scope_name) = object {
+        if let HirExpr::Ident(scope_name, _) = object {
             if !self.var_map.contains_key(scope_name) {
                 let mut operands: SmallVec<Operand, 8> = SmallVec::new();
                 for a in args {
@@ -850,7 +894,7 @@ where
     }
 
     fn lower_expr_as_receiver(&mut self, object: &HirExpr<'a, 'bump>) -> Value {
-        if let HirExpr::Ident(name) = object {
+        if let HirExpr::Ident(name, _) = object {
             if let Some(&v) = self.var_map.get(name) {
                 if matches!(
                     self.current_block_data.value_types.get(&v),
@@ -894,9 +938,13 @@ where
                     func: Operand::FunctionRef(mangled_name.clone()),
                     args: operands.clone(),
                 });
-                self.current_block_data
-                    .value_types
-                    .insert(dest, SsaType::I64);
+
+                let ret_ty = self
+                    .funcs
+                    .get(mangled_name)
+                    .map(|f| f.ret_type.clone())
+                    .unwrap_or(SsaType::I64);
+                self.current_block_data.value_types.insert(dest, ret_ty);
                 return Some(dest);
             }
         }
