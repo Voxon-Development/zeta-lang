@@ -20,9 +20,8 @@ public struct GuessGame {
 
 impl GuessGame {
     fn play_game(&this) throws GameError -> void {    
-        for _ in 0..5 {    
-            try std::io.out.print("Enter your guess: ");
-            input := try std.io.read();
+        for (let mut i = 0; i < 10; i += 1) {    
+            input := try std::io.out.readln("Enter your guess: "");
             guess := try input.parse<i32>();
             match guess {    
                 g if g == this.target => {    
@@ -53,7 +52,7 @@ fn main() throws GameError, RandomNumberError -> void {
     
     try *game.print()
     *game.play_game() else (err) {
-        match (err) {
+        match err {
             case Game { msg } => {
                 try std::io.out.println(msg);
             },
@@ -64,7 +63,7 @@ fn main() throws GameError, RandomNumberError -> void {
                 try std::io.out.println("Please input a real number!");
             }
         }
-    }
+    };
     
     try std::io.out.println("Thanks for playing!");
 }
