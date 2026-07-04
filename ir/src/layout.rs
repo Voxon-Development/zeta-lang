@@ -216,5 +216,6 @@ pub fn layout_of_hir(ty: &HirType, target: TargetInfo) -> Result<Layout, LayoutE
             }
         }
         HirType::Dyn { bounds: _ } => todo!(),
+        HirType::Infer => todo!(),
     }
 }

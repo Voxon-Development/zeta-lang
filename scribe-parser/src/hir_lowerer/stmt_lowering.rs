@@ -184,10 +184,6 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 let body = self.ctx.bump.alloc_slice(&body_vec);
                 HirStmt::Block { body }
             }
-            Stmt::Throw(throw_stmt) => HirStmt::Throw {
-                inner: self.lower_expr(&throw_stmt.inner),
-                span: throw_stmt.span,
-            },
         }
     }
 

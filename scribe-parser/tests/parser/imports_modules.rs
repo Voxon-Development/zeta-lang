@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use ir::ast::{Stmt, Visibility};
+    use ir::hir::StrId;
     use scribe_parser::parser::parse_program;
     use std::sync::Arc;
     use zetaruntime::arena::GrowableAtomicBump;
@@ -14,7 +15,7 @@ mod tests {
         let ctx = Arc::new(StringPool::new().unwrap());
         let ctx_clone = Arc::clone(&ctx);
         std::mem::forget(ctx);
-        parse_program(src, "<test>", ctx_clone, bump).statements
+        parse_program(StrId(ctx_clone.intern(src)), "<test>", ctx_clone, bump).statements
     }
 
     #[test]
@@ -100,8 +101,7 @@ mod tests {
         let bump_arc = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
         let ctx = Arc::new(StringPool::new().unwrap());
         let ctx2 = Arc::clone(&ctx);
-        std::mem::forget(ctx);
-        let result = parse_program(src, "<test>", ctx2, bump_arc);
+        let result = parse_program(StrId(ctx.clone().intern(src)), "<test>", ctx2, bump_arc);
 
         let pool2 = Arc::new(StringPool::new().unwrap());
         let hir_bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());

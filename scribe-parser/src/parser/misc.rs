@@ -142,6 +142,17 @@ where
                     passing_kind: ParamPassingKind::Move,
                     span: token.span,
                 }))
+            } else if self.cursor.peek() == TokenKind::Mut
+                && self.cursor.peek_n(1) == TokenKind::This
+            {
+                // `mut this`: move-by-value receiver with mutable access,
+                // e.g. used by destructors (`fn drop(mut this)`).
+                self.cursor.advance(); // consume 'mut'
+                let token = self.cursor.expect(TokenKind::This)?;
+                Param::This(self.bump.alloc_value_immutable(ThisParam {
+                    passing_kind: ParamPassingKind::MoveMut,
+                    span: token.span,
+                }))
             } else {
                 let is_mut = self.cursor.consume(TokenKind::Mut);
                 let (name, span) = self.cursor.expect_ident()?;
@@ -458,8 +469,6 @@ where
                 }
                 self.cursor.expect(TokenKind::RParen)?;
 
-                let throws = self.parse_throws()?.map(|decl| decl.error_types);
-
                 let return_type = if self.cursor.peek() == TokenKind::Arrow {
                     self.cursor.advance();
                     self.parse_core_type()?
@@ -472,7 +481,6 @@ where
                 TypeKind::Lambda {
                     params: params_bump,
                     return_type: ret_ref,
-                    throws,
                 }
             }
 

@@ -41,6 +41,24 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     }
 
     pub fn collect_prototypes(&mut self, stmts: &[Stmt<'a, 'bump>]) {
+        // First sub-pass: register all struct declarations so that lower_type_inner
+        // can look up field types when processing function signatures below.
+        for stmt in stmts {
+            if let Stmt::StructDecl(struct_decl) = stmt {
+                let class = self.lower_struct_decl(**struct_decl);
+                self.ctx.classes.borrow_mut().insert(class.name, class);
+            }
+            if let Stmt::Module(module_decl) = stmt {
+                for &body_stmt in module_decl.body {
+                    if let Stmt::StructDecl(struct_decl) = body_stmt {
+                        let class = self.lower_struct_decl(*struct_decl);
+                        self.ctx.classes.borrow_mut().insert(class.name, class);
+                    }
+                }
+            }
+        }
+
+        // Second sub-pass: now function prototypes can resolve struct field types.
         for stmt in stmts {
             if let Stmt::FuncDecl(f) = stmt {
                 self.lower_func_as_proto(f, None);

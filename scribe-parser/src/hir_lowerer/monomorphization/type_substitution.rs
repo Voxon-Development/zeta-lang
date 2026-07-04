@@ -41,22 +41,15 @@ pub fn substitute_type<'a, 'bump>(
         HirType::Lambda {
             params,
             return_type,
-            throws,
         } => {
             let new_params: Vec<HirType<'a, 'bump>> = params
                 .iter()
                 .map(|p| substitute_type(p, subs, bump.clone()))
                 .collect();
             let new_return = substitute_type(return_type, subs, bump.clone());
-            let new_throws: Option<Vec<HirType<'a, 'bump>>> = throws.map(|tys| {
-                tys.iter()
-                    .map(|p| substitute_type(p, subs, bump.clone()))
-                    .collect::<Vec<_>>()
-            });
             HirType::Lambda {
                 params: bump.alloc_slice(&new_params),
                 return_type: bump.alloc_value_immutable(new_return),
-                throws: new_throws.map(|throws| bump.alloc_slice_immutable(throws.as_slice())),
             }
         }
 

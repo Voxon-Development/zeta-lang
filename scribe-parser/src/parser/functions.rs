@@ -1,7 +1,6 @@
 use crate::parser::descent_parser::DescentParser;
 use ir::ast::{
-    ExternModifier, FuncDecl, FuncModifiers, FuncSafety, InlineModifier, Stmt, ThrowsDecl, Type,
-    Visibility,
+    ExternModifier, FuncDecl, FuncModifiers, FuncSafety, InlineModifier, Stmt, Type, Visibility,
 };
 use ir::errors::error::{DiagnosticError, ParseErrorKind};
 use ir::tokens::{Cursor, TokenKind};
@@ -48,8 +47,6 @@ where
 
         let params = self.parse_params()?;
 
-        let throws = self.parse_throws()?;
-
         let return_type = if self.cursor.consume(TokenKind::Arrow) {
             self.parse_return_type()
         } else {
@@ -69,7 +66,6 @@ where
             generics,
             params,
             return_type,
-            throws,
             body,
             span: fn_token.span,
         };
@@ -155,27 +151,5 @@ where
             inline_modifier,
             func_safety,
         })
-    }
-
-    pub fn parse_throws(&mut self) -> Result<Option<ThrowsDecl<'a, 'bump>>, DiagnosticError<'a>> {
-        let throws_token = self.cursor.peek_token();
-        if throws_token.kind != TokenKind::Throws {
-            return Ok(None);
-        }
-
-        self.cursor.advance();
-
-        let mut error_types = Vec::new_in(self.bump);
-
-        error_types.push(self.parse_type()?);
-
-        while self.cursor.consume(TokenKind::Comma) {
-            error_types.push(self.parse_type()?);
-        }
-
-        Ok(Some(ThrowsDecl {
-            error_types: self.bump.alloc_slice_copy(&error_types),
-            span: throws_token.span,
-        }))
     }
 }

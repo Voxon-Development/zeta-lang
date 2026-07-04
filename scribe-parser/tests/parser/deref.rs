@@ -1,10 +1,11 @@
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use ir::ast::{Expr, Stmt};
+    use ir::hir::StrId;
     use scribe_parser::parser::parse_program;
-    use zetaruntime::bump::GrowableBump;
+    use std::sync::Arc;
     use zetaruntime::arena::GrowableAtomicBump;
+    use zetaruntime::bump::GrowableBump;
     use zetaruntime::string_pool::StringPool;
 
     fn parse<'a, 'bump>(
@@ -13,8 +14,13 @@ mod tests {
     ) -> Vec<Stmt<'a, 'bump>, &'bump GrowableBump<'bump>> {
         let ctx = Arc::new(StringPool::new().unwrap());
         let ctx_for_parse = Arc::clone(&ctx);
-        std::mem::forget(ctx);
-        parse_program(src, "<test>", ctx_for_parse, bump).statements
+        parse_program(
+            StrId(ctx_for_parse.intern(src)),
+            "<test>",
+            ctx_for_parse,
+            bump,
+        )
+        .statements
     }
 
     macro_rules! first_stmt {
@@ -31,12 +37,10 @@ mod tests {
             Stmt::FuncDecl(f) => {
                 let body = f.body.unwrap();
                 match body.block[0] {
-                    Stmt::ExprStmt(expr_stmt) => {
-                        match expr_stmt.expr {
-                            Expr::Deref { .. } => {}
-                            _ => panic!("Expected Deref expression, got {:?}", expr_stmt.expr),
-                        }
-                    }
+                    Stmt::ExprStmt(expr_stmt) => match expr_stmt.expr {
+                        Expr::Deref { .. } => {}
+                        _ => panic!("Expected Deref expression, got {:?}", expr_stmt.expr),
+                    },
                     _ => panic!("Expected ExprStmt"),
                 }
             }
@@ -52,17 +56,13 @@ mod tests {
             Stmt::FuncDecl(f) => {
                 let body = f.body.unwrap();
                 match body.block[0] {
-                    Stmt::ExprStmt(expr_stmt) => {
-                        match expr_stmt.expr {
-                            Expr::FieldAccess { object, .. } => {
-                                match object {
-                                    Expr::Deref { .. } => {}
-                                    _ => panic!("Expected Deref inside FieldAccess, got {:?}", object),
-                                }
-                            }
-                            _ => panic!("Expected FieldAccess expression, got {:?}", expr_stmt.expr),
-                        }
-                    }
+                    Stmt::ExprStmt(expr_stmt) => match expr_stmt.expr {
+                        Expr::FieldAccess { object, .. } => match object {
+                            Expr::Deref { .. } => {}
+                            _ => panic!("Expected Deref inside FieldAccess, got {:?}", object),
+                        },
+                        _ => panic!("Expected FieldAccess expression, got {:?}", expr_stmt.expr),
+                    },
                     _ => panic!("Expected ExprStmt"),
                 }
             }
@@ -78,17 +78,13 @@ mod tests {
             Stmt::FuncDecl(f) => {
                 let body = f.body.unwrap();
                 match body.block[0] {
-                    Stmt::ExprStmt(expr_stmt) => {
-                        match expr_stmt.expr {
-                            Expr::Deref { expr: inner, .. } => {
-                                match inner {
-                                    Expr::Deref { .. } => {}
-                                    _ => panic!("Expected nested Deref, got {:?}", inner),
-                                }
-                            }
-                            _ => panic!("Expected Deref expression, got {:?}", expr_stmt.expr),
-                        }
-                    }
+                    Stmt::ExprStmt(expr_stmt) => match expr_stmt.expr {
+                        Expr::Deref { expr: inner, .. } => match inner {
+                            Expr::Deref { .. } => {}
+                            _ => panic!("Expected nested Deref, got {:?}", inner),
+                        },
+                        _ => panic!("Expected Deref expression, got {:?}", expr_stmt.expr),
+                    },
                     _ => panic!("Expected ExprStmt"),
                 }
             }

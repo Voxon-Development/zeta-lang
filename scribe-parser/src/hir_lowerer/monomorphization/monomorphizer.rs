@@ -220,7 +220,7 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
         subs: &HashMap<StrId, HirType>,
     ) -> HirExpr<'a, 'bump> {
         match expr {
-            HirExpr::Call { callee, args } => {
+            HirExpr::Call { callee, args, span } => {
                 let new_callee = self.monomorphize_expr(callee, subs);
                 let new_args: Vec<HirExpr> = args
                     .iter()
@@ -230,12 +230,14 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
                 HirExpr::Call {
                     callee: self.bump.alloc_value_immutable(new_callee),
                     args: args_slice,
+                    span: *span,
                 }
             }
             HirExpr::InterfaceCall {
                 callee,
                 interface,
                 args,
+                span,
             } => {
                 let new_callee = self.monomorphize_expr(callee, subs);
                 let new_args: Vec<HirExpr> = args
@@ -247,6 +249,7 @@ impl<'a, 'bump> Monomorphizer<'a, 'bump> {
                     callee: self.bump.alloc_value_immutable(new_callee),
                     interface: *interface,
                     args: args_slice,
+                    span: *span,
                 }
             }
             HirExpr::StructInit { name, args, span } => {

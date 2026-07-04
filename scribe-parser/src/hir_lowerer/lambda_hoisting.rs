@@ -222,9 +222,8 @@ impl<'a, 'bump> LambdaHoister<'a, 'bump> {
                 modifier: _,
                 params,
                 return_type,
-                throws: _,
                 body,
-                span: _,
+                span,
             } => {
                 let inner_rewritten_body = self.rewrite_stmt(*body);
 
@@ -263,7 +262,7 @@ impl<'a, 'bump> LambdaHoister<'a, 'bump> {
                 self.hoisted
                     .push(Hir::Func(self.bump.alloc_value(synthetic_func)));
 
-                HirExpr::Ident(synthetic_name)
+                HirExpr::Ident(synthetic_name, span)
             }
 
             HirExpr::Binary {
@@ -296,19 +295,21 @@ impl<'a, 'bump> LambdaHoister<'a, 'bump> {
                     span,
                 }
             }
-            HirExpr::Call { callee, args } => {
+            HirExpr::Call { callee, args, span } => {
                 let new_callee = self.rewrite_expr(*callee);
                 let new_args: Vec<HirExpr<'a, 'bump>> =
                     args.iter().map(|a| self.rewrite_expr(*a)).collect();
                 HirExpr::Call {
                     callee: self.bump.alloc_value(new_callee),
                     args: self.bump.alloc_slice(&new_args),
+                    span,
                 }
             }
             HirExpr::InterfaceCall {
                 callee,
                 args,
                 interface,
+                span,
             } => {
                 let new_callee = self.rewrite_expr(*callee);
                 let new_args: Vec<HirExpr<'a, 'bump>> =
@@ -317,6 +318,7 @@ impl<'a, 'bump> LambdaHoister<'a, 'bump> {
                     callee: self.bump.alloc_value(new_callee),
                     args: self.bump.alloc_slice(&new_args),
                     interface,
+                    span,
                 }
             }
             HirExpr::FieldAccess {

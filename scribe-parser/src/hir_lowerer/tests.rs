@@ -107,7 +107,7 @@ mod hir_lowerer_tests {
                     "Expected first variable named 'x'"
                 );
                 assert_eq!(*ty, HirType::I32, "Expected x to have type i32");
-                if let HirExpr::Number(n) = value {
+                if let HirExpr::Number(n, _) = value {
                     assert_eq!(*n, 42, "Expected x to be initialized with 42");
                 } else {
                     panic!("Expected numeric literal for x, got {:?}", value);
@@ -130,7 +130,7 @@ mod hir_lowerer_tests {
                 match ty {
                     HirType::String => {
                         // Expected case
-                        if let HirExpr::String(s) = value {
+                        if let HirExpr::String(s, _) = value {
                             assert_eq!(
                                 context.resolve_string(s),
                                 "hello",
@@ -142,7 +142,7 @@ mod hir_lowerer_tests {
                     }
                     HirType::Struct(_, _) => {
                         // Alternative case - class type for String
-                        if let HirExpr::String(s) = value {
+                        if let HirExpr::String(s, _) = value {
                             assert_eq!(
                                 context.resolve_string(s),
                                 "hello",
@@ -324,7 +324,7 @@ mod hir_lowerer_tests {
                     "Expected second variable named 'y'"
                 );
                 assert_eq!(*ty, HirType::Boolean, "Expected y to have type bool");
-                if let HirExpr::Boolean(b) = value {
+                if let HirExpr::Boolean(b, _) = value {
                     assert!(*b, "Expected y to be initialized with true");
                 } else {
                     panic!("Expected boolean literal for y");

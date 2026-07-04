@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use ir::ast::{DeferAction, Pattern, Stmt};
+    use ir::hir::StrId;
     use scribe_parser::parser::parse_program;
     use std::sync::Arc;
     use zetaruntime::arena::GrowableAtomicBump;
@@ -13,8 +14,7 @@ mod tests {
     ) -> Vec<Stmt<'a, 'bump>, &'bump GrowableBump<'bump>> {
         let ctx = Arc::new(StringPool::new().unwrap());
         let ctx_clone = Arc::clone(&ctx);
-        std::mem::forget(ctx);
-        parse_program(src, "<test>", ctx_clone, bump).statements
+        parse_program(StrId(ctx_clone.intern(src)), "<test>", ctx_clone, bump).statements
     }
 
     macro_rules! body_stmt {

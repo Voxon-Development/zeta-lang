@@ -1,7 +1,6 @@
 use super::context::HirLowerer;
 use super::utils::lower_visibility;
 use ir::ast::{FuncDecl, Generic, Param, ParamPassingKind, StructDecl};
-use ir::errors::error::TypeError;
 use ir::hir::{
     ConstStmt, HirEnum, HirEnumVariant, HirField, HirFunc, HirGeneric, HirImpl, HirInterface,
     HirParam, HirStmt, HirStruct, StrId, ThisPassingKind,
@@ -29,10 +28,6 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         let proto = match binding.get(&lookup_name) {
             Some(p) => p,
             None => {
-                self.error_reporter
-                    .add_type_error(TypeError::MissingFunction {
-                        function: unmangled_name,
-                    });
                 drop(binding);
                 return self.make_error_function(func);
             }
@@ -300,13 +295,13 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
 
     pub(super) fn make_error_function(&self, func: FuncDecl<'a, 'bump>) -> HirFunc<'a, 'bump> {
         HirFunc {
-            name: func.name,
+            name: StrId::default(),
             function_metadata: func.function_metadata,
             generics: None,
             params: Some(self.ctx.bump.alloc_slice(&[])),
             return_type: None,
             body: None,
-            unmangled_name: func.name, // Not mangled in the first place
+            unmangled_name: StrId::default(), // Not mangled in the first place
         }
     }
 }

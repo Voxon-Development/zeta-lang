@@ -1,10 +1,11 @@
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use ir::ast::{Stmt, TypeKind};
+    use ir::hir::StrId;
     use scribe_parser::parser::parse_program;
-    use zetaruntime::bump::GrowableBump;
+    use std::sync::Arc;
     use zetaruntime::arena::GrowableAtomicBump;
+    use zetaruntime::bump::GrowableBump;
     use zetaruntime::string_pool::StringPool;
 
     fn parse<'a, 'bump>(
@@ -13,8 +14,7 @@ mod tests {
     ) -> Vec<Stmt<'a, 'bump>, &'bump GrowableBump<'bump>> {
         let ctx = Arc::new(StringPool::new().unwrap());
         let ctx_for_parse = Arc::clone(&ctx);
-        std::mem::forget(ctx);
-        parse_program(src, "<test>", ctx_for_parse, bump).statements
+        parse_program(StrId(ctx.intern(src)), "<test>", ctx_for_parse, bump).statements
     }
 
     macro_rules! first_stmt {
@@ -35,8 +35,7 @@ mod tests {
                         let ty = let_stmt.type_annotation;
                         assert!(!ty.nullable);
                         match ty.kind {
-                            TypeKind::SafePointer { .. } => {
-                            }
+                            TypeKind::SafePointer { .. } => {}
                             _ => panic!("Expected Pointer type"),
                         }
                     }
@@ -59,8 +58,7 @@ mod tests {
                         let ty = let_stmt.type_annotation;
                         assert!(ty.nullable);
                         match ty.kind {
-                            TypeKind::SafePointer { .. } => {
-                            }
+                            TypeKind::SafePointer { .. } => {}
                             _ => panic!("Expected Pointer type"),
                         }
                     }
@@ -83,8 +81,7 @@ mod tests {
                         let ty = let_stmt.type_annotation;
                         assert!(!ty.nullable);
                         match ty.kind {
-                            TypeKind::SafePointer { .. } => {
-                            }
+                            TypeKind::SafePointer { .. } => {}
                             _ => panic!("Expected Pointer type"),
                         }
                     }
@@ -107,8 +104,7 @@ mod tests {
                         let ty = let_stmt.type_annotation;
                         assert!(ty.nullable);
                         match ty.kind {
-                            TypeKind::SafePointer { .. } => {
-                            }
+                            TypeKind::SafePointer { .. } => {}
                             _ => panic!("Expected Pointer type"),
                         }
                     }

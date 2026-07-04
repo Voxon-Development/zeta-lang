@@ -6,6 +6,8 @@ use zetaruntime::string_pool::StringPool;
 
 #[cfg(test)]
 mod struct_init_tests {
+    use ir::hir::StrId;
+
     use super::*;
 
     #[test]
@@ -40,7 +42,12 @@ mod struct_init_tests {
 
         let context = Arc::new(StringPool::new().unwrap());
         let atomic_bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(1024, 8).unwrap());
-        let _ = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
+        let _ = parse_program(
+            StrId(context.clone().intern(code)),
+            "test.zeta",
+            context.clone(),
+            atomic_bump.clone(),
+        );
 
         //println!("{:#?}", tokens);
     }
@@ -64,7 +71,12 @@ mod struct_init_tests {
 
         let context = Arc::new(StringPool::new().unwrap());
         let atomic_bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(1024, 8).unwrap());
-        let _ = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
+        let _ = parse_program(
+            StrId(context.clone().intern(code)),
+            "test.zeta",
+            context.clone(),
+            atomic_bump.clone(),
+        );
 
         //println!("{:#?}", tokens);
     }
@@ -84,7 +96,12 @@ mod struct_init_tests {
 
         let context = Arc::new(StringPool::new().unwrap());
         let atomic_bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(1024, 8).unwrap());
-        let _ = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
+        let _ = parse_program(
+            StrId(context.clone().intern(code)),
+            "test.zeta",
+            context.clone(),
+            atomic_bump.clone(),
+        );
 
         //println!("{:#?}", tokens);
     }
@@ -102,7 +119,12 @@ mod struct_init_tests {
         let context: Arc<StringPool> = Arc::new(StringPool::new().unwrap());
         let atomic_bump: Arc<GrowableAtomicBump> =
             Arc::new(GrowableAtomicBump::with_capacity_and_aligned(1024, 8).unwrap());
-        let _ = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
+        let _ = parse_program(
+            StrId(context.clone().intern(code)),
+            "test.zeta",
+            context.clone(),
+            atomic_bump.clone(),
+        );
 
         //println!("{:#?}", tokens);
     }

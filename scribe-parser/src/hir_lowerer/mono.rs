@@ -27,7 +27,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     pub fn instantiate_class_for_types(
         &self,
         base: StrId,
-        concrete_args: &[HirType<'a, '_>],
+        concrete_args: &[HirType<'a, 'bump>],
     ) -> StrId {
         instantiate_class_for_types(
             &self.ctx,

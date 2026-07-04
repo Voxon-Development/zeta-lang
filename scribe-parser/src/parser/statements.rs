@@ -2,7 +2,7 @@ use crate::parser::descent_parser::DescentParser;
 use ir::ast::{
     Block, DeferAction, DeferStmt, ElseBranch, Expr, ForKind, ForStmt, IfStmt, ImportStmt,
     InternalExprStmt, LetStmt, MatchArm, MatchStmt, ModuleDecl, PackageStmt, Pattern, ReturnStmt,
-    Stmt, ThrowStmt, Type, Visibility, WhileStmt,
+    Stmt, Type, Visibility, WhileStmt,
 };
 use ir::errors::error::{DiagnosticError, ParseErrorKind};
 use ir::tokens::TokenKind;
@@ -172,12 +172,18 @@ where
     pub fn parse_break_stmt(&mut self) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         let break_token = self.cursor.expect(TokenKind::Break)?;
         match self.cursor.peek() {
-            TokenKind::Semicolon => Ok(Stmt::Break(None, break_token.span)),
+            TokenKind::Semicolon => {
+                self.cursor.consume(TokenKind::Semicolon);
+                Ok(Stmt::Break(None, break_token.span))
+            }
             _ => match self.parse_expr(0) {
-                Ok(expr) => Ok(Stmt::Break(
-                    Some(self.bump.alloc_value_immutable(expr)),
-                    break_token.span,
-                )),
+                Ok(expr) => {
+                    self.cursor.consume(TokenKind::Semicolon);
+                    Ok(Stmt::Break(
+                        Some(self.bump.alloc_value_immutable(expr)),
+                        break_token.span,
+                    ))
+                }
                 Err(error) => {
                     self.diag.record(error);
                     let kind = self.diag.synchronize(&mut self.cursor);
@@ -466,17 +472,6 @@ where
                 ))
             }
         }
-    }
-
-    /// Parse `import foo::bar.Baz;`
-    pub fn parse_throw_stmt(&mut self) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
-        let token = self.cursor.expect(TokenKind::Throw)?;
-        let inner = self.parse_expr(0)?;
-        self.cursor.consume(TokenKind::Semicolon);
-        Ok(Stmt::Throw(ThrowStmt {
-            inner,
-            span: token.span,
-        }))
     }
 
     /// Parse `import foo::bar.Baz;`

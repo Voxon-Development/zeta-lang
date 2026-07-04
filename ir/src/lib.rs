@@ -1,5 +1,3 @@
-#![feature(allocator_api)]
-
 pub mod ast;
 pub mod diagnostics_context;
 pub mod errors;

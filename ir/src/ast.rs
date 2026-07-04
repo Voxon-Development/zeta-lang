@@ -30,13 +30,6 @@ where
     ExprStmt(&'bump InternalExprStmt<'a, 'bump>),
     Break(Option<&'bump Expr<'a, 'bump>>, SourceSpan<'a>),
     Continue(SourceSpan<'a>),
-    Throw(ThrowStmt<'a, 'bump>),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ThrowStmt<'a, 'bump> {
-    pub inner: Expr<'a, 'bump>,
-    pub span: SourceSpan<'a>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -279,14 +272,7 @@ where
     pub generics: Option<&'bump [Generic<'a, 'bump>]>,
     pub params: Option<&'bump [Param<'a, 'bump>]>,
     pub return_type: Option<Type<'a, 'bump>>,
-    pub throws: Option<ThrowsDecl<'a, 'bump>>,
     pub body: Option<&'bump Block<'a, 'bump>>,
-    pub span: SourceSpan<'a>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ThrowsDecl<'a, 'bump> {
-    pub error_types: &'bump [Type<'a, 'bump>],
     pub span: SourceSpan<'a>,
 }
 
@@ -606,7 +592,6 @@ where
     Lambda {
         params: &'bump [Type<'a, 'bump>],
         return_type: &'a Type<'a, 'bump>,
-        throws: Option<&'bump [Type<'a, 'bump>]>,
     },
     Struct {
         name: StrId,
@@ -1087,7 +1072,6 @@ impl<'a, 'bump> Display for Type<'a, 'bump> {
             TypeKind::Lambda {
                 params,
                 return_type,
-                throws,
             } => {
                 write!(f, "fn(")?;
                 for (i, p) in params.iter().enumerate() {
@@ -1097,15 +1081,6 @@ impl<'a, 'bump> Display for Type<'a, 'bump> {
                     write!(f, "{}", p)?;
                 }
                 write!(f, ")")?;
-                if let Some(errs) = throws {
-                    write!(f, " throws ")?;
-                    for (i, e) in errs.iter().enumerate() {
-                        if i > 0 {
-                            write!(f, ", ")?;
-                        }
-                        write!(f, "{}", e)?;
-                    }
-                }
                 write!(f, " -> {}", return_type)
             }
             TypeKind::Struct { name, generics } => {

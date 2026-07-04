@@ -638,7 +638,6 @@ mod tests {
             generics: None,
             params: None,
             return_type: None,
-            throws: None,
             body: None,
             span: dummy_span(),
         }));

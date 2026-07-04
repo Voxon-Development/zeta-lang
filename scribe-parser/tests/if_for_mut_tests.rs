@@ -1,7 +1,8 @@
+use ir::hir::StrId;
 use scribe_parser::parser::parse_program;
+use std::sync::Arc;
 use zetaruntime::arena::GrowableAtomicBump;
 use zetaruntime::string_pool::StringPool;
-use std::sync::Arc;
 
 #[test]
 fn test_if_expression_parsing() {
@@ -14,12 +15,23 @@ fn test_if(): i32 {
 
     let context = Arc::new(StringPool::new().unwrap());
     let atomic_bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(1024, 8).unwrap());
-    
-    let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
-    
+
+    let result = parse_program(
+        StrId(context.clone().intern(code)),
+        "test.zeta",
+        context.clone(),
+        atomic_bump.clone(),
+    );
+
     // Should parse without errors
-    assert!(!result.diagnostics.has_errors(), "Parser should not have errors");
-    assert!(!result.statements.is_empty(), "Should have parsed statements");
+    assert!(
+        !result.diagnostics.has_errors(),
+        "Parser should not have errors"
+    );
+    assert!(
+        !result.statements.is_empty(),
+        "Should have parsed statements"
+    );
 }
 
 #[test]
@@ -32,11 +44,22 @@ fn abs(x: i32): i32 {
 
     let context = Arc::new(StringPool::new().unwrap());
     let atomic_bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(1024, 8).unwrap());
-    
-    let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
-    
-    assert!(!result.diagnostics.has_errors(), "Parser should not have errors");
-    assert!(!result.statements.is_empty(), "Should have parsed statements");
+
+    let result = parse_program(
+        StrId(context.clone().intern(code)),
+        "test.zeta",
+        context.clone(),
+        atomic_bump.clone(),
+    );
+
+    assert!(
+        !result.diagnostics.has_errors(),
+        "Parser should not have errors"
+    );
+    assert!(
+        !result.statements.is_empty(),
+        "Should have parsed statements"
+    );
 }
 
 #[test]
@@ -53,11 +76,22 @@ fn sum_range(): i32 {
 
     let context = Arc::new(StringPool::new().unwrap());
     let atomic_bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(1024, 8).unwrap());
-    
-    let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
-    
-    assert!(!result.diagnostics.has_errors(), "Parser should not have errors");
-    assert!(!result.statements.is_empty(), "Should have parsed statements");
+
+    let result = parse_program(
+        StrId(context.clone().intern(code)),
+        "test.zeta",
+        context.clone(),
+        atomic_bump.clone(),
+    );
+
+    assert!(
+        !result.diagnostics.has_errors(),
+        "Parser should not have errors"
+    );
+    assert!(
+        !result.statements.is_empty(),
+        "Should have parsed statements"
+    );
 }
 
 #[test]
@@ -74,11 +108,22 @@ fn sum_exclusive(): i32 {
 
     let context = Arc::new(StringPool::new().unwrap());
     let atomic_bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(1024, 8).unwrap());
-    
-    let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
-    
-    assert!(!result.diagnostics.has_errors(), "Parser should not have errors");
-    assert!(!result.statements.is_empty(), "Should have parsed statements");
+
+    let result = parse_program(
+        StrId(context.clone().intern(code)),
+        "test.zeta",
+        context.clone(),
+        atomic_bump.clone(),
+    );
+
+    assert!(
+        !result.diagnostics.has_errors(),
+        "Parser should not have errors"
+    );
+    assert!(
+        !result.statements.is_empty(),
+        "Should have parsed statements"
+    );
 }
 
 #[test]
@@ -93,11 +138,22 @@ fn test_mut(): i32 {
 
     let context = Arc::new(StringPool::new().unwrap());
     let atomic_bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(1024, 8).unwrap());
-    
-    let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
-    
-    assert!(!result.diagnostics.has_errors(), "Parser should not have errors");
-    assert!(!result.statements.is_empty(), "Should have parsed statements");
+
+    let result = parse_program(
+        StrId(context.clone().intern(code)),
+        "test.zeta",
+        context.clone(),
+        atomic_bump.clone(),
+    );
+
+    assert!(
+        !result.diagnostics.has_errors(),
+        "Parser should not have errors"
+    );
+    assert!(
+        !result.statements.is_empty(),
+        "Should have parsed statements"
+    );
 }
 
 #[test]
@@ -111,11 +167,22 @@ fn test_immut(): i32 {
 
     let context = Arc::new(StringPool::new().unwrap());
     let atomic_bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(1024, 8).unwrap());
-    
-    let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
-    
-    assert!(!result.diagnostics.has_errors(), "Parser should not have errors");
-    assert!(!result.statements.is_empty(), "Should have parsed statements");
+
+    let result = parse_program(
+        StrId(context.clone().intern(code)),
+        "test.zeta",
+        context.clone(),
+        atomic_bump.clone(),
+    );
+
+    assert!(
+        !result.diagnostics.has_errors(),
+        "Parser should not have errors"
+    );
+    assert!(
+        !result.statements.is_empty(),
+        "Should have parsed statements"
+    );
 }
 
 #[test]
@@ -132,11 +199,22 @@ fn nested_if(x: i32): i32 {
 
     let context = Arc::new(StringPool::new().unwrap());
     let atomic_bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(1024, 8).unwrap());
-    
-    let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
-    
-    assert!(!result.diagnostics.has_errors(), "Parser should not have errors");
-    assert!(!result.statements.is_empty(), "Should have parsed statements");
+
+    let result = parse_program(
+        StrId(context.clone().intern(code)),
+        "test.zeta",
+        context.clone(),
+        atomic_bump.clone(),
+    );
+
+    assert!(
+        !result.diagnostics.has_errors(),
+        "Parser should not have errors"
+    );
+    assert!(
+        !result.statements.is_empty(),
+        "Should have parsed statements"
+    );
 }
 
 #[test]
@@ -154,11 +232,22 @@ fn loop_with_mut(): i32 {
 
     let context = Arc::new(StringPool::new().unwrap());
     let atomic_bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(1024, 8).unwrap());
-    
-    let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
-    
-    assert!(!result.diagnostics.has_errors(), "Parser should not have errors");
-    assert!(!result.statements.is_empty(), "Should have parsed statements");
+
+    let result = parse_program(
+        StrId(context.clone().intern(code)),
+        "test.zeta",
+        context.clone(),
+        atomic_bump.clone(),
+    );
+
+    assert!(
+        !result.diagnostics.has_errors(),
+        "Parser should not have errors"
+    );
+    assert!(
+        !result.statements.is_empty(),
+        "Should have parsed statements"
+    );
 }
 
 #[test]
@@ -172,12 +261,23 @@ fn test_range(): i32 {
 
     let context = Arc::new(StringPool::new().unwrap());
     let atomic_bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(1024, 8).unwrap());
-    
-    let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
-    
+
+    let result = parse_program(
+        StrId(context.clone().intern(code)),
+        "test.zeta",
+        context.clone(),
+        atomic_bump.clone(),
+    );
+
     // Should parse without errors (even though range semantics aren't fully implemented)
-    assert!(!result.diagnostics.has_errors(), "Parser should not have errors");
-    assert!(!result.statements.is_empty(), "Should have parsed statements");
+    assert!(
+        !result.diagnostics.has_errors(),
+        "Parser should not have errors"
+    );
+    assert!(
+        !result.statements.is_empty(),
+        "Should have parsed statements"
+    );
 }
 
 #[test]
@@ -197,9 +297,20 @@ fn complex_if(x: i32, y: i32): i32 {
 
     let context = Arc::new(StringPool::new().unwrap());
     let atomic_bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(1024, 8).unwrap());
-    
-    let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
-    
-    assert!(!result.diagnostics.has_errors(), "Parser should not have errors");
-    assert!(!result.statements.is_empty(), "Should have parsed statements");
+
+    let result = parse_program(
+        StrId(context.clone().intern(code)),
+        "test.zeta",
+        context.clone(),
+        atomic_bump.clone(),
+    );
+
+    assert!(
+        !result.diagnostics.has_errors(),
+        "Parser should not have errors"
+    );
+    assert!(
+        !result.statements.is_empty(),
+        "Should have parsed statements"
+    );
 }

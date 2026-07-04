@@ -4,6 +4,7 @@
 mod parser;
 
 use codex_dependency_graph::DepGraph;
+use ir::hir::StrId;
 use ir::pretty::IrPrettyPrinter;
 use scribe_parser::parser::parse_program;
 use std::sync::Arc;
@@ -23,7 +24,12 @@ fn make_context() -> (
 
 fn parse_and_lower(code: &str) -> (String, Arc<StringPool>) {
     let (context, atomic_bump, dep_graph) = make_context();
-    let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
+    let result = parse_program(
+        StrId(context.clone().intern(code)),
+        "test.zeta",
+        context.clone(),
+        atomic_bump.clone(),
+    );
 
     assert!(
         result.diagnostics.errors.is_empty(),
@@ -50,7 +56,7 @@ fn parse_and_lower(code: &str) -> (String, Arc<StringPool>) {
 mod hir_tests {
     use super::*;
     use ir::ast::{Expr, Op, Param, ParamPassingKind, Stmt, Type};
-    use ir::hir::{Hir, HirExpr, HirStmt, HirType};
+    use ir::hir::{Hir, HirExpr, HirStmt, HirType, StrId};
     use scribe_parser::hir_lowerer::HirLowerer;
 
     #[test]
@@ -67,7 +73,12 @@ mod hir_tests {
         "#;
 
         let (context, atomic_bump, _dep_graph) = make_context();
-        let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
+        let result = parse_program(
+            StrId(context.clone().intern(code)),
+            "test.zeta",
+            context.clone(),
+            atomic_bump.clone(),
+        );
 
         assert!(
             result.diagnostics.errors.is_empty(),
@@ -181,7 +192,12 @@ mod hir_tests {
         "#;
 
         let (context, atomic_bump, _dep_graph) = make_context();
-        let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
+        let result = parse_program(
+            StrId(context.clone().intern(code)),
+            "test.zeta",
+            context.clone(),
+            atomic_bump.clone(),
+        );
 
         assert!(
             result.diagnostics.errors.is_empty(),
@@ -230,7 +246,12 @@ mod hir_tests {
         "#;
 
         let (context, atomic_bump, _dep_graph) = make_context();
-        let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
+        let result = parse_program(
+            StrId(context.clone().intern(code)),
+            "test.zeta",
+            context.clone(),
+            atomic_bump.clone(),
+        );
 
         assert!(
             result.diagnostics.errors.is_empty(),
@@ -272,7 +293,12 @@ mod hir_tests {
         "#;
 
         let (context, atomic_bump, _dep_graph) = make_context();
-        let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
+        let result = parse_program(
+            StrId(context.clone().intern(code)),
+            "test.zeta",
+            context.clone(),
+            atomic_bump.clone(),
+        );
 
         assert!(
             result.diagnostics.errors.is_empty(),
@@ -311,7 +337,12 @@ mod hir_tests {
         "#;
 
         let (context, atomic_bump, _dep_graph) = make_context();
-        let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
+        let result = parse_program(
+            StrId(context.clone().intern(code)),
+            "test.zeta",
+            context.clone(),
+            atomic_bump.clone(),
+        );
 
         assert!(
             result.diagnostics.errors.is_empty(),
@@ -358,7 +389,12 @@ mod hir_tests {
         "#;
 
         let (context, atomic_bump, _dep_graph) = make_context();
-        let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
+        let result = parse_program(
+            StrId(context.clone().intern(code)),
+            "test.zeta",
+            context.clone(),
+            atomic_bump.clone(),
+        );
 
         assert!(
             result.diagnostics.errors.is_empty(),
@@ -403,7 +439,12 @@ mod hir_tests {
         "#;
 
         let (context, atomic_bump, _dep_graph) = make_context();
-        let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
+        let result = parse_program(
+            StrId(context.clone().intern(code)),
+            "test.zeta",
+            context.clone(),
+            atomic_bump.clone(),
+        );
 
         assert!(
             result.diagnostics.errors.is_empty(),
@@ -462,7 +503,12 @@ mod hir_tests {
         "#;
 
         let (context, atomic_bump, _dep_graph) = make_context();
-        let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
+        let result = parse_program(
+            StrId(context.clone().intern(code)),
+            "test.zeta",
+            context.clone(),
+            atomic_bump.clone(),
+        );
 
         assert!(
             result.diagnostics.errors.is_empty(),
@@ -494,7 +540,12 @@ mod hir_tests {
         "#;
 
         let (context, atomic_bump, _dep_graph) = make_context();
-        let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
+        let result = parse_program(
+            StrId(context.clone().intern(code)),
+            "test.zeta",
+            context.clone(),
+            atomic_bump.clone(),
+        );
 
         assert!(
             result.diagnostics.errors.is_empty(),
@@ -541,7 +592,12 @@ mod hir_tests {
         "#;
 
         let (context, atomic_bump, dep_graph) = make_context();
-        let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
+        let result = parse_program(
+            StrId(context.clone().intern(code)),
+            "test.zeta",
+            context.clone(),
+            atomic_bump.clone(),
+        );
 
         assert!(
             result.diagnostics.errors.is_empty(),
@@ -684,7 +740,12 @@ mod hir_tests {
         "#;
 
         let (context, atomic_bump, _dep_graph) = make_context();
-        let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
+        let result = parse_program(
+            StrId(context.clone().intern(code)),
+            "test.zeta",
+            context.clone(),
+            atomic_bump.clone(),
+        );
 
         assert!(
             result.diagnostics.errors.is_empty(),
@@ -728,7 +789,12 @@ mod hir_tests {
         "#;
 
         let (context, atomic_bump, _dep_graph) = make_context();
-        let result = parse_program(code, "test.zeta", context.clone(), atomic_bump.clone());
+        let result = parse_program(
+            StrId(context.clone().intern(code)),
+            "test.zeta",
+            context.clone(),
+            atomic_bump.clone(),
+        );
 
         assert!(
             result.diagnostics.errors.is_empty(),

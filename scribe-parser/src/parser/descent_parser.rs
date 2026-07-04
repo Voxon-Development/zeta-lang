@@ -1,6 +1,7 @@
 use ir::ast::{Stmt, Visibility};
 use ir::diagnostics_context::{DiagnosticWarning, ParserDiagnosticsContext};
 use ir::errors::error::DiagnosticError;
+use ir::hir::StrId;
 use std::sync::Arc;
 use zetaruntime::arena::GrowableAtomicBump;
 use zetaruntime::bump::GrowableBump;
@@ -128,8 +129,6 @@ where
                 }
             }
 
-            TokenKind::Throw => self.parse_throw_stmt(),
-
             _ => self.parse_expr_stmt(),
         }
     }
@@ -151,7 +150,7 @@ pub struct ParseResult<'a, 'bump> {
 }
 
 pub fn parse_program<'a, 'bump>(
-    src: &'bump str,
+    src: StrId,
     file_name: &'bump str,
     context: Arc<StringPool>,
     bump: Arc<GrowableAtomicBump<'bump>>,
@@ -160,7 +159,7 @@ pub fn parse_program<'a, 'bump>(
     let parser_bump_ref: &'bump GrowableBump<'bump> = Box::leak(parser_bump);
 
     let lexer: Lexer = Lexer::new(context.clone());
-    let tokens: Tokens<'a> = lexer.tokenize(src, file_name, parser_bump_ref);
+    let tokens: Tokens<'a> = lexer.tokenize(src.as_str(), file_name, parser_bump_ref);
 
     let tokenized_source = bump.alloc_value(tokens);
 

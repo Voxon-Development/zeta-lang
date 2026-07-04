@@ -466,11 +466,6 @@ impl DepGraph {
         if let Some(ret) = &f.return_type {
             self.add_ast_type_dep(from_node, ret, module_idx, pool);
         }
-        if let Some(throws) = &f.throws {
-            for err_ty in throws.error_types {
-                self.add_ast_type_dep(from_node, err_ty, module_idx, pool);
-            }
-        }
         if let Some(generics) = f.generics {
             for g in generics {
                 for constraint in g.constraints {
@@ -959,17 +954,11 @@ impl DepGraph {
             TypeKind::Lambda {
                 params,
                 return_type,
-                throws,
             } => {
                 for p in params {
                     self.add_ast_type_dep(from_node, p, module_idx, pool);
                 }
                 self.add_ast_type_dep(from_node, return_type, module_idx, pool);
-                if let Some(throws) = throws {
-                    for throw in throws {
-                        self.add_ast_type_dep(from_node, throw, module_idx, pool);
-                    }
-                }
             }
             TypeKind::Dyn { bounds } => {
                 for b in bounds {

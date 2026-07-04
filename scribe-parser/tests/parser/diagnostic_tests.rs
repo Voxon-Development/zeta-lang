@@ -2,6 +2,7 @@
 mod diagnostic_tests {
     use ir::ast::Stmt;
     use ir::errors::error::{DiagnosticError, ParseContext, ParseErrorKind};
+    use ir::hir::StrId;
     use scribe_parser::parser::parse_program;
     use std::sync::Arc;
     use zetaruntime::arena::GrowableAtomicBump;
@@ -29,9 +30,13 @@ mod diagnostic_tests {
         let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
         let ctx = Arc::new(StringPool::new().unwrap());
         let ctx_for_parse = Arc::clone(&ctx);
-        std::mem::forget(ctx);
 
-        let result = parse_program(src, "<test>", ctx_for_parse, bump);
+        let result = parse_program(
+            StrId(ctx.clone().intern(src)),
+            "<test>",
+            ctx_for_parse,
+            bump,
+        );
 
         ParseReport {
             statements: result.statements,
