@@ -41,10 +41,6 @@ impl Vec3f by Printable {
     }
 }
 
-fn abc() -> i64? {
-    return null;
-}
-
 fn main() {
     let vec9f: Vec9f = Vec9f {
         x: Vec3f { x: 1, y: 1, z: 1 },
@@ -62,7 +58,8 @@ fn main() {
 
     zeta::repro.println_int(12345);
 
-    let x: i64 = abc()? else {
+    let x: i64 = zeta::repro.abc()? else {
         zeta::repro.println_int(33964);
+        return;
     }
 }

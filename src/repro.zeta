@@ -4,3 +4,7 @@ package zeta::repro;
 public extern(C) fn println_int(num: i64) -> void;
 
 public extern(C) fn println_str(num: *const char) -> void;
+
+public fn abc() -> i64? {
+    return null;
+}
