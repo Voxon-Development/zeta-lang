@@ -1,0 +1,24 @@
+package zeta::lang;
+
+// Marker interface: types that implement `Copy` may be duplicated bitwise
+// (a plain memory copy) instead of being moved. No method is required
+// because the compiler performs the copy itself; implementing `Copy` is
+// just a promise that doing so is always safe and cheap.
+public interface Copy {
+}
+
+// Types that support making an explicit, possibly expensive duplicate of
+// themselves (allocations, refcount bumps, deep copies of owned data...).
+// Unlike `Copy`, cloning is never implicit and must be spelled out with a
+// call to `.clone()`.
+public interface Clone {
+    fn clone(&this) -> this;
+}
+
+// Types that need to run cleanup logic before their storage is reclaimed,
+// e.g. freeing memory, closing file handles, releasing locks, etc.
+// `drop` takes `this` by value (moved, mutably) so it consumes the value
+// exactly once and may still mutate its own fields while tearing down.
+public interface Drop {
+    fn drop(mut this) -> void;
+}
