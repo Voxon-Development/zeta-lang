@@ -1,10 +1,12 @@
 use crate::main_structs::{CompilerError, ModuleWithArena};
 use codex_dependency_graph::dep_graph::{AstModule, DepGraph};
+use emberforge_compiler::midend::copy_analysis::drop_glue::DropGlueRegistry;
 use emberforge_compiler::midend::ir::module_lowerer::MirModuleLowerer;
 use engraver_assembly_emit::backend::Backend;
 use engraver_assembly_emit::cranelift::cranelift_backend::CraneliftBackend;
 use ir::hir::{HirModule, StrId};
 use ir::ir_hasher::{FxHashBuilder, HashSet};
+use ir::registry::global_registry::GlobalRegistry;
 use ir::ssa_ir::{Function, Module};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -173,19 +175,24 @@ pub(crate) fn emit_all<'a, 'bump>(
     compilation_order: &[usize],
     backend: &mut CraneliftBackend,
     pool: Arc<StringPool>,
-    extern_c_names: &HashSet<StrId>,
+    extern_c_names: &'a HashSet<StrId>,
     dep_graph: &'a DepGraph,
-) {
+    registry: GlobalRegistry<'a, 'bump>,
+) where
+    'bump: 'a,
+{
     let len = hir_modules.len();
 
     let mut global_funcs: HashMap<StrId, Function, FxHashBuilder> =
         HashMap::with_hasher(FxHashBuilder);
 
+    let glue_registry = DropGlueRegistry::new(&registry, pool.clone());
+
+    let funcs_snapshot = global_funcs.clone();
     for &module_idx in compilation_order {
         if module_idx < len {
             // Snapshot: MirModuleLowerer borrows this for its lifetime,
             // which ends when lower_module returns. Then we can mutate global_funcs.
-            let funcs_snapshot = global_funcs.clone();
 
             let mir_module: Module = MirModuleLowerer::new(
                 pool.clone(),
@@ -194,7 +201,7 @@ pub(crate) fn emit_all<'a, 'bump>(
                 module_idx,
                 &funcs_snapshot,
             )
-            .lower_module(hir_modules[module_idx]);
+            .lower_module(hir_modules[module_idx], &glue_registry);
 
             global_funcs.extend(mir_module.functions.iter().map(|(k, v)| (*k, v.clone())));
 

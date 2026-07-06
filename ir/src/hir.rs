@@ -642,7 +642,7 @@ where
                 }
                 Ok(())
             }
-            HirType::Unknown => write!(f, "infer"),
+            HirType::Unknown => write!(f, "<unknown>"),
             HirType::Tuple(args) => {
                 let params_str: String = args
                     .iter()
