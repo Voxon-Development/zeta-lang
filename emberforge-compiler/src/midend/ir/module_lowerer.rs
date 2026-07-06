@@ -1,7 +1,8 @@
-use crate::midend::ir::ir_conversion::lower_type_hir;
+use crate::midend::copy_analysis::drop_glue::{DropGlueBuilder, DropGlueRegistry};
 use crate::midend::ir::lowerer::FunctionLowerer;
 use codex_dependency_graph::DepGraph;
 use ir::hir::{Hir, HirFunc, HirInterface, HirModule, HirParam, HirStruct, HirType, StrId};
+use ir::ir_conversion::lower_type_hir;
 use ir::ir_hasher::{FxHashBuilder, HashSet};
 use ir::ssa_ir::{Function, Module, SsaType};
 use std::collections::HashMap;
@@ -9,7 +10,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use zetaruntime::string_pool::StringPool;
 
-pub struct MirModuleLowerer<'a, 'cx, 'bump>
+pub struct MirModuleLowerer<'a, 'cx, 'bump, 'g>
 where
     'bump: 'a,
     'bump: 'cx,
@@ -17,7 +18,6 @@ where
 {
     pub module: Module<'a, 'bump>,
 
-    // HIR -> SSA metadata for interfaces / classes
     interface_methods: HashMap<StrId, Vec<(StrId, Vec<SsaType>, SsaType)>, FxHashBuilder>,
     interface_id_map: HashMap<StrId, usize, FxHashBuilder>,
     interface_method_slots: HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
@@ -37,9 +37,10 @@ where
     pub dep_graph: &'a DepGraph,
     pub module_idx: usize,
     global_funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
+    g_phantom_data: PhantomData<&'g ()>,
 }
 
-impl<'a, 'cx, 'bump> MirModuleLowerer<'a, 'cx, 'bump>
+impl<'a, 'cx, 'bump, 'g> MirModuleLowerer<'a, 'cx, 'bump, 'g>
 where
     'bump: 'a,
     'bump: 'cx,
@@ -90,6 +91,7 @@ where
             dep_graph,
             module_idx,
             global_funcs,
+            g_phantom_data: PhantomData,
         }
     }
 
@@ -105,7 +107,11 @@ where
     /// then structs and free functions/impl methods, then vtables generation.
     ///
     /// This is done in three passes so that you can safely reference anything from anything else.
-    pub fn lower_module(mut self, hir_mod: HirModule<'a, 'bump>) -> Module<'a, 'bump> {
+    pub fn lower_module(
+        mut self,
+        hir_mod: HirModule<'a, 'bump>,
+        glue_registry: &DropGlueRegistry,
+    ) -> Module<'a, 'bump> {
         // enum tags, interfaces, and struct_interfaces
         for item in hir_mod.items {
             match item {
@@ -150,6 +156,24 @@ where
             if let Hir::Struct(class) = item {
                 self.build_class_vtable(class);
             }
+        }
+
+        let owned_structs: Vec<StrId> = hir_mod
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Hir::Struct(s) => Some(s.name),
+                _ => None,
+            })
+            .collect();
+        for (name, func) in DropGlueBuilder::build_all(
+            glue_registry,
+            &self.module.classes,
+            &self.class_mangled_map,
+            self.context.clone(),
+            &owned_structs,
+        ) {
+            self.module.functions.insert(name, func);
         }
 
         self.module

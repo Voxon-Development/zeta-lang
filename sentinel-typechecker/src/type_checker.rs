@@ -1,5 +1,9 @@
+use std::rc::Rc;
+
+use crate::move_state::MoveState;
 use crate::type_context::TypeContext;
 use codex_dependency_graph::DepGraph;
+use ir::analysis_context::CopyAnalysisCtx;
 use ir::ast::MutabilityState;
 use ir::errors::type_error::{TypeCheckResult, TypeError, TypeErrorKind};
 use ir::hir::{
@@ -21,14 +25,28 @@ pub struct TypeChecker<'a, 'bump> {
     /// node we fall back to whatever span was last set by an ancestor or
     /// sibling, better an approximate location than none at all.
     current_span: SourceSpan<'a>,
+    copy_analysis: Rc<CopyAnalysisCtx<'a, 'bump>>,
+    move_state: MoveState,
+    /// When true, `record`/`recover` discard diagnostics instead of
+    /// collecting them. Used by `converge_loop_move_state` to run the loop
+    /// body speculatively, possibly many times, without duplicating every
+    /// type error inside it once per fixpoint iteration.
+    suppress_errors: bool,
 }
 
 impl<'a, 'bump> TypeChecker<'a, 'bump> {
-    pub fn new(dep_graph: &'a DepGraph, bump: &'bump GrowableBump<'bump>) -> Self {
+    pub fn new(
+        dep_graph: &'a DepGraph,
+        bump: &'bump GrowableBump<'bump>,
+        copy_analysis: Rc<CopyAnalysisCtx<'a, 'bump>>,
+    ) -> Self {
         Self {
             context: TypeContext::new(dep_graph, bump),
             errors: Vec::new(),
             current_span: SourceSpan::default(),
+            copy_analysis,
+            move_state: MoveState::new(),
+            suppress_errors: false,
         }
     }
 
@@ -48,28 +66,67 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         std::mem::take(&mut self.errors)
     }
 
-    /// Records a type error at the current best-known location.
-    fn record(&mut self, kind: TypeErrorKind) {
-        self.errors.push(kind.at(self.current_span));
-    }
-
     /// Updates the "current best-known span" used for errors detected at
     /// nodes that don't carry their own span.
     fn set_span(&mut self, span: SourceSpan<'a>) {
         self.current_span = span;
     }
 
-    /// Runs a fallible sub-check; on failure, records the error at the
-    /// current span and substitutes `fallback` so the caller can keep
-    /// checking instead of aborting.
+    fn record(&mut self, kind: TypeErrorKind) {
+        if self.suppress_errors {
+            return;
+        }
+        self.errors.push(kind.at(self.current_span));
+    }
+
     fn recover<T>(&mut self, result: TypeCheckResult<'a, T>, fallback: T) -> T {
         match result {
             Ok(v) => v,
             Err(e) => {
-                self.errors.push(e);
+                if !self.suppress_errors {
+                    self.errors.push(e);
+                }
                 fallback
             }
         }
+    }
+
+    fn with_suppressed_errors<F: FnOnce(&mut Self)>(&mut self, f: F) {
+        let prev = self.suppress_errors;
+        self.suppress_errors = true;
+        f(self);
+        self.suppress_errors = prev;
+    }
+
+    fn converge_loop_move_state(
+        &mut self,
+        body: &HirStmt<'a, 'bump>,
+        entry_state: MoveState,
+    ) -> MoveState {
+        let saved_move_state = self.move_state.clone();
+        let saved_context = self.context.clone();
+
+        let mut converged = entry_state;
+
+        self.with_suppressed_errors(|this| loop {
+            this.move_state = converged.clone();
+            this.check_stmt(body);
+            let next = MoveState::join(&converged, &this.move_state);
+
+            // `join` is monotone, `next` always already contains
+            // everything `converged` had, so the only thing worth
+            // checking for convergence is whether `next` added anything
+            // beyond that.
+            let stable = converged.is_superset_of(&next);
+            converged = next;
+            if stable {
+                break;
+            }
+        });
+
+        self.move_state = saved_move_state;
+        self.context = saved_context;
+        converged
     }
 
     pub fn register_module(&mut self, module: &HirModule<'a, 'bump>, module_idx: usize) {
@@ -121,6 +178,22 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             if let Hir::Func(func) = item {
                 self.check_function(func);
             }
+            if let Hir::Struct(ty_struct) = item {
+                let Some(struct_interfaces) = self
+                    .context
+                    .struct_interfaces
+                    .get(&ty_struct.name.to_string())
+                else {
+                    continue;
+                };
+
+                if struct_interfaces.contains("Copy") && struct_interfaces.contains("Drop") {
+                    self.record(TypeErrorKind::Generic(format!(
+                        "{} should not implement Copy and Drop at the same time",
+                        ty_struct.name
+                    )));
+                }
+            }
         }
     }
 
@@ -165,6 +238,8 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             } => {
                 let value_type = self.check_expr(value);
 
+                self.check_and_record_value_use(value, &value_type);
+
                 if let Some(else_block) = else_block {
                     match &value_type {
                         HirType::Nullable(inner) => {
@@ -190,17 +265,25 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 }
                 let var_name = self.str_id_to_string(*name);
 
+                if self.context.variables.contains_key(&var_name) {
+                    self.record(TypeErrorKind::VariableAlreadyExists {
+                        var_name: var_name.clone(),
+                    });
+                }
+
                 if self.expr_is_dangling(value) {
                     self.context.mark_dangling(var_name.clone());
                 }
 
                 self.context
                     .add_variable_with_mutability(var_name, *ty, *mutable);
+
                 None
             }
             HirStmt::Return(expr) => {
                 if let Some(e) = expr {
                     let expr_type = self.check_expr(e);
+                    self.check_and_record_value_use(e, &expr_type);
                     let dangling = self.check_no_dangling_pointer(e);
                     self.recover(dangling, ());
                     if let Some(expected_return) = self.context.current_return_type {
@@ -249,6 +332,28 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     self.context = old_context;
                 }
 
+                let move_state_before = self.move_state.clone();
+
+                let mut then_context = self.context.create_child_scope();
+                for stmt in *then_block {
+                    let old_context = std::mem::replace(&mut self.context, then_context);
+                    self.check_stmt(stmt);
+                    then_context = self.context.clone();
+                    self.context = old_context;
+                }
+                let then_move_state = self.move_state.clone();
+
+                self.move_state = move_state_before.clone();
+                if let Some(else_stmt) = else_block {
+                    let else_context = self.context.create_child_scope();
+                    let old_context = std::mem::replace(&mut self.context, else_context);
+                    self.check_stmt(else_stmt);
+                    self.context = old_context;
+                }
+                let else_move_state = self.move_state.clone();
+
+                self.move_state = MoveState::join(&then_move_state, &else_move_state);
+
                 None
             }
             HirStmt::While { cond, body } => {
@@ -261,11 +366,22 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 }
 
                 self.context.enter_loop();
-                self.check_stmt(body);
-                self.context.exit_loop();
 
+                let entry_state = self.move_state.clone();
+                let converged_entry = self.converge_loop_move_state(body, entry_state);
+
+                // Real pass: entering from the fixpoint-converged state means a move
+                // that only becomes visible via the back-edge (i.e. only matters
+                // starting from the 2nd+ iteration) is already accounted for here,
+                // on the one pass that actually reports diagnostics, this is what
+                // gives correct "last-iteration-only move" handling without a blanket restriction.
+                self.move_state = converged_entry;
+                self.check_stmt(body);
+
+                self.context.exit_loop();
                 None
             }
+
             HirStmt::For {
                 init,
                 condition,
@@ -287,7 +403,13 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 }
 
                 self.context.enter_loop();
+
+                let entry_state = self.move_state.clone();
+                let converged_entry = self.converge_loop_move_state(body, entry_state);
+
+                self.move_state = converged_entry;
                 self.check_stmt(body);
+
                 self.context.exit_loop();
 
                 if let Some(inc) = increment {
@@ -313,6 +435,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 }
                 if let Some(e) = expr {
                     let expr_type = self.check_expr(e);
+                    self.check_and_record_value_use(e, &expr_type);
                     if let Some(expected_return) = self.context.current_return_type {
                         let result = self.types_compatible(&expected_return, &expr_type);
                         self.recover(result, ());
@@ -337,6 +460,8 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             }
             HirStmt::Match { expr, arms } => {
                 self.check_expr(expr);
+
+                let move_state_before = self.move_state.clone();
                 for arm in *arms {
                     let arm_context = self.context.create_child_scope();
                     let old_context = std::mem::replace(&mut self.context, arm_context);
@@ -350,10 +475,17 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                             });
                         }
                     }
-                    self.check_stmt(arm.body);
 
                     self.context = old_context;
+
+                    let arm_move_state = self.move_state.clone();
+
+                    self.move_state = move_state_before.clone();
                 }
+
+                let else_move_state = self.move_state.clone();
+
+                // todo: join all move states of all arms
                 None
             }
             HirStmt::UnsafeBlock { body } => {
@@ -389,16 +521,17 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     Some(ty) => ty,
                     None => {
                         self.record(TypeErrorKind::UndefinedVariable(var_name));
-                        HirType::Infer
+                        HirType::Unknown
                     }
                 }
             }
-            HirExpr::Tuple(exprs, _) => {
+            HirExpr::Tuple(exprs, span) => {
+                // TODO: replace with something like HirType::Tuple(types)
                 let mut types = Vec::new();
                 for e in *exprs {
                     types.push(self.check_expr(e));
                 }
-                types.first().copied().unwrap_or(HirType::Void)
+                HirType::Tuple(self.context.bump.alloc_slice_copy(types.as_slice()))
             }
             HirExpr::Binary {
                 left,
@@ -410,7 +543,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 let left_type = self.check_expr(left);
                 let right_type = self.check_expr(right);
                 let result = self.check_binary_op(&left_type, op, &right_type);
-                self.recover(result, HirType::Infer)
+                self.recover(result, HirType::Unknown)
             }
             HirExpr::Call { callee, args, span } => match &callee {
                 HirExpr::Ident(func_name, _) => {
@@ -420,7 +553,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                         Some(f) => f,
                         None => {
                             self.record(TypeErrorKind::UndefinedFunction(name));
-                            return HirType::Infer;
+                            return HirType::Unknown;
                         }
                     };
 
@@ -433,13 +566,12 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     }
 
                     if let Some(params) = func.params {
-                        for (arg, param) in args.iter().zip(params.iter()) {
-                            let arg_type = self.check_expr(arg);
-                            if let Some(param_type) = param.get_type() {
-                                let result = self.types_compatible(param_type, &arg_type);
-                                self.recover(result, ());
-                            }
+                        if let Some(value) =
+                            self.check_potential_this_param_for_move(args, func, params)
+                        {
+                            return value;
                         }
+                        self.check_all_func_args(args, params);
                     }
 
                     func.return_type.unwrap_or(HirType::Void)
@@ -468,7 +600,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                             Some(i) => i,
                             None => {
                                 self.record(TypeErrorKind::UndefinedType(iface_name));
-                                return HirType::Infer;
+                                return HirType::Unknown;
                             }
                         };
 
@@ -482,7 +614,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                                 "no method `{}` on interface `{}`",
                                 method_name, iface_name
                             )));
-                            return HirType::Infer;
+                            return HirType::Unknown;
                         };
 
                         let total_params = method.params.map(|p| p.len()).unwrap_or(0);
@@ -514,7 +646,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                                 "cannot call method on non-struct type: {}",
                                 self.type_to_string(&obj_type)
                             )));
-                            return HirType::Infer;
+                            return HirType::Unknown;
                         }
                     };
 
@@ -526,7 +658,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                                 "no method `{}` on `{}`",
                                 method_name, type_name
                             )));
-                            return HirType::Infer;
+                            return HirType::Unknown;
                         }
                     };
 
@@ -610,7 +742,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                                     suggested_modules: suggestion_paths,
                                 });
                             }
-                            return HirType::Infer;
+                            return HirType::Unknown;
                         }
                     };
 
@@ -642,7 +774,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                                 "Expression of type `{}` is not callable",
                                 self.type_to_string(&callee_type)
                             )));
-                            HirType::Infer
+                            HirType::Unknown
                         }
                     }
                 }
@@ -676,15 +808,17 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 HirType::Struct(*name, field_slice)
             }
             HirExpr::InterfaceCall {
-                callee, interface, ..
+                callee,
+                interface,
+                args,
+                ..
             } => {
-                // Not yet emitted by the lowerer (dynamic dispatch currently
-                // goes through `Call` on a `Dyn`-typed field access instead),
-                // but handle it defensively: the receiver must implement the
-                // named interface, and the call's type is that interface's
-                // sole/declared method return type if one can be found.
                 let _ = self.check_expr(callee);
                 let iface_name = interface.to_string();
+                for arg in *args {
+                    let arg_type = self.check_expr(arg);
+                    self.check_and_record_value_use(arg, &arg_type);
+                }
                 match self.context.get_interface(&iface_name) {
                     Some(iface) => iface
                         .methods
@@ -693,10 +827,11 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                         .unwrap_or(HirType::Void),
                     None => {
                         self.record(TypeErrorKind::UndefinedType(iface_name));
-                        HirType::Infer
+                        HirType::Unknown
                     }
                 }
             }
+
             HirExpr::Assignment {
                 target,
                 op,
@@ -778,7 +913,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 let enum_name_str = self.str_id_to_string(*enum_name);
                 let Some(enum_def) = self.context.get_enum(&enum_name_str) else {
                     self.record(TypeErrorKind::UndefinedType(enum_name_str));
-                    return HirType::Infer;
+                    return HirType::Unknown;
                 };
 
                 let variant_name = self.str_id_to_string(*variant);
@@ -791,7 +926,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                         "enum `{}` has no variant `{}`",
                         enum_name_str, variant_name
                     )));
-                    return HirType::Infer;
+                    return HirType::Unknown;
                 };
 
                 if args.len() != variant_def.fields.len() {
@@ -834,7 +969,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 let left_type = self.check_expr(left);
                 let right_type = self.check_expr(right);
                 let result = self.check_binary_op(&left_type, op, &right_type);
-                self.recover(result, HirType::Infer)
+                self.recover(result, HirType::Unknown)
             }
             HirExpr::Deref { expr, span } => {
                 self.set_span(*span);
@@ -848,7 +983,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                             "cannot dereference non-pointer type `{}`",
                             self.type_to_string(&inner_ty)
                         )));
-                        HirType::Infer
+                        HirType::Unknown
                     }
                 }
             }
@@ -905,7 +1040,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                             "cannot resolve module member `{}`",
                             member_name
                         )));
-                        HirType::Infer
+                        HirType::Unknown
                     }
                 }
             }
@@ -920,7 +1055,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 let mut lambda_context = self.context.create_child_scope();
                 for p in *params {
                     let param_name = self.str_id_to_string(p.name);
-                    let param_ty = p.param_type.unwrap_or(HirType::Infer);
+                    let param_ty = p.param_type.unwrap_or(HirType::Unknown);
                     lambda_context.add_variable(param_name, param_ty);
                 }
 
@@ -930,13 +1065,48 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
 
                 let param_types: Vec<HirType<'a, 'bump>> = params
                     .iter()
-                    .map(|p| p.param_type.unwrap_or(HirType::Infer))
+                    .map(|p| p.param_type.unwrap_or(HirType::Unknown))
                     .collect();
 
                 HirType::Lambda {
                     params: self.context.bump.alloc_slice(&param_types),
                     return_type: self.context.bump.alloc_value(*return_type),
                 }
+            }
+        }
+    }
+
+    fn check_potential_this_param_for_move(
+        &mut self,
+        args: &[HirExpr<'a, 'bump>],
+        func: HirFunc<'a, 'bump>,
+        params: &[HirParam<'a, 'bump>],
+    ) -> Option<HirType<'a, 'bump>> {
+        if let Some(this_param) = params.first() {
+            let HirParam::This { kind } = this_param else {
+                self.check_all_func_args(args, params);
+                return Some(func.return_type.unwrap_or(HirType::Void));
+            };
+
+            // TODO: Make it so the variable we called on can no longer be used
+            match kind {
+                ThisPassingKind::Move => {}
+                ThisPassingKind::MoveMut => {}
+                _ => {}
+            }
+        } else {
+            return Some(func.return_type.unwrap_or(HirType::Void)); // Zero parameters, save ourself all this hassle and branching
+        }
+        None
+    }
+
+    fn check_all_func_args(&mut self, args: &[HirExpr<'a, 'bump>], params: &[HirParam<'a, 'bump>]) {
+        for (arg, param) in args.iter().zip(params.iter()) {
+            let arg_type = self.check_expr(arg);
+            self.check_and_record_value_use(arg, &arg_type);
+            if let Some(param_type) = param.get_type() {
+                let result = self.types_compatible(param_type, &arg_type);
+                self.recover(result, ());
             }
         }
     }
@@ -1102,7 +1272,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 let struct_name_str = self.str_id_to_string(struct_name);
                 let Some(struct_def) = self.context.get_struct(&struct_name_str) else {
                     self.record(TypeErrorKind::UndefinedType(struct_name_str));
-                    return HirType::Infer;
+                    return HirType::Unknown;
                 };
 
                 let field_name = self.str_id_to_string(field);
@@ -1116,15 +1286,101 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     struct_name: struct_name_str,
                     field: field_name,
                 });
-                HirType::Infer
+                HirType::Unknown
             }
             _ => {
                 self.record(TypeErrorKind::Generic(format!(
                     "Cannot access field on non-struct type: {}",
                     self.type_to_string(&obj_type)
                 )));
-                HirType::Infer
+                HirType::Unknown
             }
+        }
+    }
+
+    /// Records a use of `place` (a bare local, or `local.field`) by value,
+    /// the point where a move actually happens. `field: None` means the
+    /// whole local is being moved; `Some(f)` means just that field.
+    fn record_move(&mut self, root: StrId, field: Option<StrId>, root_ty: &HirType<'a, 'bump>) {
+        if self.copy_analysis.type_is_copy(root_ty) {
+            return;
+        }
+
+        match field {
+            None => self.move_state.mark_whole_moved(root),
+            Some(f) => match root_ty {
+                HirType::Struct(name, _) => {
+                    if self.copy_analysis.implements_drop(*name) {
+                        self.record(TypeErrorKind::Generic(format!(
+                            "cannot partially move out of `{}`, which implements `Drop`",
+                            self.type_to_string(root_ty)
+                        )));
+                        return;
+                    }
+                    self.move_state.mark_field_moved(root, f);
+                }
+                HirType::Enum(name, _) => {
+                    if self.copy_analysis.implements_drop(*name) {
+                        self.record(TypeErrorKind::Generic(format!(
+                            "cannot partially move out of `{}`, which implements `Drop`",
+                            self.type_to_string(root_ty)
+                        )));
+                        return;
+                    }
+                    self.move_state.mark_field_moved(root, f);
+                }
+                _ => {}
+            },
+        }
+    }
+
+    /// Checks that `place` can legally be used by value right now, given
+    /// the current flow-sensitive move state, the counterpart to
+    /// `record_move`, called at every by-value use site.
+    fn check_use(&mut self, root: StrId, field: Option<StrId>, root_ty: &HirType<'a, 'bump>) {
+        if self.copy_analysis.type_is_copy(root_ty) {
+            return;
+        }
+        let name = self.str_id_to_string(root);
+        match field {
+            None => {
+                if self.move_state.blocks_whole_use(root) {
+                    self.record(TypeErrorKind::Generic(format!(
+                        "use of moved value: `{}`",
+                        name
+                    )));
+                }
+            }
+            Some(f) => {
+                if self.move_state.is_field_moved(root, f) {
+                    self.record(TypeErrorKind::Generic(format!(
+                        "use of moved value: `{}.{}`",
+                        name,
+                        self.str_id_to_string(f)
+                    )));
+                }
+            }
+        }
+    }
+
+    /// A bare-value use both checks the current state AND
+    /// records the resulting move, in that order, check before you
+    /// consume. Uses via `&x`/`&mut x`/`&this` never call this at all.
+    fn check_and_record_value_use(&mut self, expr: &HirExpr<'a, 'bump>, ty: &HirType<'a, 'bump>) {
+        match expr {
+            HirExpr::Ident(name, _) => {
+                self.check_use(*name, None, ty);
+                self.record_move(*name, None, ty);
+            }
+            HirExpr::FieldAccess { object, field, .. } | HirExpr::Get { object, field, .. } => {
+                if let HirExpr::Ident(root, _) = &**object {
+                    self.check_use(*root, Some(*field), ty);
+                    self.record_move(*root, Some(*field), ty);
+                }
+                // Non-Ident bases (e.g. `foo().field`) aren't places, no
+                // move to track.
+            }
+            _ => {}
         }
     }
 
@@ -1140,7 +1396,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         // `HirType::Infer` stands in for "already reported" (a placeholder
         // returned after some other error), so don't cascade a second
         // complaint about it.
-        if *expected == HirType::Infer || *found == HirType::Infer {
+        if *expected == HirType::Unknown || *found == HirType::Unknown {
             return Ok(());
         }
 
@@ -1278,7 +1534,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             HirType::Boolean => "bool".to_string(),
             HirType::String => "string".to_string(),
             HirType::Void => "void".to_string(),
-            HirType::Infer => "<inferred>".to_string(),
+            HirType::Unknown => "<inferred>".to_string(),
             HirType::Struct(name, _) => format!("struct {}", self.str_id_to_string(*name)),
             HirType::DynInterface(name, _) => format!("interface {}", self.str_id_to_string(*name)),
             HirType::Enum(name, _) => format!("enum {}", self.str_id_to_string(*name)),
@@ -1313,12 +1569,25 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 }
                 format!("dyn {}", bounds_str)
             }
+            HirType::Tuple(hir_types) => format!(
+                "({})",
+                hir_types
+                    .iter()
+                    .map(|t| self.type_to_string(t))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use ir::registry::global_registry::GlobalRegistry;
+    use zetaruntime::string_pool::StringPool;
+
     use super::*;
 
     #[test]
@@ -1326,7 +1595,10 @@ mod tests {
         let dep_graph = DepGraph::new();
 
         let bump = GrowableBump::new(4096, 8);
-        let checker = TypeChecker::new(&dep_graph, &bump);
+        let context = Arc::new(StringPool::new().unwrap());
+        let registry = GlobalRegistry::new();
+        let cpy_ctx = Rc::new(CopyAnalysisCtx::new(&[], registry.clone(), context.clone()));
+        let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx);
         assert_eq!(checker.context.variables.len(), 0);
         assert!(!checker.has_errors());
     }
@@ -1335,7 +1607,10 @@ mod tests {
     fn test_is_numeric() {
         let dep_graph = DepGraph::new();
         let bump = GrowableBump::new(4096, 8);
-        let checker = TypeChecker::new(&dep_graph, &bump);
+        let context = Arc::new(StringPool::new().unwrap());
+        let registry = GlobalRegistry::new();
+        let cpy_ctx = Rc::new(CopyAnalysisCtx::new(&[], registry.clone(), context.clone()));
+        let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx);
         assert!(checker.is_numeric(&HirType::I32));
         assert!(checker.is_numeric(&HirType::F64));
         assert!(!checker.is_numeric(&HirType::Boolean));
@@ -1346,7 +1621,10 @@ mod tests {
     fn test_is_comparable() {
         let dep_graph = DepGraph::new();
         let bump = GrowableBump::new(4096, 8);
-        let checker = TypeChecker::new(&dep_graph, &bump);
+        let context = Arc::new(StringPool::new().unwrap());
+        let registry = GlobalRegistry::new();
+        let cpy_ctx = Rc::new(CopyAnalysisCtx::new(&[], registry.clone(), context.clone()));
+        let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx);
         assert!(checker.is_comparable(&HirType::I32));
         assert!(checker.is_comparable(&HirType::Boolean));
         assert!(checker.is_comparable(&HirType::String));
@@ -1356,7 +1634,10 @@ mod tests {
     fn test_type_to_string() {
         let dep_graph = DepGraph::new();
         let bump = GrowableBump::new(4096, 8);
-        let checker = TypeChecker::new(&dep_graph, &bump);
+        let context = Arc::new(StringPool::new().unwrap());
+        let registry = GlobalRegistry::new();
+        let cpy_ctx = Rc::new(CopyAnalysisCtx::new(&[], registry.clone(), context.clone()));
+        let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx);
         assert_eq!(checker.type_to_string(&HirType::I32), "i32");
         assert_eq!(checker.type_to_string(&HirType::Boolean), "bool");
         assert_eq!(checker.type_to_string(&HirType::String), "string");
@@ -1367,7 +1648,10 @@ mod tests {
     fn test_types_compatible_same_type() {
         let dep_graph = DepGraph::new();
         let bump = GrowableBump::new(4096, 8);
-        let checker = TypeChecker::new(&dep_graph, &bump);
+        let context = Arc::new(StringPool::new().unwrap());
+        let registry = GlobalRegistry::new();
+        let cpy_ctx = Rc::new(CopyAnalysisCtx::new(&[], registry.clone(), context.clone()));
+        let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx);
         let result = checker.types_compatible(&HirType::I32, &HirType::I32);
         assert!(result.is_ok());
     }
@@ -1376,7 +1660,10 @@ mod tests {
     fn test_types_compatible_different_type() {
         let dep_graph = DepGraph::new();
         let bump = GrowableBump::new(4096, 8);
-        let checker = TypeChecker::new(&dep_graph, &bump);
+        let context = Arc::new(StringPool::new().unwrap());
+        let registry = GlobalRegistry::new();
+        let cpy_ctx = Rc::new(CopyAnalysisCtx::new(&[], registry.clone(), context.clone()));
+        let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx);
         let result = checker.types_compatible(&HirType::I32, &HirType::I64);
         assert!(result.is_err());
     }
@@ -1385,7 +1672,10 @@ mod tests {
     fn test_binary_op_addition() {
         let dep_graph = DepGraph::new();
         let bump = GrowableBump::new(4096, 8);
-        let checker = TypeChecker::new(&dep_graph, &bump);
+        let context = Arc::new(StringPool::new().unwrap());
+        let registry = GlobalRegistry::new();
+        let cpy_ctx = Rc::new(CopyAnalysisCtx::new(&[], registry.clone(), context.clone()));
+        let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx);
         let result = checker.check_binary_op(&HirType::I32, &Operator::Add, &HirType::I32);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), HirType::I32);
@@ -1395,7 +1685,10 @@ mod tests {
     fn test_binary_op_comparison() {
         let dep_graph = DepGraph::new();
         let bump = GrowableBump::new(4096, 8);
-        let checker = TypeChecker::new(&dep_graph, &bump);
+        let context = Arc::new(StringPool::new().unwrap());
+        let registry = GlobalRegistry::new();
+        let cpy_ctx = Rc::new(CopyAnalysisCtx::new(&[], registry.clone(), context.clone()));
+        let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx);
         let result = checker.check_binary_op(&HirType::I32, &Operator::LessThan, &HirType::I32);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), HirType::Boolean);
@@ -1405,7 +1698,10 @@ mod tests {
     fn test_binary_op_logical() {
         let dep_graph = DepGraph::new();
         let bump = GrowableBump::new(4096, 8);
-        let checker = TypeChecker::new(&dep_graph, &bump);
+        let context = Arc::new(StringPool::new().unwrap());
+        let registry = GlobalRegistry::new();
+        let cpy_ctx = Rc::new(CopyAnalysisCtx::new(&[], registry.clone(), context.clone()));
+        let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx);
         let result =
             checker.check_binary_op(&HirType::Boolean, &Operator::LogicalAnd, &HirType::Boolean);
         assert!(result.is_ok());
@@ -1416,7 +1712,10 @@ mod tests {
     fn test_binary_op_type_mismatch() {
         let dep_graph = DepGraph::new();
         let bump = GrowableBump::new(4096, 8);
-        let checker = TypeChecker::new(&dep_graph, &bump);
+        let context = Arc::new(StringPool::new().unwrap());
+        let registry = GlobalRegistry::new();
+        let cpy_ctx = Rc::new(CopyAnalysisCtx::new(&[], registry.clone(), context.clone()));
+        let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx);
         let result = checker.check_binary_op(&HirType::I32, &Operator::Add, &HirType::String);
         assert!(result.is_err());
     }

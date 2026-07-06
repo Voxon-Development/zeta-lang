@@ -2,6 +2,7 @@
 mod tests {
     use ir::ast::{Stmt, Visibility};
     use ir::hir::StrId;
+    use ir::registry::global_registry::GlobalRegistry;
     use scribe_parser::parser::parse_program;
     use std::sync::Arc;
     use zetaruntime::arena::GrowableAtomicBump;
@@ -106,7 +107,8 @@ mod tests {
         let pool2 = Arc::new(StringPool::new().unwrap());
         let hir_bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
         let dep_graph = Default::default();
-        let mut lowerer = HirLowerer::new(pool2, hir_bump, &dep_graph);
+        let registry = GlobalRegistry::new();
+        let mut lowerer = HirLowerer::new(pool2, hir_bump, &dep_graph, registry);
         let module = lowerer.lower_module(result.statements, 0);
         assert_eq!(
             module.name.as_str(),

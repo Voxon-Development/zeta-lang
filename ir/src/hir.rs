@@ -301,11 +301,12 @@ where
     /// Placeholder used when a type couldn't be determined, e.g. after a
     /// type error has already been reported for the expression, so callers
     /// don't cascade a second complaint about the same root cause.
-    Infer,
+    Unknown,
     Nullable(&'a HirType<'a, 'bump>),
     Dyn {
         bounds: &'bump [HirType<'a, 'bump>],
     },
+    Tuple(&'bump [HirType<'a, 'bump>]),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -641,7 +642,16 @@ where
                 }
                 Ok(())
             }
-            HirType::Infer => write!(f, "infer"),
+            HirType::Unknown => write!(f, "infer"),
+            HirType::Tuple(args) => {
+                let params_str: String = args
+                    .iter()
+                    .map(|a| a.to_string())
+                    .collect::<Vec<String>>()
+                    .join(", ");
+
+                write!(f, "({})", params_str)
+            }
         }
     }
 }

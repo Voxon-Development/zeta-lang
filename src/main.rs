@@ -7,6 +7,8 @@ mod main_structs;
 
 use engraver_assembly_emit::backend::Backend;
 use engraver_assembly_emit::cranelift::cranelift_backend::CraneliftBackend;
+use ir::analysis_context::CopyAnalysisCtx;
+use ir::registry::global_registry::GlobalRegistry;
 use sentinel_typechecker::TypeChecker;
 use zetaruntime::bump::GrowableBump;
 use zetaruntime::string_pool::StringPool;
@@ -220,8 +222,14 @@ where
         stdlib_parsed.iter().chain(user_parsed.iter()).collect();
 
     let lowerer_bump = GrowableBump::new(4096, 8);
-    let (hir_modules, errors) =
-        lower_all_from_refs(&all_parsed, &dep_graph, &lowerer_bump, pool.clone());
+    let registry = GlobalRegistry::new();
+    let (hir_modules, errors) = lower_all_from_refs(
+        &all_parsed,
+        &dep_graph,
+        &lowerer_bump,
+        pool.clone(),
+        registry.clone(),
+    );
 
     if !errors.is_empty() {
         for error in errors {
@@ -242,6 +250,7 @@ where
         pool.clone(),
         &extern_c_names,
         &dep_graph,
+        registry.clone(),
     );
 
     let out_obj = match backend
@@ -269,13 +278,14 @@ fn lower_all_from_refs<'a, 'bump>(
     dep_graph: &'a codex_dependency_graph::dep_graph::DepGraph,
     bump: &'bump GrowableBump<'bump>,
     pool: Arc<StringPool>,
+    registry: GlobalRegistry<'a, 'bump>,
 ) -> (Vec<ir::hir::HirModule<'a, 'bump>>, Vec<CompilerError<'a>>) {
     use crate::compilation_passes::pass_hir_lowering;
 
     let mut errors: Vec<CompilerError<'a>> = Vec::new();
-    let type_checker = Rc::new(RefCell::new(TypeChecker::new(dep_graph, bump)));
 
     let mut file_names_and_contents: Vec<(StrId, StrId)> = Vec::with_capacity(modules.len());
+
     let lowered_modules = modules
         .iter()
         .enumerate()
@@ -293,6 +303,7 @@ fn lower_all_from_refs<'a, 'bump>(
                 m.bump.clone(),
                 dep_graph,
                 module_idx,
+                registry.clone(),
             ) {
                 Ok(hir) => Some(hir),
                 Err(e) => {
@@ -303,6 +314,17 @@ fn lower_all_from_refs<'a, 'bump>(
             }
         })
         .collect::<Vec<_>>();
+
+    let cpy_ctx = Rc::new(CopyAnalysisCtx::new(
+        lowered_modules.as_slice(),
+        registry.clone(),
+        pool.clone(),
+    ));
+    let type_checker = Rc::new(RefCell::new(TypeChecker::new(
+        dep_graph,
+        bump,
+        cpy_ctx.clone(),
+    )));
 
     register_all_modules(lowered_modules.as_slice(), type_checker.clone());
 

@@ -216,6 +216,13 @@ pub fn layout_of_hir(ty: &HirType, target: TargetInfo) -> Result<Layout, LayoutE
             }
         }
         HirType::Dyn { bounds: _ } => todo!(),
-        HirType::Infer => todo!(),
+        HirType::Unknown => todo!(),
+        HirType::Tuple(hir_types) => Ok(Layout {
+            size: hir_types
+                .iter()
+                .filter_map(|t| layout_of_hir(t, target).ok())
+                .fold(0, |layout_one, layout_two| layout_one + layout_two.size),
+            align: target.ptr_bytes as usize,
+        }),
     }
 }

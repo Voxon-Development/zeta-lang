@@ -4,6 +4,7 @@ use ir::errors::reporter::ErrorReporter;
 use ir::hir::HirFuncProto;
 use ir::hir::{HirFunc, HirInterface, HirStruct, HirType, StrId};
 use ir::ir_hasher::{FxHashBuilder, FxHashMap};
+use ir::registry::global_registry::GlobalRegistry;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::marker::PhantomData;
@@ -15,8 +16,8 @@ use zetaruntime::string_pool::StringPool;
 pub type FxHashSet<T> = HashSet<T, FxHashBuilder>;
 
 pub struct LoweringCtx<'a, 'bump> {
-    pub classes: RefCell<FxHashMap<StrId, HirStruct<'a, 'bump>>>,
-    pub interfaces: RefCell<FxHashMap<StrId, HirInterface<'a, 'bump>>>,
+    pub classes: Rc<RefCell<FxHashMap<StrId, HirStruct<'a, 'bump>>>>,
+    pub interfaces: Rc<RefCell<FxHashMap<StrId, HirInterface<'a, 'bump>>>>,
     pub functions: Rc<RefCell<FxHashMap<StrId, HirFunc<'a, 'bump>>>>,
     pub func_protos: RefCell<FxHashMap<StrId, HirFuncProto<'a, 'bump>>>,
     pub type_bindings: RefCell<FxHashMap<StrId, HirType<'a, 'bump>>>,
@@ -27,8 +28,8 @@ pub struct LoweringCtx<'a, 'bump> {
     pub imported_modules: RefCell<FxHashMap<StrId, usize>>,
     pub bump: Arc<GrowableAtomicBump<'bump>>,
     pub module_idx: usize,
-    pub struct_interfaces: RefCell<FxHashMap<StrId, Vec<StrId>>>,
-    pub struct_methods: RefCell<FxHashMap<StrId, FxHashMap<StrId, HirFunc<'a, 'bump>>>>,
+    pub struct_interfaces: Rc<RefCell<FxHashMap<StrId, Vec<StrId>>>>,
+    pub struct_methods: Rc<RefCell<FxHashMap<StrId, FxHashMap<StrId, StrId>>>>,
 }
 
 pub struct HirLowerer<'a, 'bump> {
@@ -43,15 +44,14 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         context: Arc<StringPool>,
         bump: Arc<GrowableAtomicBump<'bump>>,
         dep_graph: &'a DepGraph,
+        registry: GlobalRegistry<'a, 'bump>,
     ) -> Self {
-        let functions: Rc<RefCell<FxHashMap<StrId, HirFunc>>> =
-            Rc::new(RefCell::new(FxHashMap::default()));
         Self {
             ctx: LoweringCtx {
-                classes: RefCell::new(FxHashMap::default()),
-                functions: functions.clone(),
+                classes: registry.classes,
+                functions: registry.functions.clone(),
                 func_protos: RefCell::new(FxHashMap::default()),
-                interfaces: RefCell::new(FxHashMap::default()),
+                interfaces: registry.interfaces,
                 type_bindings: RefCell::new(FxHashMap::default()),
                 variable_types: RefCell::new(FxHashMap::default()),
                 generic_params: RefCell::new(HashSet::default()),
@@ -59,12 +59,12 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 bump: bump.clone(),
                 imported_modules: RefCell::new(FxHashMap::default()),
                 dep_graph,
-                module_idx: usize::MAX, // This is a sentinel, it's overwritten anyways
-                struct_interfaces: RefCell::new(FxHashMap::default()),
-                struct_methods: RefCell::new(FxHashMap::default()),
+                module_idx: usize::MAX,
+                struct_interfaces: registry.struct_interfaces,
+                struct_methods: registry.struct_methods,
             },
             error_reporter: ErrorReporter::new(),
-            mono: Monomorphizer::new(context, bump, functions.clone()),
+            mono: Monomorphizer::new(context, bump, registry.functions),
             _phantom: PhantomData,
         }
     }

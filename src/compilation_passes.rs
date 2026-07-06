@@ -3,6 +3,7 @@ use codex_dependency_graph::dep_graph::DepGraph;
 use ir::ast::Stmt;
 use ir::errors::reporter::ErrorReporter;
 use ir::hir::{HirModule, StrId};
+use ir::registry::global_registry::GlobalRegistry;
 use scribe_parser::hir_lowerer::HirLowerer;
 use scribe_parser::hir_lowerer::lambda_hoisting::LambdaHoister;
 use sentinel_typechecker::TypeChecker;
@@ -19,8 +20,9 @@ pub fn pass_hir_lowering<'a, 'bump>(
     bump: Arc<GrowableAtomicBump<'bump>>,
     dep_graph: &'a DepGraph,
     module_idx: usize,
+    registry: GlobalRegistry<'a, 'bump>,
 ) -> Result<HirModule<'a, 'bump>, CompilerError<'a>> {
-    let mut lowerer = HirLowerer::new(context.clone(), bump.clone(), dep_graph);
+    let mut lowerer = HirLowerer::new(context.clone(), bump.clone(), dep_graph, registry);
     let module = lowerer.lower_module(statements, module_idx);
     let hoister = LambdaHoister::new(bump.clone(), context.clone(), module.name);
     Ok(hoister.run(module))

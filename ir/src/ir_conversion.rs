@@ -1,5 +1,7 @@
-use ir::hir::{AssignmentOperator, HirType, Operator};
-use ir::ssa_ir::{BinOp, SsaType};
+use crate::{
+    hir::{AssignmentOperator, HirType, Operator},
+    ssa_ir::{BinOp, SsaType},
+};
 
 pub fn assign_op_to_bin_op(op: AssignmentOperator) -> BinOp {
     let bin_op = match op {
@@ -72,11 +74,12 @@ pub fn lower_type_hir(ty: &HirType) -> SsaType {
         } => SsaType::Pointer(Box::new(lower_type_hir(inner))),
         HirType::Nullable(hir_type) => SsaType::Nullable(Box::new(lower_type_hir(hir_type))),
         HirType::Dyn { bounds: _ } => todo!(),
-        HirType::Infer => todo!(),
+        HirType::Unknown => todo!(),
+        HirType::Tuple(args) => SsaType::Tuple(args.iter().map(lower_type_hir).collect()),
     }
 }
 
-pub(super) fn lower_operator_bin(operator: &Operator) -> BinOp {
+pub fn lower_operator_bin(operator: &Operator) -> BinOp {
     match operator {
         Operator::Add => BinOp::Add,
         Operator::Subtract => BinOp::Sub,

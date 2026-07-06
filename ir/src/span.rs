@@ -3,16 +3,22 @@ use std::fmt;
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct SourceSpan<'a> {
     pub file_name: &'a str,
+
     pub line: usize,
     pub column: usize,
+
+    pub end_line: usize,
+    pub end_column: usize,
 }
 
 impl<'a> SourceSpan<'a> {
     pub fn new(file_name: &'a str, line: usize, column: usize) -> Self {
-        SourceSpan {
+        Self {
             file_name,
             line,
             column,
+            end_line: line,
+            end_column: column,
         }
     }
 
@@ -20,12 +26,18 @@ impl<'a> SourceSpan<'a> {
     /// multi-token construct. Since `SourceSpan` is a single point rather
     /// than a range, this keeps the earlier (start) position
     pub fn merge(self, other: SourceSpan<'a>) -> SourceSpan<'a> {
-        if self.file_name != other.file_name
-            || (self.line < other.line || (self.line == other.line && self.column <= other.column))
-        {
-            self
+        let (start, end) = if (self.line, self.column) <= (other.line, other.column) {
+            (self, other)
         } else {
-            other
+            (other, self)
+        };
+
+        SourceSpan {
+            file_name: self.file_name,
+            line: start.line,
+            column: start.column,
+            end_line: end.line,
+            end_column: end.column,
         }
     }
 }

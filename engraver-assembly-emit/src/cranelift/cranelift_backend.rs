@@ -771,6 +771,7 @@ impl CraneliftBackend {
             Instruction::Interpolate { .. } => todo!(),
             Instruction::EnumConstruct { .. } => todo!(),
             Instruction::MatchEnum { .. } => todo!(),
+            Instruction::FieldAddr { .. } => todo!(),
         }
     }
 

@@ -152,8 +152,14 @@ impl Lexer {
         let mut column = 1usize;
 
         macro_rules! span {
-            ($start_line:expr, $start_col:expr) => {
-                SourceSpan::new(file_name, $start_line, $start_col)
+            ($sl:expr, $sc:expr) => {
+                SourceSpan {
+                    file_name,
+                    line: $sl,
+                    column: $sc,
+                    end_line: line,
+                    end_column: column,
+                }
             };
         }
 

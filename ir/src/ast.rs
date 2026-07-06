@@ -694,7 +694,7 @@ impl fmt::Display for MutabilityState {
 }
 
 // Function Metadata
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct FuncModifiers {
     pub visibility: Visibility,
     pub extern_modifier: ExternModifier,
@@ -702,21 +702,24 @@ pub struct FuncModifiers {
     pub func_safety: FuncSafety,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum ExternModifier {
+    #[default]
     None,
     Abi(StrId),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum InlineModifier {
     Inline,
     Noinline,
+    #[default]
     None,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum FuncSafety {
+    #[default]
     Safe,
     Unsafe,
 }
@@ -729,8 +732,9 @@ pub enum MutabilityState {
     Const,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Visibility {
+    #[default]
     Public,
     Private,
     Module,

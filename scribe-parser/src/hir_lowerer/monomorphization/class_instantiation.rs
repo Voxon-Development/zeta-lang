@@ -120,5 +120,5 @@ pub fn direct_method_lookup<'a, 'bump>(
 
     let struct_methods = ctx.struct_methods.borrow();
     let methods = struct_methods.get(&concrete_name)?;
-    methods.get(method_name).map(|m| m.name)
+    methods.get(method_name).map(|m| *m)
 }

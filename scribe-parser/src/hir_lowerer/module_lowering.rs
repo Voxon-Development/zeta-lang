@@ -91,7 +91,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                         .borrow_mut()
                         .entry(impl_decl.target)
                         .or_insert_with(FxHashMap::default)
-                        .insert(hir_func.unmangled_name, hir_func);
+                        .insert(hir_func.unmangled_name, hir_func.name);
                 }
             }
             if let Stmt::Module(module_decl) = stmt {

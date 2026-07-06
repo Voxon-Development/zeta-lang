@@ -1,11 +1,11 @@
 use crate::midend::ir::block_data::CurrentBlockData;
 use crate::midend::ir::expr_lowerer::MirExprLowerer;
-use crate::midend::ir::ir_conversion::lower_type_hir;
 use codex_dependency_graph::DepGraph;
 use ir::hir::{
     HirErrorHandlerPattern, HirExpr, HirFunc, HirParam, HirStmt, HirStruct, HirType, StrId,
     ThisPassingKind,
 };
+use ir::ir_conversion::lower_type_hir;
 use ir::ir_hasher::{FxHashBuilder, HashSet};
 use ir::layout::{TargetInfo, alignof_ssa, layout_of_ssa, round_up_to_align};
 use ir::ssa_ir::{BasicBlock, BinOp, BlockId, Function, Instruction, Operand, SsaType, Value};

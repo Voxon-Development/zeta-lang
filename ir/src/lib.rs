@@ -1,10 +1,13 @@
+pub mod analysis_context;
 pub mod ast;
 pub mod diagnostics_context;
 pub mod errors;
 pub mod hir;
+pub mod ir_conversion;
 pub mod ir_hasher;
 pub mod layout;
 pub mod pretty;
+pub mod registry;
 pub mod span;
 pub mod ssa_ir;
 pub mod tests;

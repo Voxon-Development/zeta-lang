@@ -209,6 +209,7 @@ fn dead_code_elimination(module: &mut Module) -> bool {
                     Instruction::AddressOf { dest, .. } => used.contains(dest),
                     Instruction::Load { dest, .. } => used.contains(dest),
                     Instruction::Store { .. } => true,
+                    Instruction::FieldAddr { dest, .. } => used.contains(dest),
                 };
                 if keep {
                     new_insts.push(inst);
@@ -317,6 +318,7 @@ fn compute_used_value(mut used: &mut HashSet<Value>, inst: &Instruction) {
         Instruction::AddressOf { .. } => {}
         Instruction::Load { .. } => {}
         Instruction::Store { .. } => {}
+        Instruction::FieldAddr { base, .. } => collect_val(base, &mut used),
     }
 }
 
@@ -423,6 +425,7 @@ fn rewrite_operands_with_consts(
             subst(value);
             subst(ptr);
         }
+        Instruction::FieldAddr { base, .. } => subst(base),
     }
 
     changed

@@ -1,9 +1,9 @@
 use crate::midend::ir::block_data::CurrentBlockData;
-use crate::midend::ir::ir_conversion::{assign_op_to_bin_op, lower_operator_bin, lower_type_hir};
 use crate::optimized_string_buffering;
 use codex_dependency_graph::DepGraph;
 use core::panic;
 use ir::hir::{AssignmentOperator, HirExpr, HirStruct, HirType, Operator, StrId};
+use ir::ir_conversion::{assign_op_to_bin_op, lower_operator_bin, lower_type_hir};
 use ir::ir_hasher::{FxHashBuilder, HashSet};
 use ir::ssa_ir::{Function, Instruction, Operand, SsaType, Value};
 use smallvec::SmallVec;

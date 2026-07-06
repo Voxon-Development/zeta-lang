@@ -62,4 +62,5 @@ fn main() {
         zeta::repro.println_int(33964);
         return;
     }
+    gtfrf();
 }

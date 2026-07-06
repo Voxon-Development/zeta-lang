@@ -7,6 +7,7 @@ mod hir_lowerer_tests {
     use codex_dependency_graph::DepGraph;
     use ir::hir::{Hir, HirExpr, HirFunc, HirModule, HirStmt, HirType, StrId};
     use ir::ir_hasher::HashMap;
+    use ir::registry::global_registry::GlobalRegistry;
     use std::mem::transmute;
     use std::sync::Arc;
     use zetaruntime::arena::GrowableAtomicBump;
@@ -31,7 +32,8 @@ mod hir_lowerer_tests {
         let stmts = DescentParser::parse(context.clone(), bump_ref, tokens).unwrap();
 
         let atomic_bump = Arc::new(GrowableAtomicBump::new());
-        let mut lowerer = HirLowerer::new(context.clone(), atomic_bump, &dep_graph);
+        let registry = GlobalRegistry::new();
+        let mut lowerer = HirLowerer::new(context.clone(), atomic_bump, &dep_graph, registry);
         let module = lowerer.lower_module(stmts, 0);
 
         (module, context, dep_graph)
@@ -243,7 +245,8 @@ mod hir_lowerer_tests {
     fn test_monomorphizer_type_substitution() {
         let (context, _bump, dep_graph) = create_test_context();
         let atomic_bump = Arc::new(GrowableAtomicBump::new());
-        let lowerer = HirLowerer::new(context.clone(), atomic_bump.clone(), dep_graph);
+        let registry = GlobalRegistry::new();
+        let lowerer = HirLowerer::new(context.clone(), atomic_bump.clone(), dep_graph, registry);
         let _ = Monomorphizer::new(context.clone(), atomic_bump.clone(), unsafe {
             transmute(&lowerer.ctx)
         });

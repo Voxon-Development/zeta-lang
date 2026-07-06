@@ -210,6 +210,11 @@ pub enum Instruction {
         ptr: Operand,
         value: Operand,
     },
+    FieldAddr {
+        dest: Value,
+        base: Operand,
+        offset: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

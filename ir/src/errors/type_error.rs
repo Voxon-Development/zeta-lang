@@ -44,6 +44,9 @@ pub enum TypeErrorKind {
         name: String,
         suggested_modules: Vec<String>,
     },
+    VariableAlreadyExists {
+        var_name: String,
+    },
 }
 
 impl TypeErrorKind {
@@ -123,6 +126,9 @@ impl fmt::Display for TypeErrorKind {
                         suggested_modules.join(", ")
                     )
                 }
+            }
+            TypeErrorKind::VariableAlreadyExists { var_name } => {
+                write!(f, "Variable already exists: {}", var_name)
             }
         }
     }

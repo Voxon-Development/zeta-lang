@@ -208,6 +208,12 @@ impl<'a> ErrorReporter<'a> {
                 vec![],
             ),
             TypeErrorKind::Generic(msg) => (msg.clone(), vec![]),
+            TypeErrorKind::VariableAlreadyExists { var_name } => (
+                format!("Variable already exists: {}", var_name),
+                vec![
+                    "Rename the variable to another name that can be more descriptive.".to_string(),
+                ],
+            ),
         };
 
         Diagnostic {
@@ -271,49 +277,45 @@ impl<'a> ErrorReporter<'a> {
         };
 
         let lines: Vec<&str> = source.lines().collect();
-        let line_idx = span.line.saturating_sub(1);
-        let Some(line) = lines.get(line_idx) else {
-            return;
-        };
 
-        let arrow = if self.use_colors {
-            "-->".bright_blue().bold().to_string()
-        } else {
-            "-->".to_string()
-        };
-        eprintln!(
-            "  {} {}:{}:{}",
-            arrow, span.file_name, span.line, span.column
-        );
-        eprintln!();
-        eprintln!("  {}", line);
+        let start = span.line.saturating_sub(3).max(1);
+        let end = (span.line + 2).min(lines.len());
 
-        let col = span.column.saturating_sub(1).min(line.len());
-        let width = Self::token_width_at(line, col);
-        let caret_line = format!("{}{}", " ".repeat(col), "^".repeat(width.max(1)));
+        let width = end.to_string().len();
 
-        if self.use_colors {
-            eprintln!("  {}", caret_line.red().bold());
-        } else {
-            eprintln!("  {}", caret_line);
-        }
-    }
+        for i in start..=end {
+            let line = lines.get(i - 1).unwrap_or(&"");
 
-    fn token_width_at(line: &str, start_col: usize) -> usize {
-        let bytes = line.as_bytes();
-        if start_col >= bytes.len() {
-            return 1;
-        }
-        let mut end = start_col;
-        while end < bytes.len() {
-            let c = bytes[end] as char;
-            if c.is_alphanumeric() || c == '_' {
-                end += 1;
+            let gutter = if self.use_colors {
+                format!("{:>width$}", i, width = width)
+                    .bright_black()
+                    .to_string()
             } else {
-                break;
+                format!("{:>width$}", i, width = width)
+            };
+
+            eprintln!(" {} | {}", gutter, line);
+
+            if i == span.line {
+                let col = span.column.saturating_sub(1).min(line.len());
+
+                let mut marker = String::new();
+                marker.push_str(&" ".repeat(width + 3 + col));
+                marker.push('^');
+
+                // If you have end_column, extend it:
+                if span.end_line == span.line && span.end_column > span.column {
+                    let len = span.end_column.saturating_sub(span.column);
+                    marker.push_str(&"~".repeat(len.max(1)));
+                }
+
+                if self.use_colors {
+                    eprintln!("{}", marker.red().bold());
+                } else {
+                    eprintln!("{}", marker);
+                }
             }
         }
-        (end - start_col).max(1)
     }
 }
 

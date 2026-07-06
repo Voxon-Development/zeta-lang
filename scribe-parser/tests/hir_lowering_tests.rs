@@ -6,6 +6,7 @@ mod parser;
 use codex_dependency_graph::DepGraph;
 use ir::hir::StrId;
 use ir::pretty::IrPrettyPrinter;
+use ir::registry::global_registry::GlobalRegistry;
 use scribe_parser::parser::parse_program;
 use std::sync::Arc;
 use zetaruntime::arena::GrowableAtomicBump;
@@ -37,10 +38,12 @@ fn parse_and_lower(code: &str) -> (String, Arc<StringPool>) {
         result.diagnostics.errors
     );
 
+    let registry = GlobalRegistry::new();
     let mut hir_lowerer = scribe_parser::hir_lowerer::HirLowerer::new(
         context.clone(),
         atomic_bump.clone(),
         dep_graph,
+        registry,
     );
     let module = hir_lowerer.lower_module(result.statements, 0);
 
@@ -57,6 +60,7 @@ mod hir_tests {
     use super::*;
     use ir::ast::{Expr, Op, Param, ParamPassingKind, Stmt, Type};
     use ir::hir::{Hir, HirExpr, HirStmt, HirType, StrId};
+    use ir::registry::global_registry::GlobalRegistry;
     use scribe_parser::hir_lowerer::HirLowerer;
 
     #[test]
@@ -605,7 +609,9 @@ mod hir_tests {
             result.diagnostics.errors
         );
 
-        let mut hir_lowerer = HirLowerer::new(context.clone(), atomic_bump.clone(), dep_graph);
+        let registry = GlobalRegistry::new();
+        let mut hir_lowerer =
+            HirLowerer::new(context.clone(), atomic_bump.clone(), dep_graph, registry);
         let module = hir_lowerer.lower_module(result.statements, 0);
 
         let functions: Vec<_> = module
