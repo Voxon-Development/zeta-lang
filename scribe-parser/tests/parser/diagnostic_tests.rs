@@ -66,7 +66,6 @@ mod diagnostic_tests {
 
     #[test]
     fn error_inside_function_carries_function_context() {
-        // Missing closing brace in function body.
         let report = assert_error!(
             "fn foo() { let x = ;",
             ParseErrorKind::InvalidExpression { .. }
@@ -97,7 +96,6 @@ mod diagnostic_tests {
 
     #[test]
     fn multiple_bad_top_level_items_produce_multiple_errors() {
-        // Two broken function declarations separated by a good one.
         let src = r#"
         fn good() {}
         fn bad1( {
@@ -107,9 +105,7 @@ mod diagnostic_tests {
     "#;
 
         let report = parse(src);
-        // We should still get the three good functions in the AST.
         assert_eq!(report.statements.len(), 3, "should parse 3 good functions");
-        // And exactly two errors.
         assert_eq!(report.errors.len(), 2, "should report 2 errors");
     }
 
@@ -123,9 +119,7 @@ mod diagnostic_tests {
     "#;
 
         let report = parse(src);
-        // One error for the broken method.
         assert!(!report.errors.is_empty());
-        // The impl block itself should still appear in the AST.
         assert_eq!(report.statements.len(), 1, "impl block should be in AST");
     }
 
@@ -137,8 +131,6 @@ mod diagnostic_tests {
             .iter()
             .find(|e| matches!(e.kind, ParseErrorKind::UnexpectedEOF { .. }));
         assert!(err.is_some(), "expected an UnexpectedEOF error");
-        // The parser should attach a note about the unclosed brace.
-        // (The note is added by parse_block when EOF is hit.)
         let e = err.unwrap();
         println!("{e:?}");
         if let ParseErrorKind::UnexpectedEOF { .. } = e.kind {
@@ -150,8 +142,6 @@ mod diagnostic_tests {
 
     #[test]
     fn tracing_enabled_does_not_panic() {
-        // This test just verifies nothing crashes when tracing is on.
-        // Redirect stderr in CI if the output is noisy.
         let _report = parse("fn ok() {}"); // parse() would pass tracing_enabled=true here
     }
 

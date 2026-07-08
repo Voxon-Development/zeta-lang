@@ -1,8 +1,6 @@
 use crate::span::SourceSpan;
 use std::fmt;
 
-/// The "what went wrong" part of a type error, with no location attached.
-/// Use `.at(span)` to attach one and get a `TypeError`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeErrorKind {
     UndefinedVariable(String),
@@ -47,11 +45,12 @@ pub enum TypeErrorKind {
     VariableAlreadyExists {
         var_name: String,
     },
+    IllegalThisParam {
+        func_name: String,
+    },
 }
 
 impl TypeErrorKind {
-    /// Attaches a source location to this error kind, producing a
-    /// reportable `TypeError`.
     pub fn at(self, span: SourceSpan<'_>) -> TypeError<'_> {
         TypeError { kind: self, span }
     }
@@ -130,14 +129,15 @@ impl fmt::Display for TypeErrorKind {
             TypeErrorKind::VariableAlreadyExists { var_name } => {
                 write!(f, "Variable already exists: {}", var_name)
             }
+            TypeErrorKind::IllegalThisParam { func_name } => write!(
+                f,
+                "Illegal this parameter: free function {} contains `this`",
+                func_name
+            ),
         }
     }
 }
 
-/// A type error with the location it was detected at. `span` is
-/// `SourceSpan::default()` when no precise location was available at the
-/// point of detection (some HIR nodes don't carry spans yet); callers
-/// should treat that as "location unknown" rather than a real position.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeError<'a> {
     pub kind: TypeErrorKind,

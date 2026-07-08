@@ -21,6 +21,12 @@ impl fmt::Debug for StrId {
     }
 }
 
+impl Display for StrId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 impl Deref for StrId {
     type Target = VmString;
 
@@ -65,12 +71,6 @@ impl PartialEq<str> for StrId {
 impl From<VmString> for StrId {
     fn from(vm_string: VmString) -> Self {
         StrId(vm_string)
-    }
-}
-
-impl Display for StrId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
     }
 }
 
@@ -693,7 +693,6 @@ where
         )
     }
 
-    /// If this is a safe pointer type, returns the inner type. Otherwise returns None.
     pub fn as_safe_pointer(&self) -> Option<&'a HirType<'a, 'bump>> {
         if let HirType::SafePointer(inner) = self {
             Some(inner)
@@ -702,7 +701,6 @@ where
         }
     }
 
-    /// If this is an unsafe pointer type, returns the inner type. Otherwise returns None.
     pub fn as_unsafe_pointer(&self) -> Option<&'a HirType<'a, 'bump>> {
         if let HirType::UnsafePointer(inner) = self {
             Some(inner)

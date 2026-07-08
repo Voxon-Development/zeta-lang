@@ -36,10 +36,6 @@ impl<'bump> ModuleBuilder<'bump> {
     }
 }
 
-/// Extract a (name, kind) pair from a top-level AST statement.
-/// Statements that do not introduce a named declaration get the `<anon>` /
-/// `unknown` sentinel so the symbol table slot is still populated but clearly
-/// marked as non-addressable.
 fn extract_symbol_info(stmt: &Stmt<'_, '_>, pool: &StringPool) -> (StrId, StrId) {
     let kind = |s: &str| StrId(pool.intern(s));
 

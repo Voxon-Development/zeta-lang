@@ -69,27 +69,22 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         }
     }
 
-    /// Get a reference to the monomorphizer
     pub fn monomorphizer(&self) -> &Monomorphizer<'a, 'bump> {
         &self.mono
     }
 
-    /// Check if an identifier is a generic type parameter
     pub fn is_generic_param(&self, name: StrId) -> bool {
         self.ctx.generic_params.borrow().contains(&name)
     }
 
-    /// Add a generic parameter to the current context
     pub fn add_generic_param(&self, name: StrId) {
         self.ctx.generic_params.borrow_mut().insert(name);
     }
 
-    /// Remove a generic parameter from the current context
     pub fn remove_generic_param(&self, name: StrId) {
         self.ctx.generic_params.borrow_mut().remove(&name);
     }
 
-    /// Get all generic parameters in the current context
     pub fn get_generic_params(&self) -> HashSet<StrId> {
         self.ctx.generic_params.borrow().clone()
     }

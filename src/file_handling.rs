@@ -191,17 +191,15 @@ pub(crate) fn emit_all<'a, 'bump>(
     let funcs_snapshot = global_funcs.clone();
     for &module_idx in compilation_order {
         if module_idx < len {
-            // Snapshot: MirModuleLowerer borrows this for its lifetime,
-            // which ends when lower_module returns. Then we can mutate global_funcs.
-
             let mir_module: Module = MirModuleLowerer::new(
                 pool.clone(),
                 extern_c_names,
                 dep_graph,
                 module_idx,
                 &funcs_snapshot,
+                &glue_registry,
             )
-            .lower_module(hir_modules[module_idx], &glue_registry);
+            .lower_module(hir_modules[module_idx]);
 
             global_funcs.extend(mir_module.functions.iter().map(|(k, v)| (*k, v.clone())));
 

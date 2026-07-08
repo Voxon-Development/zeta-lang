@@ -3,16 +3,9 @@ use crate::span::SourceSpan;
 use crate::tokens::{Cursor, TokenKind};
 
 pub struct ParserDiagnosticsContext<'a> {
-    /// All errors collected during this parse run (not just the first).
     errors: Vec<DiagnosticError<'a>>,
-
-    /// All warnings collected (separate from hard errors).
     warnings: Vec<DiagnosticWarning<'a>>,
-
-    /// Currently active grammar-rule ancestry, innermost at the back.
     context_stack: Vec<ParseContext>,
-
-    /// Whether RAII trace scopes should emit output.
     pub tracing_enabled: bool,
 
     /// How many errors we tolerate before giving up recovery attempts.
@@ -144,7 +137,6 @@ impl<'a> ParserDiagnosticsContext<'a> {
         self.synchronize(cursor)
     }
 
-    /// Returns a RAII trace scope.  Emit nothing when tracing is disabled.
     pub fn trace_scope(&self, rule: &'static str) -> TraceScope {
         if self.tracing_enabled {
             eprintln!("ENTER {rule}");
@@ -155,14 +147,12 @@ impl<'a> ParserDiagnosticsContext<'a> {
         }
     }
 
-    /// Emit a single trace token event.
     pub fn trace_token(&self, kind: TokenKind) {
         if self.tracing_enabled {
             eprintln!("  TOKEN {kind:?}");
         }
     }
 
-    /// Emit a trace failure event (called before returning Err).
     pub fn trace_fail(&self, reason: &str) {
         if self.tracing_enabled {
             eprintln!("  FAIL  {reason}");
@@ -198,17 +188,11 @@ impl<'a> DiagnosticWarning<'a> {
     }
 }
 
-/// Parser methods should return `ParseResult<T>`.
-/// On `Err`, the error has already been recorded in `diag` *and* recovery
-/// has run, so the caller can continue without re-recording.
 pub type ParseResult<T> = Result<T, RecoveredError>;
 
-/// A sentinel indicating that an error was recorded and recovery ran.
-/// Callers propagate this upward with `try`; they do not inspect its contents.
 #[derive(Debug, Clone, Copy)]
 pub struct RecoveredError;
 
-/// Pretty-print all collected errors to stderr (or a writer).
 pub fn render_errors(errors: &[DiagnosticError]) {
     for err in errors {
         eprintln!("{}", err.pretty());

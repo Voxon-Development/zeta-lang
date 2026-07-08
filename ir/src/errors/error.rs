@@ -157,10 +157,8 @@ pub enum ParseErrorKind {
     /// A package statement that does something like `foo::bar.Baz` which means importing some sort of type or function.
     PackageStmtCannotImport,
 
-    /// The parser entered recovery and could not synchronise.
     RecoveryFailure,
 
-    /// Custom / catch-all for parser infrastructure errors.
     Internal {
         message: &'static str,
     },
@@ -290,9 +288,7 @@ impl fmt::Display for ParseContext {
 pub struct DiagnosticError<'a> {
     pub kind: ParseErrorKind,
     pub span: SourceSpan<'a>,
-    /// Grammar-rule ancestry, innermost first (pushed by `with_context`).
     pub context: Vec<ParseContext>,
-    /// Human-readable supplemental notes (e.g. "hint: add a closing brace").
     pub notes: Vec<String>,
 }
 
@@ -335,12 +331,10 @@ impl<'a> DiagnosticError<'a> {
         Self::new(ParseErrorKind::InvalidFunctionName { found }, span)
     }
 
-    /// Render a human-readable single-line summary.
     pub fn message(&self) -> String {
         self.kind.to_string()
     }
 
-    /// Render a multi-line diagnostic (context chain + notes).
     pub fn pretty(&self) -> String {
         let mut out = String::new();
 

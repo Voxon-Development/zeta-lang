@@ -514,7 +514,6 @@ where
         let (first, span) = self.cursor.expect_ident()?;
         segments.push(first);
 
-        // handle `::ident`
         while self.cursor.peek() == TokenKind::ColonColon
             && matches!(self.cursor.peek_n(1), TokenKind::Ident)
         {

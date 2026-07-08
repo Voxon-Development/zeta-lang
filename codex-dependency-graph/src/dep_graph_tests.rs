@@ -26,7 +26,6 @@ mod tests {
         SourceSpan::default()
     }
 
-    /// Build an `AstModule` with no statements.
     fn empty_module<'a, 'bump>(
         name: StrId,
         stmts: &'bump [Stmt<'a, 'bump>],

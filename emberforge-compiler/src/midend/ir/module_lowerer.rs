@@ -1,7 +1,7 @@
 use crate::midend::copy_analysis::drop_glue::{DropGlueBuilder, DropGlueRegistry};
 use crate::midend::ir::lowerer::FunctionLowerer;
 use codex_dependency_graph::DepGraph;
-use ir::hir::{Hir, HirFunc, HirInterface, HirModule, HirParam, HirStruct, HirType, StrId};
+use ir::hir::{Hir, HirFunc, HirInterface, HirModule, HirParam, HirStruct, StrId, ThisPassingKind};
 use ir::ir_conversion::lower_type_hir;
 use ir::ir_hasher::{FxHashBuilder, HashSet};
 use ir::ssa_ir::{Function, Module, SsaType};
@@ -38,6 +38,7 @@ where
     pub module_idx: usize,
     global_funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
     g_phantom_data: PhantomData<&'g ()>,
+    glue_registry: &'a DropGlueRegistry,
 }
 
 impl<'a, 'cx, 'bump, 'g> MirModuleLowerer<'a, 'cx, 'bump, 'g>
@@ -52,6 +53,7 @@ where
         dep_graph: &'a DepGraph,
         module_idx: usize,
         global_funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
+        glue_registry: &'a DropGlueRegistry,
     ) -> Self {
         let mut enum_variant_tags: HashMap<
             StrId,
@@ -92,6 +94,7 @@ where
             module_idx,
             global_funcs,
             g_phantom_data: PhantomData,
+            glue_registry,
         }
     }
 
@@ -107,11 +110,7 @@ where
     /// then structs and free functions/impl methods, then vtables generation.
     ///
     /// This is done in three passes so that you can safely reference anything from anything else.
-    pub fn lower_module(
-        mut self,
-        hir_mod: HirModule<'a, 'bump>,
-        glue_registry: &DropGlueRegistry,
-    ) -> Module<'a, 'bump> {
+    pub fn lower_module(mut self, hir_mod: HirModule<'a, 'bump>) -> Module<'a, 'bump> {
         // enum tags, interfaces, and struct_interfaces
         for item in hir_mod.items {
             match item {
@@ -129,7 +128,6 @@ where
             }
         }
 
-        // register structs (field offsets, module.classes) and lower every free function / impl method
         for item in hir_mod.items {
             match item {
                 Hir::Struct(class) => self.register_class(*class),
@@ -167,7 +165,7 @@ where
             })
             .collect();
         for (name, func) in DropGlueBuilder::build_all(
-            glue_registry,
+            self.glue_registry,
             &self.module.classes,
             &self.class_mangled_map,
             self.context.clone(),
@@ -206,7 +204,10 @@ where
                         name: _,
                         param_type,
                     } => lower_type_hir(&param_type),
-                    HirParam::This { kind: _ } => lower_type_hir(&HirType::This),
+                    HirParam::This { kind } => match kind {
+                        ThisPassingKind::Move | ThisPassingKind::MoveMut => SsaType::Dyn,
+                        _ => SsaType::Pointer(Box::new(SsaType::Dyn)),
+                    },
                 })
                 .collect::<Vec<_>>();
             let ret = m
@@ -254,13 +255,6 @@ where
                 )
             });
 
-            // `iface_methods` stores each method's name mangled against the
-            // *interface's* name (see `lower_interface`), but `class_methods` is
-            // keyed by each method's *unmangled* name (see the `Hir::Impl`
-            // branch of `lower_module`). Pull the real unmangled names from the
-            // interface's own HirFunc list — same enumeration order as
-            // `lower_interface` built `iface_methods` from, so zipping by index
-            // lines them up correctly.
             let hir_iface = self.module.interfaces.get(iface_name).unwrap_or_else(|| {
                 panic!(
                     "Class {} implements unknown interface {}",
@@ -332,6 +326,8 @@ where
             self.extern_c_names,
             self.dep_graph,
             self.module_idx,
+            self.glue_registry,
+            &self.interface_methods,
         )
         .unwrap();
         fl.lower_body(hir_fn.body);
@@ -339,7 +335,6 @@ where
     }
 
     fn lower_class_method(&mut self, hir_method: &HirFunc<'a, 'bump>, class_name: StrId) {
-        // For class methods, lower with class context
         let func = self.lower_class_method_inner(hir_method, class_name);
         self.module.functions.insert(func.name, func);
     }
@@ -369,6 +364,8 @@ where
             self.extern_c_names,
             self.dep_graph,
             self.module_idx,
+            self.glue_registry,
+            &self.interface_methods,
         )
         .unwrap();
         fl.lower_body(hir_fn.body);

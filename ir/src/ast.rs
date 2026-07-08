@@ -825,7 +825,7 @@ impl Op {
             // Multiplicative
             Op::Mul | Op::Div | Op::Mod => (70, 71),
 
-            // Unary - handled in prefix
+            // Handled in prefix
             Op::BitNot | Op::LogicalNot => (0, 80),
 
             _ => (0, 0),
@@ -919,7 +919,6 @@ impl<'a, 'bump> Type<'a, 'bump> {
         )
     }
 
-    // Helper constructors for common types
     pub fn i8() -> Self {
         Type {
             kind: TypeKind::I8,

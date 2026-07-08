@@ -145,8 +145,6 @@ where
             } else if self.cursor.peek() == TokenKind::Mut
                 && self.cursor.peek_n(1) == TokenKind::This
             {
-                // `mut this`: move-by-value receiver with mutable access,
-                // e.g. used by destructors (`fn drop(mut this)`).
                 self.cursor.advance(); // consume 'mut'
                 let token = self.cursor.expect(TokenKind::This)?;
                 Param::This(self.bump.alloc_value_immutable(ThisParam {
@@ -449,7 +447,6 @@ where
                     // I wish rust knew that only Mut and Const is possible here :(
                     _ => MutabilityState::Const,
                 };
-                // *T is safe pointer (aligned, non-null)
                 let inner = self.parse_core_type()?;
                 let inner_ref = self.bump.alloc_value(inner);
                 TypeKind::SafePointer {
@@ -489,9 +486,6 @@ where
                     .text
                     .ok_or_else(|| DiagnosticError::new(ParseErrorKind::EmptyIdent, tok.span))?;
 
-                // Fallback: if the lexer emitted a primitive keyword as a plain Ident
-                // (e.g. `void`, `bool`, etc.), resolve it here so we never produce
-                // TypeKind::Struct { name: "void", .. }.
                 match name.as_str() {
                     "void" => return Ok(Type::void()),
                     "bool" => return Ok(Type::boolean()),

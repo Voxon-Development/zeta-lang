@@ -1,10 +1,10 @@
 use codex_dependency_graph::DepGraph;
 use ir::{
-    hir::{HirEnum, HirFunc, HirInterface, HirStruct, HirType},
+    hir::{HirEnum, HirFunc, HirInterface, HirStruct, HirType, StrId},
     ir_hasher::HashSet,
 };
-use std::collections::HashMap;
-use zetaruntime::bump::GrowableBump;
+use std::{collections::HashMap, sync::Arc};
+use zetaruntime::{bump::GrowableBump, string_pool::StringPool};
 
 #[derive(Debug, Clone, Default)]
 pub struct TypeMethodTable<'a, 'bump> {
@@ -37,10 +37,15 @@ pub struct TypeContext<'a, 'bump> {
     pub dangling_locals: HashSet<String>,
     pub struct_interfaces: HashMap<String, HashSet<String>>,
     pub mutable_variables: HashSet<String>,
+    pub string_pool: Arc<StringPool>,
 }
 
 impl<'a, 'bump> TypeContext<'a, 'bump> {
-    pub fn new(dep_graph: &'a DepGraph, bump: &'bump GrowableBump<'bump>) -> Self {
+    pub fn new(
+        dep_graph: &'a DepGraph,
+        bump: &'bump GrowableBump<'bump>,
+        string_pool: Arc<StringPool>,
+    ) -> Self {
         Self {
             variables: HashMap::new(),
             structs: HashMap::new(),
@@ -56,6 +61,7 @@ impl<'a, 'bump> TypeContext<'a, 'bump> {
             dangling_locals: HashSet::default(),
             struct_interfaces: HashMap::default(),
             mutable_variables: HashSet::default(),
+            string_pool,
         }
     }
 
@@ -174,6 +180,26 @@ impl<'a, 'bump> TypeContext<'a, 'bump> {
         self
     }
 
+    pub fn mangle_function_name(&self, name: StrId) -> StrId {
+        let Some(pkg) = self.dep_graph.get_module_package(self.current_module_idx) else {
+            return name;
+        };
+
+        let pkg_str = pkg.to_string();
+        let mut segments: Vec<StrId> = pkg_str
+            .split("::")
+            .map(|seg| StrId(self.string_pool.intern(seg)))
+            .collect();
+        segments.push(name);
+
+        let joined = segments
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .join("_");
+
+        StrId(self.string_pool.intern(&joined))
+    }
     pub fn create_child_scope(&self) -> Self {
         Self {
             variables: self.variables.clone(),
@@ -190,6 +216,7 @@ impl<'a, 'bump> TypeContext<'a, 'bump> {
             dangling_locals: self.dangling_locals.clone(),
             struct_interfaces: self.struct_interfaces.clone(),
             mutable_variables: self.mutable_variables.clone(),
+            string_pool: self.string_pool.clone(),
         }
     }
 }

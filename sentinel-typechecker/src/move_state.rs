@@ -1,20 +1,12 @@
 use ir::{hir::StrId, ir_hasher::FxHashBuilder};
 use std::collections::{HashMap, HashSet};
 
-/// Per-local move tracking, one field-projection level deep.
-/// `whole_moved` means the local itself was consumed by value; `moved_fields`
-/// tracks which individual fields were moved out while the local as a whole
-/// is still otherwise intact.
 #[derive(Debug, Clone, Default)]
 pub struct LocalMoveState {
     pub whole_moved: bool,
     pub moved_fields: HashSet<StrId>,
 }
 
-/// Flow-sensitive move state for one program point and not tied to lexical
-/// scope, moving a variable inside an `if` has to be visible to code after
-/// the `if`, so this is threaded explicitly through statement checking and
-/// merged at branch points.
 #[derive(Debug, Clone, Default)]
 pub struct MoveState {
     locals: HashMap<StrId, LocalMoveState, FxHashBuilder>,
@@ -31,9 +23,6 @@ impl MoveState {
         self.locals.get(&name).map_or(false, |l| l.whole_moved)
     }
 
-    /// True if `name` cannot be used as a whole value right now, either
-    /// moved outright, or partially moved (a struct with any field gone
-    /// can no longer be moved/consumed as a unit).
     pub fn blocks_whole_use(&self, name: StrId) -> bool {
         self.locals
             .get(&name)
@@ -58,16 +47,13 @@ impl MoveState {
             .insert(field);
     }
 
-    /// Fresh binding shadows any prior move history for this name (e.g. a
-    /// loop body re-declaring the same local each iteration).
     pub fn clear(&mut self, name: StrId) {
         self.locals.remove(&name);
     }
 
     /// Join two states from divergent control-flow paths.
     /// Union of everything moved on *either* path: a place moved on one
-    /// branch but not the other becomes "moved" in the merged state, which
-    /// is exactly the both-or-neither rule
+    /// branch but not the other becomes "moved" in the merged state
     pub fn join(a: &MoveState, b: &MoveState) -> MoveState {
         let mut result = a.clone();
         for (name, b_local) in &b.locals {

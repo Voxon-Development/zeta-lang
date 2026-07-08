@@ -221,7 +221,6 @@ impl DepGraph {
         &self.nodes
     }
 
-    /// Build the complete AST-level dependency graph.
     pub fn build_from_ast<'a, 'bump>(
         &mut self,
         modules: &[AstModule<'a, 'bump>],
@@ -238,26 +237,21 @@ impl DepGraph {
         pool: &StringPool,
     ) {
         for (midx, module) in modules.iter().enumerate() {
-            // Module node itself
             let module_node =
                 self.push_node(NodeKind::Module { module_idx: midx }, Some(module.name));
             self.register_item_node(midx, 0, "module", module_node);
 
-            // Scan top-level stmts for a `package` declaration first so we can
-            // register the path index before processing items.
             for stmt in module.stmts {
                 if let Stmt::Package(pkg) = stmt {
                     let path_str = path_to_strid(&pkg.path, pool);
                     self.package_hierarchy.insert(midx, path_str);
 
-                    // Build the path-segment vec for fast lookup.
                     let seg_vec: Vec<StrId> = pkg.path.path.to_vec();
 
                     self.path_index.insert(seg_vec, midx);
                 }
             }
 
-            // Now create item nodes for every top-level declaration.
             for (item_idx, stmt) in module.stmts.iter().enumerate() {
                 self.create_node_for_stmt(midx, item_idx, stmt);
             }
@@ -321,8 +315,6 @@ impl DepGraph {
                 self.register_item_node(module_idx, item_idx, "trait", td);
             }
             Stmt::ImplDecl(i) => {
-                // impl nodes get the target type name as hint, interface name if
-                // available is appended mentally
                 let td = self.push_node(
                     NodeKind::TraitImpl {
                         module_idx,

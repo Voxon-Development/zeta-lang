@@ -173,8 +173,6 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 HirStmt::Defer(self.ctx.bump.alloc_value_immutable(hir_body))
             }
 
-            // A module declaration inside a function body is lowered as a block
-            // of its contained statements (inline namespace / scope grouping).
             Stmt::Module(module_decl) => {
                 let body_vec: Vec<HirStmt<'a, 'bump>> = module_decl
                     .body

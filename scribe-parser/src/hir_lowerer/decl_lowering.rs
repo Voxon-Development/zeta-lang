@@ -276,7 +276,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             params: Some(self.ctx.bump.alloc_slice(&[])),
             return_type: None,
             body: None,
-            unmangled_name: StrId::default(), // Not mangled in the first place
+            unmangled_name: StrId::default(),
         }
     }
 }

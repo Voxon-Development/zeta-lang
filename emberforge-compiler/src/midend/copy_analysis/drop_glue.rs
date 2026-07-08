@@ -1,7 +1,6 @@
 use ir::hir::{HirStruct, HirType, StrId};
 use ir::ir_conversion::lower_type_hir;
 use ir::ir_hasher::{FxHashBuilder, FxHashMap};
-use ir::layout::{TargetInfo, layout_of_ssa, round_up_to_align};
 use ir::registry::global_registry::GlobalRegistry;
 use ir::ssa_ir::{BasicBlock, BlockId, Function, Instruction, Operand, SsaType, Value};
 use smallvec::SmallVec;
@@ -16,6 +15,7 @@ use crate::midend::ir::block_data::CurrentBlockData;
 pub struct DropGlueRegistry {
     is_droppable: FxHashMap<StrId, bool>,
     glue_names: FxHashMap<StrId, StrId>,
+    has_own_drop: FxHashMap<StrId, bool>,
 }
 
 impl DropGlueRegistry {
@@ -36,6 +36,11 @@ impl DropGlueRegistry {
                 .map(|ifaces| ifaces.contains(&drop_iface))
                 .unwrap_or(false)
         };
+
+        let mut has_own_drop: FxHashMap<StrId, bool> = FxHashMap::default();
+        for &name in &struct_names {
+            has_own_drop.insert(name, implements_drop(name));
+        }
 
         let mut changed = true;
         while changed {
@@ -72,7 +77,15 @@ impl DropGlueRegistry {
         Self {
             is_droppable,
             glue_names,
+            has_own_drop,
         }
+    }
+
+    pub fn has_own_drop(&self, struct_name: StrId) -> bool {
+        self.has_own_drop
+            .get(&struct_name)
+            .copied()
+            .unwrap_or(false)
     }
 
     fn type_is_droppable<'a, 'bump>(
@@ -144,8 +157,6 @@ impl DropGlueBuilder {
         let this_val = Value(0);
         let this_operand = Operand::Value(this_val);
 
-        // Same construction order `FunctionLowerer::new_internal` uses:
-        // params registered on `func` before `CurrentBlockData` is built.
         let mut func = Function {
             name: glue_name,
             params: SmallVec::new(),
@@ -181,25 +192,9 @@ impl DropGlueBuilder {
             });
         }
 
-        // Pass A: compute every droppable field's byte offset in forward
-        // declaration order — offsets are a running prefix sum, so this
-        // *cannot* be computed walking backward.
-        let target = TargetInfo { ptr_bytes: 8 };
-        let mut running_offset = 0usize;
         let mut droppable_fields: Vec<(usize, SsaType, StrId)> = Vec::new();
 
-        for field in hir_struct.fields {
-            let field_ssa_ty = lower_type_hir(&field.field_type);
-            let layout = layout_of_ssa(&field_ssa_ty, target).unwrap_or_else(|e| {
-                panic!(
-                    "failed to compute layout for field {} of {}: {:?}",
-                    field.name, struct_name, e
-                )
-            });
-            running_offset = round_up_to_align(running_offset, layout.align);
-            let field_offset = running_offset;
-            running_offset += layout.size;
-
+        for (field_index, field) in hir_struct.fields.iter().enumerate() {
             let HirType::Struct(field_struct_name, _) = &field.field_type else {
                 continue;
             };
@@ -207,12 +202,11 @@ impl DropGlueBuilder {
                 continue;
             };
 
-            droppable_fields.push((field_offset, field_ssa_ty, field_glue));
+            let field_ssa_ty = lower_type_hir(&field.field_type);
+            droppable_fields.push((field_index, field_ssa_ty, field_glue));
         }
 
-        // Pass B: emit in reverse declaration order (Rust field-drop order),
-        // now that every offset is already known from pass A.
-        for (field_offset, field_ssa_ty, field_glue) in droppable_fields.into_iter().rev() {
+        for (field_index, field_ssa_ty, field_glue) in droppable_fields.into_iter().rev() {
             let field_ptr_val = cbd.fresh_value();
             cbd.value_types
                 .insert(field_ptr_val, SsaType::Pointer(Box::new(field_ssa_ty)));
@@ -220,7 +214,7 @@ impl DropGlueBuilder {
             cbd.bb().instructions.push(Instruction::FieldAddr {
                 dest: field_ptr_val,
                 base: this_operand.clone(),
-                offset: field_offset,
+                offset: field_index,
             });
             cbd.bb().instructions.push(Instruction::Call {
                 dest: None,

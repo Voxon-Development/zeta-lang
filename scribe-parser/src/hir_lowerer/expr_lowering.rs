@@ -33,7 +33,6 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                         let hir_types: Vec<HirType> =
                             generic_args.iter().map(|t| self.lower_type(t)).collect();
 
-                        // Try to find and monomorphize the function
                         let func_opt = self.ctx.functions.borrow().get(&name).cloned();
                         if let Some(func) = func_opt {
                             let mut substitutions = FxHashMap::default();
@@ -48,7 +47,6 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                             if let Some(mono_name) =
                                 self.mono.monomorphize_function(&func, &substitutions)
                             {
-                                // Call the monomorphized version
                                 let args_vec: Vec<HirExpr> =
                                     arguments.iter().map(|a| self.lower_expr(a)).collect();
                                 let args = self.ctx.bump.alloc_slice(&args_vec);
@@ -201,10 +199,6 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 let left_expr = self.lower_expr(left);
                 let right_expr = self.lower_expr(right);
 
-                // `=`/`+=`/etc. are parsed as plain `Expr::Binary` (the parser
-                // has no separate assignment-expression production), but they
-                // need to become `HirExpr::Assignment` so mutability checks
-                // and (later) move-tracking actually see them.
                 if Self::is_assignment_op(*op) {
                     HirExpr::Assignment {
                         target: self.ctx.bump.alloc_value(left_expr),
@@ -398,9 +392,18 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         arguments: &'bump [Expr<'a, 'bump>],
         span: SourceSpan<'a>,
     ) -> HirExpr<'a, 'bump> {
-        let lowered_callee = self.lower_expr(&*callee);
+        let mut lowered_callee = self.lower_expr(&*callee);
         if let Some(value) = self.detect_interface_call(arguments, &lowered_callee) {
             return value;
+        }
+
+        if let HirExpr::Ident(func_name, ident_span) = &lowered_callee {
+            if !self.ctx.variable_types.borrow().contains_key(func_name) {
+                let mangled = self.mangle_function_name(None, *func_name);
+                if self.ctx.functions.borrow().contains_key(&mangled) {
+                    lowered_callee = HirExpr::Ident(mangled, *ident_span);
+                }
+            }
         }
 
         if let HirExpr::Ident(func_name, _) = &lowered_callee {
@@ -702,7 +705,6 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                         param_map.insert(*name, lowered_arg);
                     }
                     ir::hir::HirParam::This { .. } => {
-                        // Skip 'this' parameter for now
                         return None;
                     }
                 }
@@ -722,7 +724,6 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             HirStmt::Return(Some(expr)) => Some(self.substitute_expr(expr, param_map)),
             HirStmt::Expr(expr) => Some(self.substitute_expr(expr, param_map)),
             HirStmt::Block { body } => {
-                // For blocks, try to find the last expression or return statement
                 if let Some(last_stmt) = body.last() {
                     self.inline_stmt_as_expr(last_stmt, param_map)
                 } else {
@@ -733,13 +734,11 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         }
     }
 
-    /// Substitute parameter references in an expression using heap-based stack
     fn substitute_expr(
         &self,
         expr: &'a HirExpr<'a, 'bump>,
         param_map: &HashMap<StrId, HirExpr<'a, 'bump>, FxHashBuilder>,
     ) -> HirExpr<'a, 'bump> {
-        // For simple cases, handle directly
         match expr {
             HirExpr::Ident(name, _) => {
                 return param_map.get(name).copied().unwrap_or(*expr);
@@ -923,7 +922,6 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             Pattern::Struct { .. } => todo!(),
             Pattern::Or(_) => todo!(),
             Pattern::EnumVariant { name, bindings } => {
-                // Extract identifier bindings from sub-patterns
                 let binding_ids: Vec<ir::hir::StrId> = bindings
                     .iter()
                     .filter_map(|p| {

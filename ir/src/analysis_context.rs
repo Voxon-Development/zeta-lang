@@ -43,8 +43,9 @@ impl<'a, 'bump> CopyAnalysisCtx<'a, 'bump> {
     }
 
     pub fn run(&mut self) {
-        for name in self.struct_names() {
-            self.is_copy.insert(name, true);
+        let struct_names = self.struct_names();
+        for name in &struct_names {
+            self.is_copy.insert(*name, true);
         }
         for &name in self.enums.keys() {
             self.is_copy.insert(name, true);
@@ -60,7 +61,7 @@ impl<'a, 'bump> CopyAnalysisCtx<'a, 'bump> {
                     changed = true;
                 }
             }
-            for &name in &self.enums.keys().copied().collect::<Vec<_>>() {
+            for &name in self.enums.keys() {
                 let computed = self.compute_enum_copy(name);
                 if self.is_copy.get(&name).copied() != Some(computed) {
                     self.is_copy.insert(name, computed);
@@ -123,9 +124,6 @@ impl<'a, 'bump> CopyAnalysisCtx<'a, 'bump> {
         })
     }
 
-    /// Type-level Copy-ness. `Ref`/`SafePointer`/`UnsafePointer`
-    /// are unconditionally Copy regardless of `inner`. Struct/Enum cases read the current fixpoint value rather
-    /// than recursing structurally, since it may not be finalized mid-loop.
     pub fn type_is_copy(&self, ty: &HirType<'a, 'bump>) -> bool {
         match ty {
             HirType::I8
@@ -151,8 +149,16 @@ impl<'a, 'bump> CopyAnalysisCtx<'a, 'bump> {
 
             HirType::Nullable(inner) => self.type_is_copy(inner),
 
-            HirType::Struct(name, _) => self.is_copy.get(name).copied().unwrap_or(true),
-            HirType::Enum(name, _) => self.is_copy.get(name).copied().unwrap_or(true),
+            HirType::Struct(name, _) => self
+                .is_copy
+                .get(name)
+                .copied()
+                .expect("Copy analysis queried for unanalyzed type"),
+            HirType::Enum(name, _) => self
+                .is_copy
+                .get(name)
+                .copied()
+                .expect("Copy analysis queried for unanalyzed type"),
 
             HirType::Dyn { .. } | HirType::DynInterface(..) => false,
 

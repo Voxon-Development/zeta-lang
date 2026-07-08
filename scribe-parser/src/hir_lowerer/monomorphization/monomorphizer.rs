@@ -16,11 +16,8 @@ pub struct Monomorphizer<'a, 'bump> {
     pub instantiated_functions: RefCell<FxHashMap<(StrId, StrId), StrId>>,
     /// Maps (original_name, type_suffix) to instantiated class name
     pub instantiated_classes: RefCell<FxHashMap<(StrId, StrId), StrId>>,
-    /// Reference to the lowering context
     functions: Rc<RefCell<FxHashMap<StrId, HirFunc<'a, 'bump>>>>,
-    /// Bump allocator for allocations
     bump: Arc<GrowableAtomicBump<'bump>>,
-    /// String interner for string operations
     context: Arc<StringPool>,
     _phantom: PhantomData<&'bump ()>,
 }

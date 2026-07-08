@@ -67,14 +67,6 @@ pub fn get_type(name: StrId, string_pool: Arc<StringPool>) -> StrId {
     }
 }
 
-/// Build a predictable module-qualified mangled name.
-/// `path` = the `::` package segments (e.g. ["zeta","io","files"])
-/// `member` = the first thing after the module path, either a free
-///   function name or a struct/type name (e.g. "File" or "open")
-/// `extra` = an optional trailing segment for `Module.Type.method` chains
-///   (e.g. Some("open") when member is "File")
-///
-/// Produces: zeta_io_files_File_open   or   zeta_io_files_println
 pub fn build_module_scoped_name(
     path: &[StrId],
     member: StrId,

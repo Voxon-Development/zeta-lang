@@ -106,7 +106,6 @@ mod tests {
                 assert_eq!(s.name.as_str(), "Counter");
                 let fields = s.params.unwrap();
                 assert_eq!(fields.len(), 1);
-                // The field should be private
             }
             _ => panic!("Expected StructDecl"),
         }
@@ -135,22 +134,20 @@ mod tests {
             bump,
         );
 
-        // Check struct
         let mut iter = stmts.into_iter();
         match iter.next().expect("no statements") {
             Stmt::StructDecl(s) => {
                 assert_eq!(s.name.as_str(), "Point");
                 assert!(s.params.is_some());
-                assert_eq!(s.params.unwrap().len(), 2); // x and y fields
+                assert_eq!(s.params.unwrap().len(), 2);
             }
             _ => panic!("Expected StructDecl"),
         }
 
-        // Check impl
         match iter.next().expect("no impl") {
             Stmt::ImplDecl(i) => {
                 assert_eq!(i.target.as_str(), "Point");
-                assert!(i.interface.is_none()); // not a trait impl
+                assert!(i.interface.is_none());
                 assert!(i.methods.is_some());
                 assert_eq!(i.methods.unwrap().len(), 2); // new and distance
             }

@@ -21,7 +21,6 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         let imported_idxs = self.ctx.dep_graph.get_module_imports(module_idx);
         for imp_idx in imported_idxs {
             if let Some(pkg) = self.ctx.dep_graph.get_module_package(imp_idx) {
-                // Last path segment is the local name: std::io -> "io"
                 let local_name = pkg.as_str().split("_").last().unwrap_or(pkg.as_str());
                 let local_id = StrId(self.ctx.context.intern(local_name));
                 self.ctx
@@ -293,7 +292,6 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                     self.mangle_with_module_path(f.name)
                 };
 
-                // hydrate the global function table
                 self.ctx.functions.borrow_mut().insert(lookup_name, func);
 
                 Hir::Func(

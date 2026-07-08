@@ -1,3 +1,4 @@
+use crate::midend::copy_analysis::drop_tracking::{DropMoveState, DropScope, record_move_if_any};
 use crate::midend::ir::block_data::CurrentBlockData;
 use crate::optimized_string_buffering;
 use codex_dependency_graph::DepGraph;
@@ -37,6 +38,9 @@ pub struct MirExprLowerer<'el, 'a, 'cx, 'bump> {
     pub dep_graph: &'a DepGraph,
     pub module_idx: usize,
     global_funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
+    pub scope_stack: &'el [DropScope],
+    pub drop_state: &'el mut DropMoveState,
+    pub interface_methods: &'a HashMap<StrId, Vec<(StrId, Vec<SsaType>, SsaType)>, FxHashBuilder>,
 }
 
 impl<'el, 'a, 'cx, 'bump> MirExprLowerer<'el, 'a, 'cx, 'bump>
@@ -68,6 +72,9 @@ where
         extern_c_names: &'a HashSet<StrId>,
         dep_graph: &'a DepGraph,
         module_idx: usize,
+        scope_stack: &'el [DropScope],
+        drop_state: &'el mut DropMoveState,
+        interface_methods: &'a HashMap<StrId, Vec<(StrId, Vec<SsaType>, SsaType)>, FxHashBuilder>,
     ) -> Self {
         Self {
             current_block_data,
@@ -87,6 +94,9 @@ where
             extern_c_names,
             dep_graph,
             module_idx,
+            scope_stack,
+            drop_state,
+            interface_methods,
         }
     }
 
@@ -347,7 +357,7 @@ where
                 let dest = self.current_block_data.fresh_value();
                 self.emit(Instruction::Const {
                     dest,
-                    ty: SsaType::I64, // TODO this is a placeholder; refined once type info flows through
+                    ty: SsaType::I64, // TODO: this is a placeholder; refined once type info flows through
                     value: Operand::GlobalRef(mangled),
                 });
                 self.current_block_data
@@ -598,14 +608,8 @@ where
 
         let obj = self.new_value();
 
-        let mut arg_values: Vec<Value> = Vec::with_capacity(args.len());
-        for arg in args {
-            arg_values.push(self.lower_expr(arg));
-        }
-
-        // Use the declared field types from the HIR class definition, not the
-        // runtime value types of the args, those may be stripped (e.g. User(Vec3f, [])
-        // instead of User(Vec3f, [I64, I64, I64])) when they came from a call result.
+        // Moved up from after the arg-lowering loop so field types are known
+        // before checking whether each positional arg moves into its field.
         let field_types: Vec<SsaType> = if let Some(hir_class) = self.classes.get(&class_name) {
             hir_class
                 .fields
@@ -615,6 +619,16 @@ where
         } else {
             panic!("Class {} not found", class_name)
         };
+
+        let mut arg_values: Vec<Value> = Vec::with_capacity(args.len());
+        for (i, arg) in args.iter().enumerate() {
+            // Assigning a droppable struct value into a field consumes the
+            // source place, same as passing it to a by-value param.
+            if matches!(field_types.get(i), Some(SsaType::User(_, _))) {
+                record_move_if_any(self.scope_stack, self.drop_state, arg);
+            }
+            arg_values.push(self.lower_expr(arg));
+        }
 
         let alloc_ty = SsaType::User(class_name, field_types.clone());
 
@@ -741,9 +755,22 @@ where
 
     fn lower_call(&mut self, callee: &HirExpr<'a, 'bump>, args: &[HirExpr<'a, 'bump>]) -> Value {
         if let Some(mangled) = self.try_flatten_module_path(callee) {
+            let param_types: Vec<SsaType> = self
+                .funcs
+                .get(&mangled)
+                .or_else(|| self.global_funcs.get(&mangled))
+                .map(|f| f.params.iter().map(|(_, ty)| ty.clone()).collect())
+                .unwrap_or_default();
+
             let arg_ops: SmallVec<Operand, 8> = args
                 .iter()
-                .map(|a| Operand::Value(self.lower_expr(a)))
+                .enumerate()
+                .map(|(i, a)| {
+                    if matches!(param_types.get(i), Some(SsaType::User(_, _))) {
+                        record_move_if_any(self.scope_stack, self.drop_state, a);
+                    }
+                    Operand::Value(self.lower_expr(a))
+                })
                 .collect();
 
             let dest = self.current_block_data.fresh_value();
@@ -773,9 +800,21 @@ where
 
         match callee {
             HirExpr::Ident(fname, _) => {
+                let param_types: Vec<SsaType> = self
+                    .funcs
+                    .get(fname)
+                    .map(|f| f.params.iter().map(|(_, ty)| ty.clone()).collect())
+                    .unwrap_or_default();
+
                 let arg_ops: SmallVec<Operand, 8> = args
                     .iter()
-                    .map(|a| Operand::Value(self.lower_expr(a)))
+                    .enumerate()
+                    .map(|(i, a)| {
+                        if matches!(param_types.get(i), Some(SsaType::User(_, _))) {
+                            record_move_if_any(self.scope_stack, self.drop_state, a);
+                        }
+                        Operand::Value(self.lower_expr(a))
+                    })
                     .collect();
 
                 let dest = self.current_block_data.fresh_value();
@@ -826,11 +865,6 @@ where
     ) -> Value {
         if let HirExpr::Ident(scope_name, _) = object {
             if !self.var_map.contains_key(scope_name) {
-                let mut operands: SmallVec<Operand, 8> = SmallVec::new();
-                for a in args {
-                    operands.push(Operand::Value(self.lower_expr(a)));
-                }
-
                 let direct_name: StrId = optimized_string_buffering::mangle_method_name(
                     self.dep_graph,
                     self.module_idx,
@@ -838,6 +872,20 @@ where
                     field,
                     self.context.clone(),
                 );
+
+                let param_types: Vec<SsaType> = self
+                    .funcs
+                    .get(&direct_name)
+                    .map(|f| f.params.iter().map(|(_, ty)| ty.clone()).collect())
+                    .unwrap_or_default();
+
+                let mut operands: SmallVec<Operand, 8> = SmallVec::new();
+                for (i, a) in args.iter().enumerate() {
+                    if matches!(param_types.get(i), Some(SsaType::User(_, _))) {
+                        record_move_if_any(self.scope_stack, self.drop_state, a);
+                    }
+                    operands.push(Operand::Value(self.lower_expr(a)));
+                }
 
                 let dest: Value = self.current_block_data.fresh_value();
                 self.emit(Instruction::Call {
@@ -867,6 +915,21 @@ where
             },
             _ => None,
         };
+
+        if let Some(cls_name) = cls_name_id {
+            let receiver_is_moved = self
+                .class_mangled_map
+                .get(&cls_name)
+                .and_then(|mmap| mmap.get(&field))
+                .and_then(|mangled| self.funcs.get(mangled))
+                .and_then(|f| f.params.first())
+                .map(|(_, ty)| matches!(ty, SsaType::User(_, _)))
+                .unwrap_or(false);
+
+            if receiver_is_moved {
+                record_move_if_any(self.scope_stack, self.drop_state, object);
+            }
+        }
 
         if cls_name_id.is_some() {
             self.current_block_data
@@ -929,7 +992,6 @@ where
             return None;
         };
 
-        // Prefer direct mangled call over vtable dispatch for non-interface methods
         if let Some(mmap) = self.class_mangled_map.get(&cls_name) {
             if let Some(mangled_name) = mmap.get(&field) {
                 let dest = self.current_block_data.fresh_value();
@@ -949,7 +1011,6 @@ where
             }
         }
 
-        // Only use InterfaceDispatch (vtable dispatch) for interface methods
         if let Some(class_slots) = self.class_method_slots.get(&cls_name) {
             if let Some(slot_idx) = class_slots.get(&field) {
                 let dest = self.current_block_data.fresh_value();
@@ -985,9 +1046,23 @@ where
         };
 
         let obj_val = self.lower_expr(object);
-        let mut operands: SmallVec<Operand, 8> = SmallVec::new();
 
-        for a in args {
+        let param_types: Vec<SsaType> = self
+            .interface_methods
+            .get(&interface)
+            .and_then(|methods| methods.iter().find(|(name, _, _)| name == field))
+            .map(|(_, params, _)| params.clone())
+            .unwrap_or_default();
+
+        if matches!(param_types.first(), Some(SsaType::Dyn)) {
+            record_move_if_any(self.scope_stack, self.drop_state, object);
+        }
+
+        let mut operands: SmallVec<Operand, 8> = SmallVec::new();
+        for (i, a) in args.iter().enumerate() {
+            if matches!(param_types.get(i + 1), Some(SsaType::User(_, _))) {
+                record_move_if_any(self.scope_stack, self.drop_state, a);
+            }
             operands.push(Operand::Value(self.lower_expr(a)));
         }
 

@@ -2,6 +2,7 @@ use crate::arena::GrowableAtomicBump;
 use smallvec::SmallVec;
 use std::alloc::AllocError;
 
+use std::fmt::Formatter;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::simd::Simd;
 use std::simd::cmp::SimdPartialEq;
@@ -44,10 +45,22 @@ impl BuildHasher for IdentityBuild {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct VmString {
     pub offset: *const u8,
     pub length: usize,
+}
+
+impl fmt::Debug for VmString {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl fmt::Display for VmString {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
 }
 
 impl VmString {
@@ -95,15 +108,10 @@ impl Hash for VmString {
     }
 }
 
-impl fmt::Display for VmString {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
 unsafe impl Send for VmString {}
 unsafe impl Sync for VmString {}
 
+#[derive(Debug)]
 pub struct StringPool {
     data_buffer: GrowableAtomicBump<'static>,
     interned_strings: DashMap<u64, SmallVec<VmString, 2>, IdentityBuild>,

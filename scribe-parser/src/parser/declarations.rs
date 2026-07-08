@@ -34,7 +34,6 @@ where
         };
 
         let params = if self.cursor.consume(TokenKind::Semicolon) {
-            // Unit struct: `struct Foo;`
             None
         } else if self.cursor.peek() == TokenKind::LParen {
             // Tuple struct: `struct Foo(i32, i32);`
@@ -42,7 +41,6 @@ where
             self.cursor.expect(TokenKind::Semicolon)?;
             Some(tuple_fields)
         } else {
-            // Regular struct with braces
             self.cursor.expect(TokenKind::LBrace)?;
 
             let mut fields = Vec::new_in(self.bump);

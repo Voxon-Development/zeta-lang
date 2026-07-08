@@ -32,7 +32,7 @@ impl<'bump> Default for Bump<'bump> {
 
 impl<'bump> Bump<'bump> {
     pub fn new() -> Self {
-        Self::with_capacity(DEFAULT_CHUNK_SIZE) // default capacity
+        Self::with_capacity(DEFAULT_CHUNK_SIZE)
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
@@ -295,7 +295,7 @@ pub struct AtomicBump {
 
 impl AtomicBump {
     pub fn new() -> Self {
-        Self::with_capacity(4096) // default capacity
+        Self::with_capacity(4096)
     }
 
     pub fn with_capacity(capacity: usize) -> Self {

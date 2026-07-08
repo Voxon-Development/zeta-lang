@@ -696,7 +696,6 @@ fn lex_number<'a>(
     let mut seen_exp = false;
     let mut last_under = false;
 
-    // Base prefix
     if bytes[start] == b'0' {
         match bytes.get(start + 1).copied() {
             Some(b'x') | Some(b'X') => {
@@ -718,7 +717,7 @@ fn lex_number<'a>(
     }
 
     *pos += 1;
-    *column += 1; // consume first digit
+    *column += 1;
 
     loop {
         match bytes.get(*pos).copied() {
@@ -759,7 +758,6 @@ fn lex_number<'a>(
         }
     }
 
-    // strip trailing underscore
     if last_under {
         *pos -= 1;
         *column -= 1;
@@ -877,6 +875,6 @@ fn lex_line_comment(
         *pos += 1;
         *column += 1;
     }
-    // safe: comments are ASCII or valid UTF-8 slices of the original source
+    // comments are ASCII or valid UTF-8 slices of the original source
     StrId(ctx.intern_bytes(&bytes[start..*pos]))
 }

@@ -589,7 +589,7 @@ impl CraneliftBackend {
                             var_map.insert(*d, var);
                         }
                     } else {
-                        // callee produced results but IR ignores them => OK, drop them
+                        // drop results
                     }
                 }
             }
@@ -771,7 +771,22 @@ impl CraneliftBackend {
             Instruction::Interpolate { .. } => todo!(),
             Instruction::EnumConstruct { .. } => todo!(),
             Instruction::MatchEnum { .. } => todo!(),
-            Instruction::FieldAddr { .. } => todo!(),
+            Instruction::FieldAddr { dest, base, offset } => {
+                let base_val = match base {
+                    Operand::Value(bv) => {
+                        let vref = var_map.get(bv).expect("FieldAddr: base value undefined");
+                        builder.use_var(*vref)
+                    }
+                    _ => panic!("FieldAddr base must be a Value"),
+                };
+
+                let offset_bytes = *offset as i64;
+                let addr = builder.ins().iadd_imm(base_val, offset_bytes);
+
+                let var = builder.declare_var(types::I64);
+                builder.def_var(var, addr);
+                var_map.insert(*dest, var);
+            }
         }
     }
 

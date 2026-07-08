@@ -585,9 +585,9 @@ mod hir_lowerer_tests {
 
             fn main() {
                 let x1: i32 = duplicate<i32>(42);
-                let x2: i32 = duplicate<i32>(24);  // Same type - should reuse
+                let x2: i32 = duplicate<i32>(24);
                 let y1: String = duplicate<String>("hello");
-                let y2: String = duplicate<String>("world");  // Same type - should reuse
+                let y2: String = duplicate<String>("world");
             }
         "#;
 

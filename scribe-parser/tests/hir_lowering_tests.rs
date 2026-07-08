@@ -142,7 +142,6 @@ mod hir_tests {
         let body = main.body.expect("Expected main body");
         assert_eq!(body.block.len(), 3, "Expected 3 let stmts");
 
-        // x = 5 + 3 * 2  →  Binary(Add, 5, Binary(Mul, 3, 2))
         match &body.block[0] {
             Stmt::Let(l) => {
                 assert_eq!(context.resolve_string(&l.ident), "x");
@@ -156,7 +155,6 @@ mod hir_tests {
             other => panic!("Expected let x, got {other:?}"),
         }
 
-        // y = (10 - 4) / 2  →  Binary(Div, ...)
         match &body.block[1] {
             Stmt::Let(l) => {
                 assert_eq!(context.resolve_string(&l.ident), "y");
@@ -168,7 +166,6 @@ mod hir_tests {
             other => panic!("Expected let y, got {other:?}"),
         }
 
-        // z = -x + y  →  Binary(Add, Unary(Sub, x), y)
         match &body.block[2] {
             Stmt::Let(l) => {
                 assert_eq!(context.resolve_string(&l.ident), "z");
@@ -279,7 +276,6 @@ mod hir_tests {
                     Expr::Comparison { op: Op::Gt, .. } => {}
                     other => panic!("Expected Gt comparison, got {other:?}"),
                 }
-                // has else branch
                 assert!(if_stmt.else_branch.is_some(), "Expected else branch");
             }
             other => panic!("Expected if stmt, got {other:?}"),
@@ -360,7 +356,6 @@ mod hir_tests {
         };
 
         let body = func.body.expect("Expected body");
-        // block[0] = let total, block[1] = for, block[2] = return
         assert_eq!(body.block.len(), 3);
 
         match &body.block[1] {
@@ -470,7 +465,6 @@ mod hir_tests {
         assert_eq!(context.resolve_string(&methods[0].name), "dot");
         assert_eq!(context.resolve_string(&methods[1].name), "scale");
 
-        // dot takes &this + 1 normal param
         let dot_params = methods[0].params.expect("Expected dot params");
         assert_eq!(dot_params.len(), 2);
         match &dot_params[0] {
@@ -481,7 +475,6 @@ mod hir_tests {
             other => panic!("Expected This param for dot, got {other:?}"),
         }
 
-        // scale takes &mut this + 1 normal param
         let scale_params = methods[1].params.expect("Expected scale params");
         println!("{scale_params:?}");
         assert_eq!(scale_params.len(), 2);

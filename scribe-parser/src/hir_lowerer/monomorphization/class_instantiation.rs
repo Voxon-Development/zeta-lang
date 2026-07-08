@@ -7,7 +7,6 @@ use ir::ir_hasher::FxHashMap;
 use std::sync::Arc;
 use zetaruntime::arena::GrowableAtomicBump;
 
-/// Instantiate a generic class for concrete args, caching the result and registering the new class
 pub fn instantiate_class_for_types<'a, 'bump>(
     ctx: &LoweringCtx<'a, 'bump>,
     monomorphizer: &Monomorphizer<'a, 'bump>,
@@ -15,10 +14,9 @@ pub fn instantiate_class_for_types<'a, 'bump>(
     concrete_args: &[HirType<'a, 'bump>],
     bump: Arc<GrowableAtomicBump<'bump>>,
 ) -> Option<&'bump HirStruct<'a, 'bump>> {
-    // Early return if no generic parameters are provided
     if concrete_args.is_empty() {
         return ctx.classes.borrow().get(&base_id).map(|c| {
-            // Safety: The bump allocator ensures the reference is valid for 'bump
+            // SAFETY: The bump allocator ensures the reference is valid for 'bump
             unsafe { std::mem::transmute::<_, &'bump _>(c) }
         });
     }

@@ -315,15 +315,15 @@ fn lower_all_from_refs<'a, 'bump>(
         })
         .collect::<Vec<_>>();
 
-    let cpy_ctx = Rc::new(CopyAnalysisCtx::new(
-        lowered_modules.as_slice(),
-        registry.clone(),
-        pool.clone(),
-    ));
+    let mut cpy_ctx =
+        CopyAnalysisCtx::new(lowered_modules.as_slice(), registry.clone(), pool.clone());
+    cpy_ctx.run();
+    let cpy_ctx = Rc::new(cpy_ctx);
     let type_checker = Rc::new(RefCell::new(TypeChecker::new(
         dep_graph,
         bump,
         cpy_ctx.clone(),
+        pool.clone(),
     )));
 
     register_all_modules(lowered_modules.as_slice(), type_checker.clone());

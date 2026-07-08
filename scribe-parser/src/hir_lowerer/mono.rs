@@ -4,7 +4,6 @@ use ir::hir::{HirFunc, HirType, StrId};
 use ir::ir_hasher::FxHashMap;
 
 impl<'a, 'bump> HirLowerer<'a, 'bump> {
-    /// Monomorphize a function with substitutions mapping generic-name -> concrete HirType
     pub fn monomorphize_function(
         &mut self,
         func: &HirFunc<'a, 'bump>,
@@ -23,7 +22,6 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             .unwrap()
     }
 
-    /// Instantiate a generic class for concrete args
     pub fn instantiate_class_for_types(
         &self,
         base: StrId,

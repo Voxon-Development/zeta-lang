@@ -9,13 +9,9 @@ use zetaruntime::arena::GrowableAtomicBump;
 
 #[derive(Clone, Debug)]
 pub struct ModuleWithArena<'a, 'bump> {
-    /// The arena that owns all AST memory for this file.
     pub bump: Arc<GrowableAtomicBump<'bump>>,
-    /// Interned file / module name (used as the `AstModule::name` field).
     pub name: StrId,
-    /// Top-level statements produced by the parser.
     pub stmts: &'bump [Stmt<'a, 'bump>],
-    /// Non-fatal diagnostics from the parser.
     pub parser_diagnostics: ParserDiagnostics<'a>,
     pub source: StrId,
 }

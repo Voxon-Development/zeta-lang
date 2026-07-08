@@ -214,6 +214,16 @@ impl<'a> ErrorReporter<'a> {
                     "Rename the variable to another name that can be more descriptive.".to_string(),
                 ],
             ),
+            TypeErrorKind::IllegalThisParam { func_name } => (
+                format!(
+                    "Illegal this parameter: free function {} contains `this`",
+                    func_name
+                ),
+                vec![
+                    "Remove the `this` param or put this into a struct that may own it."
+                        .to_string(),
+                ],
+            ),
         };
 
         Diagnostic {
@@ -303,7 +313,6 @@ impl<'a> ErrorReporter<'a> {
                 marker.push_str(&" ".repeat(width + 3 + col));
                 marker.push('^');
 
-                // If you have end_column, extend it:
                 if span.end_line == span.line && span.end_column > span.column {
                     let len = span.end_column.saturating_sub(span.column);
                     marker.push_str(&"~".repeat(len.max(1)));

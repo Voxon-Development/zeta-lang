@@ -1,3 +1,5 @@
+use crate::midend::copy_analysis::drop_glue::DropGlueRegistry;
+use crate::midend::copy_analysis::drop_tracking::{DropLocal, DropMoveState, DropScope};
 use crate::midend::ir::block_data::CurrentBlockData;
 use crate::midend::ir::expr_lowerer::MirExprLowerer;
 use codex_dependency_graph::DepGraph;
@@ -33,6 +35,7 @@ struct LoopCtx {
     /// The block (== `break_target`) whose phis a `break` must contribute
     /// an edge to.
     break_join_phis: Vec<(StrId, usize, Value)>,
+    scope_depth_at_entry: usize,
 }
 
 pub struct FunctionLowerer<'a, 'bump> {
@@ -64,6 +67,10 @@ pub struct FunctionLowerer<'a, 'bump> {
     pub module_idx: usize,
     return_type: Option<HirType<'a, 'bump>>,
     global_funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
+    scope_stack: Vec<DropScope>,
+    drop_state: DropMoveState,
+    glue_registry: &'a DropGlueRegistry,
+    pub interface_methods: &'a HashMap<StrId, Vec<(StrId, Vec<SsaType>, SsaType)>, FxHashBuilder>,
 }
 
 impl<'a, 'bump> FunctionLowerer<'a, 'bump>
@@ -94,6 +101,8 @@ where
         extern_c_names: &'a HashSet<StrId>,
         dep_graph: &'a DepGraph,
         module_idx: usize,
+        glue_registry: &'a DropGlueRegistry,
+        interface_methods: &'a HashMap<StrId, Vec<(StrId, Vec<SsaType>, SsaType)>, FxHashBuilder>,
     ) -> Result<Self, std::alloc::AllocError> {
         Self::new_internal(
             hir_fn,
@@ -112,6 +121,8 @@ where
             extern_c_names,
             dep_graph,
             module_idx,
+            glue_registry,
+            interface_methods,
         )
     }
 
@@ -140,6 +151,8 @@ where
         extern_c_names: &'a HashSet<StrId>,
         dep_graph: &'a DepGraph,
         module_idx: usize,
+        glue_registry: &'a DropGlueRegistry,
+        interface_methods: &'a HashMap<StrId, Vec<(StrId, Vec<SsaType>, SsaType)>, FxHashBuilder>,
     ) -> Result<Self, std::alloc::AllocError> {
         Self::new_internal(
             hir_fn,
@@ -158,6 +171,8 @@ where
             extern_c_names,
             dep_graph,
             module_idx,
+            glue_registry,
+            interface_methods,
         )
     }
 
@@ -186,6 +201,8 @@ where
         extern_c_names: &'a HashSet<StrId>,
         dep_graph: &'a DepGraph,
         module_idx: usize,
+        glue_registry: &'a DropGlueRegistry,
+        interface_methods: &'a HashMap<StrId, Vec<(StrId, Vec<SsaType>, SsaType)>, FxHashBuilder>,
     ) -> Result<Self, std::alloc::AllocError> {
         let mut func: Function = Function {
             name: hir_fn.name,
@@ -247,6 +264,10 @@ where
             module_idx,
             return_type: hir_fn.return_type,
             global_funcs,
+            scope_stack: vec![DropScope { locals: Vec::new() }], // function-body scope
+            drop_state: DropMoveState::default(),
+            glue_registry,
+            interface_methods,
         })
     }
 
@@ -270,6 +291,7 @@ where
                     // For move/move-mut, it arrives as an inline struct value, but since our
                     // ABI already passes structs as stack-allocated pointers everywhere, we
                     // always use Pointer here. The difference is only semantic (mutability).
+                    // TODO: Reinvestigate this
                     let inner_ty = if let Some(cn) = _class_context {
                         SsaType::User(cn, vec![])
                     } else {
@@ -329,40 +351,8 @@ where
 
     pub(super) fn lower_stmt(&mut self, stmt: &HirStmt<'a, 'bump>) {
         match stmt {
-            HirStmt::Let {
-                name,
-                value,
-                catch_pattern,
-                else_block,
-                ..
-            } => {
-                let mut val = self.allow_lowering_expr(value);
-
-                if let Some(pat) = catch_pattern {
-                    self.lower_catch(val, pat);
-                }
-
-                if let Some(else_stmts) = else_block {
-                    val = self.lower_nullable_unwrap(val, else_stmts);
-                }
-
-                self.var_map.insert(name.clone(), val);
-            }
-            HirStmt::Return(expr) => {
-                let value = expr.as_ref().map(|e| {
-                    let val = match e {
-                        HirExpr::Null(_) => self.lower_null_as(self.return_type),
-                        _ => self.allow_lowering_expr(e),
-                    };
-                    Operand::Value(val)
-                });
-                self.emit(Instruction::Ret { value });
-            }
             HirStmt::Expr(expr) => {
                 let _ = self.allow_lowering_expr(expr);
-            }
-            HirStmt::Block { body } => {
-                self.lower_stmt_seq(body);
             }
             HirStmt::UnsafeBlock { body } => {
                 self.lower_stmt(body);
@@ -385,14 +375,73 @@ where
             } => {
                 self.lower_for(*init, *condition, *increment, body);
             }
-            HirStmt::Break(_expr, _span) => {
+            HirStmt::Let {
+                name,
+                ty,
+                value,
+                catch_pattern,
+                else_block,
+                ..
+            } => {
+                self.record_move_if_any(value);
+                let mut val = self.allow_lowering_expr(value);
+
+                if let Some(pat) = catch_pattern {
+                    self.lower_catch(val, pat);
+                }
+                if let Some(else_stmts) = else_block {
+                    val = self.lower_nullable_unwrap(val, else_stmts);
+                }
+
+                self.var_map.insert(name.clone(), val);
+
+                if let HirType::Struct(struct_name, _) = ty {
+                    if self.glue_registry.is_droppable(*struct_name) {
+                        self.scope_stack.last_mut().unwrap().locals.push(DropLocal {
+                            name: *name,
+                            struct_name: *struct_name,
+                        });
+                    }
+                }
+            }
+
+            HirStmt::Return(expr) => {
+                if let Some(e) = expr {
+                    self.record_move_if_any(e);
+                }
+                let value = expr.as_ref().map(|e| {
+                    let val = match e {
+                        HirExpr::Null(_) => self.lower_null_as(self.return_type),
+                        _ => self.allow_lowering_expr(e),
+                    };
+                    Operand::Value(val)
+                });
+                self.emit_drops_for_return();
+                self.emit(Instruction::Ret { value });
+            }
+
+            HirStmt::Block { body } => {
+                self.scope_stack.push(DropScope { locals: Vec::new() });
+                self.lower_stmt_seq(body);
+                let scope = self.scope_stack.pop().unwrap();
+                if !self.block_terminated() {
+                    self.emit_scope_drops(&scope);
+                }
+            }
+
+            HirStmt::Break(expr, _span) => {
+                if let Some(e) = expr {
+                    self.record_move_if_any(e);
+                }
                 let ctx = self.loop_stack.last().expect(
                     "`break` outside of a loop (should have been caught by the typechecker)",
                 );
                 let break_target = ctx.break_target;
                 let phis = ctx.break_join_phis.clone();
+                let depth = ctx.scope_depth_at_entry;
                 let from_bb = self.current_block_data.current_block;
                 let vars = self.var_map.clone();
+                self.emit_drops_for_loop_exit(depth);
                 self.contribute_join_edge(break_target, from_bb, &vars, &phis);
                 self.emit(Instruction::Jump {
                     target: break_target,
@@ -405,8 +454,10 @@ where
                 let continue_target = ctx.continue_target;
                 let join_bb = ctx.continue_join_bb;
                 let phis = ctx.continue_join_phis.clone();
+                let depth = ctx.scope_depth_at_entry;
                 let from_bb = self.current_block_data.current_block;
                 let vars = self.var_map.clone();
+                self.emit_drops_for_loop_exit(depth);
                 self.contribute_join_edge(join_bb, from_bb, &vars, &phis);
                 self.emit(Instruction::Jump {
                     target: continue_target,
@@ -544,10 +595,13 @@ where
 
         self.var_map = vars_before.clone();
         self.current_block_data.switch_to(then_bb);
+        self.scope_stack.push(DropScope { locals: Vec::new() });
         self.lower_stmt_seq(then_block);
+        let then_scope = self.scope_stack.pop().unwrap();
         let then_live = if self.block_terminated() {
             None
         } else {
+            self.emit_scope_drops(&then_scope);
             let tail = self.current_block_data.current_block;
             let vars = self.var_map.clone();
             self.emit(Instruction::Jump { target: merge_bb });
@@ -601,7 +655,7 @@ where
             else_bb: after_bb,
         });
         // Snapshot before `open_join` (below) rewrites `var_map` to point at
-        // `after_bb`'s own placeholder phis.
+        // `after_bb`'s own phis.
         let header_vars = self.var_map.clone();
 
         // Loop exit join: the natural false-condition edge plus any `break`s.
@@ -615,6 +669,7 @@ where
             continue_join_phis: header_phis.clone(),
             break_target: after_bb,
             break_join_phis: exit_phis.clone(),
+            scope_depth_at_entry: self.scope_stack.len(),
         });
 
         // `open_join` above (for `after_bb`) clobbered `var_map` to point at
@@ -699,6 +754,7 @@ where
             continue_join_phis: incr_phis.clone(),
             break_target: after_bb,
             break_join_phis: exit_phis.clone(),
+            scope_depth_at_entry: self.scope_stack.len(),
         });
 
         // Restore the header's values before lowering the body, which runs
@@ -759,12 +815,8 @@ where
         };
 
         let throws_enum = StrId(self.context.intern("__throws"));
-        let tags = self
-            .enum_variant_tags
-            .get(&throws_enum)
-            .expect("__throws table missing, was MirModuleLowerer::register_throws run?");
+        let tags = self.enum_variant_tags.get(&throws_enum).unwrap();
 
-        // raw_val's real SsaType::Enum(variants) drives the layout
         let enum_ty = self
             .current_block_data
             .value_type(raw_val)
@@ -985,9 +1037,11 @@ where
         let HirStmt::Block { body } = else_stmts else {
             unreachable!()
         };
+        self.scope_stack.push(DropScope { locals: Vec::new() });
         for s in *body {
             self.lower_stmt(s);
         }
+        self.scope_stack.pop();
         if !body.last().map_or(false, Self::stmt_diverges) {
             panic!("`? else` block must end in return, throw, break, or continue");
         }
@@ -996,8 +1050,6 @@ where
         let unwrapped = if ty.nullable_pointer_repr().is_some() {
             val
         } else if let SsaType::Nullable(inner) = &ty {
-            // Real layout now, not a placeholder: payload sits right after the
-            // 1-byte tag, padded up to the payload's own alignment.
             let payload_align =
                 alignof_ssa(inner, TargetInfo { ptr_bytes: 8 }).unwrap_or_else(|e| {
                     panic!("failed to compute alignment for nullable payload: {:?}", e)
@@ -1038,6 +1090,9 @@ where
             self.extern_c_names,
             self.dep_graph,
             self.module_idx,
+            self.scope_stack.as_slice(),
+            &mut self.drop_state,
+            self.interface_methods,
         );
         el.lower_expr(value)
     }
@@ -1048,5 +1103,109 @@ where
 
     fn emit(&mut self, instruction: Instruction) {
         self.current_block_data.bb().instructions.push(instruction);
+    }
+
+    fn record_move_if_any(&mut self, expr: &HirExpr<'a, 'bump>) {
+        match expr {
+            HirExpr::Ident(name, _) => {
+                if self.local_is_droppable(*name).is_some() {
+                    self.drop_state.mark_whole_moved(*name);
+                }
+            }
+            HirExpr::FieldAccess { object, field, .. } | HirExpr::Get { object, field, .. } => {
+                if let HirExpr::Ident(root, _) = &**object {
+                    if self.local_is_droppable(*root).is_some() {
+                        self.drop_state.mark_field_moved(*root, *field);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn local_is_droppable(&self, name: StrId) -> Option<StrId> {
+        self.scope_stack
+            .iter()
+            .rev()
+            .flat_map(|s| s.locals.iter())
+            .find(|l| l.name == name)
+            .map(|l| l.struct_name)
+    }
+
+    fn emit_scope_drops(&mut self, scope: &DropScope) {
+        for local in scope.locals.iter().rev() {
+            if self.drop_state.is_whole_moved(local.name) {
+                continue;
+            }
+            let Some(&val) = self.var_map.get(&local.name) else {
+                continue; // shadowed/out of scope already
+            };
+
+            if self.glue_registry.has_own_drop(local.struct_name) {
+                if let Some(glue) = self.glue_registry.glue_name_for(local.struct_name) {
+                    self.emit(Instruction::Call {
+                        dest: None,
+                        func: Operand::FunctionRef(glue),
+                        args: SmallVec::from_slice_copy(&[Operand::Value(val)]),
+                    });
+                }
+                continue;
+            }
+
+            let Some(hir_struct) = self.classes.get(&local.struct_name) else {
+                continue;
+            };
+            let Some(offsets) = self.class_field_offsets.get(&local.struct_name) else {
+                continue;
+            };
+
+            for field in hir_struct.fields.iter().rev() {
+                if self.drop_state.is_field_moved(local.name, field.name) {
+                    continue;
+                }
+                let HirType::Struct(field_struct_name, _) = &field.field_type else {
+                    continue;
+                };
+                let Some(field_glue) = self.glue_registry.glue_name_for(*field_struct_name) else {
+                    continue;
+                };
+                let Some(&offset) = offsets.get(&field.name) else {
+                    continue;
+                };
+
+                let field_ptr = self.current_block_data.fresh_value();
+                self.current_block_data.value_types.insert(
+                    field_ptr,
+                    SsaType::Pointer(Box::new(SsaType::User(*field_struct_name, vec![]))),
+                );
+                self.emit(Instruction::FieldAddr {
+                    dest: field_ptr,
+                    base: Operand::Value(val),
+                    offset,
+                });
+                self.emit(Instruction::Call {
+                    dest: None,
+                    func: Operand::FunctionRef(field_glue),
+                    args: SmallVec::from_slice_copy(&[Operand::Value(field_ptr)]),
+                });
+            }
+        }
+    }
+
+    /// `Return` unwinds every enclosing scope, innermost first.
+    fn emit_drops_for_return(&mut self) {
+        for scope in self.scope_stack.clone().iter().rev() {
+            self.emit_scope_drops(scope);
+        }
+    }
+
+    fn emit_drops_for_loop_exit(&mut self, depth_at_loop_entry: usize) {
+        for scope in self.scope_stack[depth_at_loop_entry..]
+            .to_vec()
+            .iter()
+            .rev()
+        {
+            self.emit_scope_drops(scope);
+        }
     }
 }

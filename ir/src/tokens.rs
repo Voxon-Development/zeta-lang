@@ -222,9 +222,6 @@ impl<'a> Cursor<'a> {
 
     /// Advance past an identifier token and return `(StrId, SourceSpan)`, or
     /// return a `DiagnosticError` if the next token is not an identifier.
-    ///
-    /// Comment tokens are already skipped by `peek_token`, so no extra
-    /// `skip_comments` call is needed here.
     #[inline]
     pub fn expect_ident(&mut self) -> Result<(StrId, SourceSpan<'a>), DiagnosticError<'a>> {
         let tok = self.peek_token();

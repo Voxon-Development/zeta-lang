@@ -23,7 +23,6 @@ fn test_if(): i32 {
         atomic_bump.clone(),
     );
 
-    // Should parse without errors
     assert!(
         !result.diagnostics.has_errors(),
         "Parser should not have errors"
