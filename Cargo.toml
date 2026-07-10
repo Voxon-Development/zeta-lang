@@ -15,7 +15,6 @@ members = [
     "codex-dependency-graph",
     "sentinel-typechecker",
     "engraver-assembly-emit",
-    "smelter-optimizer",
     "zeta_utilities",
     "iris-math"
 ]

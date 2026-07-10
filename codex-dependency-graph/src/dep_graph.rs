@@ -899,6 +899,14 @@ impl DepGraph {
                 // ordering and import-cycle detection, so record it.
                 self.add_module_path_dep(from_node, segments);
             }
+            Expr::ArrayLiteral { elements, span: _ } => {
+                for element in *elements {
+                    self.walk_expr(element, from_node, module_idx, pool);
+                }
+            }
+            Expr::Undefined { .. } => {
+                // Nothing to do.
+            }
         }
     }
 

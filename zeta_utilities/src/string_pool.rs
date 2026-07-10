@@ -89,7 +89,6 @@ impl PartialEq for VmString {
 impl Default for VmString {
     fn default() -> Self {
         VmString {
-            //  the rest is default
             length: 0,
             offset: ptr::null(),
         }

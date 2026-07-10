@@ -6,10 +6,15 @@ use crate::type_context::TypeContext;
 use codex_dependency_graph::DepGraph;
 use ir::analysis_context::CopyAnalysisCtx;
 use ir::ast::MutabilityState;
+use ir::borrow_checker::{
+    BorrowChecker, BorrowError, Bound, IndexContainer, IndexTemplate, Interval, LoanId, PlaceId,
+    RefTemplate, TemplateProjection,
+};
 use ir::errors::type_error::{TypeCheckResult, TypeError, TypeErrorKind};
 use ir::hir::{
     Hir, HirExpr, HirFunc, HirModule, HirParam, HirStmt, HirType, Operator, StrId, ThisPassingKind,
 };
+use ir::ir_hasher::FxHashMap;
 use ir::span::SourceSpan;
 use zetaruntime::bump::GrowableBump;
 use zetaruntime::string_pool::StringPool;
@@ -20,7 +25,10 @@ pub struct TypeChecker<'a, 'bump> {
     current_span: SourceSpan<'a>,
     copy_analysis: Rc<CopyAnalysisCtx<'a, 'bump>>,
     move_state: MoveState,
+    borrow_checker: BorrowChecker,
+    this_id: StrId,
     suppress_errors: bool,
+    ref_templates: FxHashMap<StrId, RefTemplate>,
 }
 
 impl<'a, 'bump> TypeChecker<'a, 'bump> {
@@ -31,12 +39,15 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         string_pool: Arc<StringPool>,
     ) -> Self {
         Self {
+            this_id: StrId(string_pool.intern("this")),
             context: TypeContext::new(dep_graph, bump, string_pool),
             errors: Vec::new(),
             current_span: SourceSpan::default(),
             copy_analysis,
             move_state: MoveState::new(),
+            borrow_checker: BorrowChecker::new(),
             suppress_errors: false,
+            ref_templates: FxHashMap::default(),
         }
     }
 
@@ -109,6 +120,42 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         converged
     }
 
+    fn is_zeroable(&self, ty: &HirType<'a, 'bump>) -> bool {
+        match ty {
+            HirType::I8
+            | HirType::I16
+            | HirType::I32
+            | HirType::I64
+            | HirType::I128
+            | HirType::U8
+            | HirType::U16
+            | HirType::U32
+            | HirType::U64
+            | HirType::U128
+            | HirType::F32
+            | HirType::F64 => true,
+
+            HirType::Array(inner, _) => self.is_zeroable(inner),
+
+            HirType::Tuple(elems) => elems.iter().all(|e| self.is_zeroable(e)),
+
+            HirType::Struct(name, _) => {
+                let name_str = self.str_id_to_string(*name);
+                match self.context.get_struct(&name_str) {
+                    Some(def) => def.fields.iter().all(|f| self.is_zeroable(&f.field_type)),
+                    None => false, // unresolved struct
+                }
+            }
+
+            // Impermissible: bool, char, string, enums, interfaces/dyn, lambdas,
+            // pointers/refs, nullable, slices, generics, void/null/this/unknown.
+            // Zeroing these either produces an invalid bit pattern (bool/char/enum
+            // discriminants), a dangling/null reference where one shouldn't
+            // silently appear (pointers), or is simply meaningless (lambda, dyn).
+            _ => false,
+        }
+    }
+
     pub fn register_module(&mut self, module: &HirModule<'a, 'bump>, module_idx: usize) {
         let prev_module_idx = self.context.current_module_idx;
         self.context.current_module_idx = module_idx;
@@ -176,11 +223,20 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
     fn check_function(&mut self, func: &HirFunc<'a, 'bump>) {
         let mut func_context = self.context.create_child_scope();
 
+        self.borrow_checker = BorrowChecker::new();
+        self.borrow_checker.begin_scope();
+
         if let Some(params) = func.params {
             for param in params {
-                if let HirParam::Normal { name, param_type } = param {
-                    let param_name = self.str_id_to_string(*name);
-                    func_context.add_variable(param_name, *param_type);
+                match param {
+                    HirParam::Normal { name, param_type } => {
+                        let param_name = self.str_id_to_string(*name);
+                        func_context.add_variable(param_name, *param_type);
+                        self.borrow_checker.declare_local(*name);
+                    }
+                    HirParam::This { .. } => {
+                        self.borrow_checker.declare_local(self.this_id);
+                    }
                 }
             }
         }
@@ -197,6 +253,8 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             }
             self.context = old_context;
         }
+
+        self.borrow_checker.end_scope();
     }
 
     fn check_stmt(&mut self, stmt: &HirStmt<'a, 'bump>) -> Option<HirType<'a, 'bump>> {
@@ -250,6 +308,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
 
                 self.context
                     .add_variable_with_mutability(var_name, *ty, *mutable);
+                self.borrow_checker.declare_local(*name);
 
                 None
             }
@@ -290,23 +349,21 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     });
                 }
 
-                let mut then_context = self.context.create_child_scope();
-                for stmt in *then_block {
-                    let old_context = std::mem::replace(&mut self.context, then_context);
-                    self.check_stmt(stmt);
-                    then_context = self.context.clone();
-                    self.context = old_context;
-                }
-
-                if let Some(else_stmt) = else_block {
-                    let else_context = self.context.create_child_scope();
-                    let old_context = std::mem::replace(&mut self.context, else_context);
-                    self.check_stmt(else_stmt);
-                    self.context = old_context;
-                }
-
                 let move_state_before = self.move_state.clone();
 
+                let fact = self.condition_to_fact(cond);
+
+                self.borrow_checker.begin_scope();
+                if let Some((lhs, rhs, is_equal)) = &fact {
+                    if *is_equal {
+                        self.borrow_checker
+                            .assume_equal_scoped(lhs.clone(), rhs.clone());
+                    } else {
+                        self.borrow_checker
+                            .assume_not_equal_scoped(lhs.clone(), rhs.clone());
+                    }
+                }
+
                 let mut then_context = self.context.create_child_scope();
                 for stmt in *then_block {
                     let old_context = std::mem::replace(&mut self.context, then_context);
@@ -314,14 +371,26 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     then_context = self.context.clone();
                     self.context = old_context;
                 }
+                self.borrow_checker.end_scope();
                 let then_move_state = self.move_state.clone();
 
                 self.move_state = move_state_before.clone();
                 if let Some(else_stmt) = else_block {
+                    self.borrow_checker.begin_scope();
+                    if let Some((lhs, rhs, is_equal)) = &fact {
+                        if *is_equal {
+                            self.borrow_checker
+                                .assume_not_equal_scoped(lhs.clone(), rhs.clone());
+                        } else {
+                            self.borrow_checker
+                                .assume_equal_scoped(lhs.clone(), rhs.clone());
+                        }
+                    }
                     let else_context = self.context.create_child_scope();
                     let old_context = std::mem::replace(&mut self.context, else_context);
                     self.check_stmt(else_stmt);
                     self.context = old_context;
+                    self.borrow_checker.end_scope();
                 }
                 let else_move_state = self.move_state.clone();
 
@@ -387,6 +456,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 None
             }
             HirStmt::Block { body } => {
+                self.borrow_checker.begin_scope();
                 let mut block_context = self.context.create_child_scope();
                 for stmt in *body {
                     let old_context = std::mem::replace(&mut self.context, block_context);
@@ -394,6 +464,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     block_context = self.context.clone();
                     self.context = old_context;
                 }
+                self.borrow_checker.end_scope();
                 None
             }
             HirStmt::Break(expr, span) => {
@@ -434,6 +505,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
 
                 for arm in *arms {
                     self.move_state = move_state_before.clone();
+                    self.borrow_checker.begin_scope();
 
                     let arm_context = self.context.create_child_scope();
                     let old_context = std::mem::replace(&mut self.context, arm_context);
@@ -451,6 +523,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     self.check_stmt(arm.body);
 
                     self.context = old_context;
+                    self.borrow_checker.end_scope();
                     arm_move_states.push(self.move_state.clone());
                 }
 
@@ -482,6 +555,26 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         }
     }
 
+    fn condition_to_fact(&self, cond: &HirExpr<'a, 'bump>) -> Option<(Bound, Bound, bool)> {
+        if let HirExpr::Comparison {
+            left, op, right, ..
+        } = cond
+        {
+            let is_equal = match op {
+                Operator::Equals => true,
+                Operator::NotEquals => false,
+                _ => return None,
+            };
+            Some((
+                self.expr_to_bound(left),
+                self.expr_to_bound(right),
+                is_equal,
+            ))
+        } else {
+            None
+        }
+    }
+
     fn check_expr(&mut self, expr: &HirExpr<'a, 'bump>) -> HirType<'a, 'bump> {
         match expr {
             HirExpr::Number(_, _) => HirType::I64,
@@ -489,6 +582,25 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             HirExpr::Decimal(_, _) => HirType::F64,
             HirExpr::Boolean(_, _) => HirType::Boolean,
             HirExpr::String(_, _) => HirType::String,
+            HirExpr::Undefined { span, ty } => {
+                self.set_span(*span);
+                match ty {
+                    HirType::Unknown => {
+                        self.record(TypeErrorKind::TypeCannotBeInferred);
+                        HirType::Unknown
+                    }
+                    other_type => {
+                        if !self.is_zeroable(other_type) {
+                            self.record(TypeErrorKind::Generic(format!(
+                                "`undefined` cannot be used for type `{}`: it cannot be safely zero-initialized",
+                                self.type_to_string(other_type)
+                            )));
+                            return HirType::Unknown;
+                        }
+                        *other_type
+                    }
+                }
+            }
             HirExpr::Ident(name, _) => {
                 let var_name = self.str_id_to_string(*name);
                 match self.context.get_variable(&var_name) {
@@ -546,7 +658,14 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                         {
                             return value;
                         }
-                        self.check_all_func_args(args, params);
+                        let arg_loans = self.check_all_func_args(args, params, None);
+
+                        let ret_ty = func.return_type.unwrap_or(HirType::Void);
+                        if !self.return_type_may_alias(&ret_ty) {
+                            for loan in arg_loans {
+                                self.borrow_checker.end_loan_now(loan);
+                            }
+                        }
                     }
 
                     func.return_type.unwrap_or(HirType::Void)
@@ -988,18 +1107,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 expr,
                 mutable,
                 span,
-            } => {
-                self.set_span(*span);
-                let expr = self.check_expr(expr);
-                HirType::Ref {
-                    inner: self.context.bump.alloc_value(expr),
-                    mutability_state: if *mutable {
-                        MutabilityState::Mut
-                    } else {
-                        MutabilityState::Const
-                    },
-                }
-            }
+            } => self.check_ref_expr(expr, *mutable, *span, true),
             HirExpr::This { span } => {
                 self.set_span(*span);
                 self.context.get_variable("this").unwrap_or(HirType::This)
@@ -1066,6 +1174,85 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     return_type: self.context.bump.alloc_value(*return_type),
                 }
             }
+            HirExpr::Index {
+                object,
+                index,
+                span,
+            } => {
+                self.set_span(*span);
+
+                let object_ty = self.check_expr(object);
+                let index_ty = self.check_expr(index);
+
+                self.recover(self.types_compatible(&HirType::I64, &index_ty), ());
+
+                match *Self::strip_ref(&object_ty) {
+                    HirType::Array(inner, _) => *inner,
+                    HirType::Slice(inner) => *inner,
+
+                    _ => {
+                        self.record(TypeErrorKind::Generic(format!(
+                            "cannot index type `{}`",
+                            self.type_to_string(&object_ty)
+                        )));
+                        HirType::Unknown
+                    }
+                }
+            }
+            HirExpr::ArrayLiteral { elements, span } => {
+                self.set_span(*span);
+
+                if elements.is_empty() {
+                    self.record(TypeErrorKind::TypeCannotBeInferred);
+                    return HirType::Unknown;
+                }
+
+                let first_ty = self.check_expr(&elements[0]);
+                self.check_and_record_value_use(&elements[0], &first_ty);
+
+                for elem in &elements[1..] {
+                    let elem_ty = self.check_expr(elem);
+                    self.check_and_record_value_use(elem, &elem_ty);
+                    let result = self.types_compatible(&first_ty, &elem_ty);
+                    self.recover(result, ());
+                }
+
+                HirType::Array(self.context.bump.alloc_value(first_ty), elements.len())
+            }
+        }
+    }
+
+    fn check_ref_expr(
+        &mut self,
+        expr: &HirExpr<'a, 'bump>,
+        mutable: bool,
+        span: SourceSpan<'a>,
+        register_loan: bool,
+    ) -> HirType<'a, 'bump> {
+        self.set_span(span);
+        let inner_ty = self.check_expr(expr);
+
+        if register_loan {
+            if let Some(place) = self.resolve_place(expr) {
+                let result = if mutable {
+                    self.borrow_checker.borrow_mut(place)
+                } else {
+                    self.borrow_checker.borrow_shared(place)
+                };
+                if let Err(e) = result {
+                    let msg = self.describe_borrow_error(&e);
+                    self.record(TypeErrorKind::Generic(msg));
+                }
+            }
+        }
+
+        HirType::Ref {
+            inner: self.context.bump.alloc_value(inner_ty),
+            mutability_state: if mutable {
+                MutabilityState::Mut
+            } else {
+                MutabilityState::Const
+            },
         }
     }
 
@@ -1075,28 +1262,298 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         func: HirFunc<'a, 'bump>,
         params: &[HirParam<'a, 'bump>],
     ) -> Option<HirType<'a, 'bump>> {
+        let ret_ty = func.return_type.unwrap_or(HirType::Void);
+
         if let Some(this_param) = params.first() {
             if matches!(this_param, HirParam::This { .. }) {
                 self.record(TypeErrorKind::IllegalThisParam {
                     func_name: func.unmangled_name.to_string(),
                 });
-                return Some(func.return_type.unwrap_or(HirType::Void));
+                return Some(ret_ty);
             }
-            self.check_all_func_args(args, params);
-            return Some(func.return_type.unwrap_or(HirType::Void));
+
+            let template = if self.return_type_may_alias(&ret_ty) {
+                Some(self.analyze_ref_template(&func))
+            } else {
+                None
+            };
+
+            let templated_base_param = match &template {
+                Some(RefTemplate::Path { base_param, .. }) => Some(*base_param),
+                _ => None,
+            };
+
+            let arg_loans = self.check_all_func_args(args, params, templated_base_param);
+            self.finalize_call_loans(args, arg_loans, &ret_ty, template);
+
+            return Some(ret_ty);
         }
-        Some(func.return_type.unwrap_or(HirType::Void)) // Zero parameters
+        Some(ret_ty) // Zero parameters
     }
 
-    fn check_all_func_args(&mut self, args: &[HirExpr<'a, 'bump>], params: &[HirParam<'a, 'bump>]) {
-        for (arg, param) in args.iter().zip(params.iter()) {
+    fn check_all_func_args(
+        &mut self,
+        args: &[HirExpr<'a, 'bump>],
+        params: &[HirParam<'a, 'bump>],
+        templated_base_param: Option<usize>,
+    ) -> Vec<LoanId> {
+        let mut arg_loans: Vec<LoanId> = Vec::new();
+
+        for (i, (arg, param)) in args.iter().zip(params.iter()).enumerate() {
+            if Some(i) == templated_base_param {
+                if let HirExpr::Ref {
+                    expr,
+                    mutable,
+                    span,
+                } = arg
+                {
+                    let arg_type = self.check_ref_expr(expr, *mutable, *span, false);
+                    if let Some(param_type) = param.get_type() {
+                        let result = self.types_compatible(param_type, &arg_type);
+                        self.recover(result, ());
+                    }
+                } else {
+                    let arg_type = self.check_expr(arg);
+                    self.check_and_record_value_use(arg, &arg_type);
+                    if let Some(param_type) = param.get_type() {
+                        let result = self.types_compatible(param_type, &arg_type);
+                        self.recover(result, ());
+                    }
+                }
+                continue;
+            }
+
             let arg_type = self.check_expr(arg);
             self.check_and_record_value_use(arg, &arg_type);
             if let Some(param_type) = param.get_type() {
                 let result = self.types_compatible(param_type, &arg_type);
                 self.recover(result, ());
             }
+
+            if let HirExpr::Ref { expr, .. } = arg {
+                if let Some(place) = self.resolve_place(expr) {
+                    if let Some(&loan_id) = self.borrow_checker.loan_for_place(place) {
+                        arg_loans.push(loan_id);
+                    }
+                }
+            }
         }
+
+        arg_loans
+    }
+
+    /// True if a value of this type could itself hold or be a borrowed
+    /// reference, i.e. calling a function returning this type might hand
+    /// back something that aliases one of its ref-typed arguments.
+    /// Conservative: struct/enum/tuple types that might *contain* a
+    /// reference field also count, since e.g. `struct Pair { r: &mut i64 }`
+    /// returned by value still carries the alias forward.
+    fn return_type_may_alias(&self, ty: &HirType<'a, 'bump>) -> bool {
+        match ty {
+            // Direct reference-like types.
+            HirType::Ref { .. } | HirType::SafePointer(_) | HirType::UnsafePointer(_) => true,
+
+            HirType::Nullable(inner) => self.return_type_may_alias(inner),
+
+            HirType::Array(inner, _) => self.return_type_may_alias(inner),
+
+            HirType::Tuple(elems) => elems.iter().any(|e| self.return_type_may_alias(e)),
+
+            HirType::Struct(name, _) => {
+                let name_str = self.str_id_to_string(*name);
+                match self.context.get_struct(&name_str) {
+                    Some(def) => def
+                        .fields
+                        .iter()
+                        .any(|f| self.return_type_may_alias(&f.field_type)),
+                    None => true, // unresolved
+                }
+            }
+
+            HirType::Enum(name, _) => {
+                let name_str = self.str_id_to_string(*name);
+                match self.context.get_enum(&name_str) {
+                    Some(def) => def
+                        .variants
+                        .iter()
+                        .flat_map(|v| v.fields.iter())
+                        .any(|f| self.return_type_may_alias(&f.field_type)),
+                    None => true, // unresolved
+                }
+            }
+
+            HirType::Dyn { .. } | HirType::DynInterface(..) => true,
+
+            // Primitive/value-only types.
+            _ => false,
+        }
+    }
+
+    fn finalize_call_loans(
+        &mut self,
+        args: &[HirExpr<'a, 'bump>],
+        arg_loans: Vec<LoanId>,
+        ret_ty: &HirType<'a, 'bump>,
+        template: Option<RefTemplate>,
+    ) {
+        let Some(template) = template else {
+            for loan in arg_loans {
+                self.borrow_checker.end_loan_now(loan);
+            }
+            return;
+        };
+
+        if matches!(template, RefTemplate::Path { .. }) {
+            for &loan in &arg_loans {
+                self.borrow_checker.end_loan_now(loan);
+            }
+        }
+
+        if let Some(place) = self.resolve_template_place(&template, args) {
+            let mutable = matches!(
+                ret_ty,
+                HirType::Ref {
+                    mutability_state: MutabilityState::Mut,
+                    ..
+                }
+            );
+            let result = if mutable {
+                self.borrow_checker.borrow_mut(place)
+            } else {
+                self.borrow_checker.borrow_shared(place)
+            };
+
+            if let Err(e) = result {
+                let msg = self.describe_borrow_error(&e);
+                self.record(TypeErrorKind::Generic(msg));
+            }
+        }
+    }
+
+    fn analyze_ref_template(&mut self, func: &HirFunc<'a, 'bump>) -> RefTemplate {
+        if let Some(t) = self.ref_templates.get(&func.name) {
+            return t.clone();
+        }
+
+        // Cycle guard, mirrors IndexDisjointCtx::MethodAnalysisState::InProgress.
+        self.ref_templates.insert(func.name, RefTemplate::Opaque);
+
+        let template = Self::build_ref_template(func);
+        self.ref_templates.insert(func.name, template.clone());
+        template
+    }
+
+    fn build_ref_template(func: &HirFunc<'a, 'bump>) -> RefTemplate {
+        let Some(params) = func.params else {
+            return RefTemplate::Opaque;
+        };
+
+        let mut param_index: FxHashMap<StrId, usize> = FxHashMap::default();
+        for (i, p) in params.iter().enumerate() {
+            if let HirParam::Normal { name, .. } = p {
+                param_index.insert(*name, i);
+            }
+        }
+
+        let Some(HirStmt::Block { body }) = func.body else {
+            return RefTemplate::Opaque;
+        };
+
+        let [HirStmt::Return(Some(HirExpr::Ref { expr, mutable, .. }))] = body else {
+            return RefTemplate::Opaque;
+        };
+
+        let Some((base_param, projections)) = Self::expr_to_template(expr, &param_index) else {
+            return RefTemplate::Opaque;
+        };
+
+        RefTemplate::Path {
+            base_param,
+            mutable: *mutable,
+            projections,
+        }
+    }
+
+    fn expr_to_template(
+        expr: &HirExpr<'a, 'bump>,
+        param_index: &FxHashMap<StrId, usize>,
+    ) -> Option<(usize, Vec<TemplateProjection>)> {
+        match expr {
+            HirExpr::Ident(name, _) => Some((*param_index.get(name)?, Vec::new())),
+
+            HirExpr::FieldAccess { object, field, .. } | HirExpr::Get { object, field, .. } => {
+                let (base, mut proj) = Self::expr_to_template(object, param_index)?;
+                proj.push(TemplateProjection::Field(*field));
+                Some((base, proj))
+            }
+
+            HirExpr::Deref { expr, .. } => {
+                let (base, mut proj) = Self::expr_to_template(expr, param_index)?;
+                proj.push(TemplateProjection::Deref);
+                Some((base, proj))
+            }
+
+            HirExpr::Index { object, index, .. } => {
+                let (base, mut proj) = Self::expr_to_template(object, param_index)?;
+                let idx = match &**index {
+                    HirExpr::Number(n, _) => IndexTemplate::Const(*n),
+                    HirExpr::Ident(name, _) => param_index
+                        .get(name)
+                        .map(|&i| IndexTemplate::Param(i))
+                        .unwrap_or(IndexTemplate::Opaque),
+                    _ => IndexTemplate::Opaque,
+                };
+                proj.push(TemplateProjection::Index(idx));
+                Some((base, proj))
+            }
+
+            _ => None,
+        }
+    }
+
+    fn resolve_template_place(
+        &mut self,
+        template: &RefTemplate,
+        args: &[HirExpr<'a, 'bump>],
+    ) -> Option<PlaceId> {
+        let RefTemplate::Path {
+            base_param,
+            projections,
+            ..
+        } = template
+        else {
+            return None;
+        };
+
+        let base_arg = args.get(*base_param)?;
+        let base_expr = match base_arg {
+            HirExpr::Ref { expr, .. } => expr,
+            other => other,
+        };
+
+        let mut place = self.resolve_place(base_expr)?;
+
+        for proj in projections {
+            place = match proj {
+                TemplateProjection::Field(f) => self.borrow_checker.project_field(place, *f),
+                TemplateProjection::Deref => self.borrow_checker.project_deref(place),
+                TemplateProjection::Index(idx_template) => {
+                    let bound = match idx_template {
+                        IndexTemplate::Const(c) => Bound::Const(*c),
+                        IndexTemplate::Param(i) => self.expr_to_bound(args.get(*i)?),
+                        IndexTemplate::Opaque => Bound::Opaque,
+                    };
+                    let interval = Interval {
+                        lower: bound.clone(),
+                        upper: bound,
+                    };
+                    self.borrow_checker
+                        .project_index(place, interval, IndexContainer::Primitive)
+                }
+            };
+        }
+
+        Some(place)
     }
 
     fn check_receiver_is_mutable(
@@ -1291,13 +1748,20 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             return;
         }
 
+        if let Some(&base_place) = self.borrow_checker.local_place(root) {
+            let moved_place = match field {
+                None => base_place,
+                Some(f) => self.borrow_checker.project_field(base_place, f),
+            };
+            if let Err(e) = self.borrow_checker.check_move(moved_place) {
+                let msg = self.describe_borrow_error(&e);
+                self.record(TypeErrorKind::Generic(msg));
+            }
+        }
+
         match field {
             None => self.move_state.mark_whole_moved(root),
             Some(f) => {
-                // Whether partial move is legal depends on the CONTAINER's Drop
-                // impl (can you take a field out of `Outer`?), not the field's
-                // own type's Drop impl (Inner implementing Drop says nothing
-                // about whether Inner can be extracted from something else).
                 let blocks_partial_move = container_ty.is_some_and(|cty| match cty {
                     HirType::Struct(name, _) | HirType::Enum(name, _) => {
                         self.copy_analysis.implements_drop(*name)
@@ -1546,6 +2010,122 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
+            HirType::Array(inner, len) => format!("[{}]{}", len, self.type_to_string(inner)),
+            HirType::Slice(inner) => format!("[]{}", self.type_to_string(inner)),
+        }
+    }
+
+    fn describe_borrow_error(&self, err: &BorrowError) -> String {
+        match err {
+            BorrowError::UseAfterMove { .. } => "use of a value after it was moved".to_string(),
+            BorrowError::MutablyBorrowed { .. } => {
+                "cannot borrow: value is already mutably borrowed".to_string()
+            }
+            BorrowError::AlreadyMutablyBorrowed { .. } => {
+                "cannot borrow as mutable: already mutably borrowed elsewhere".to_string()
+            }
+            BorrowError::Borrowed { .. } => {
+                "cannot borrow as mutable: value is already borrowed".to_string()
+            }
+            BorrowError::InvalidMove { .. } => "invalid move".to_string(),
+            BorrowError::InvalidWrite { .. } => "invalid write".to_string(),
+            BorrowError::InvalidRead { .. } => "invalid read".to_string(),
+            BorrowError::CannotMoveBorrowed { .. } => {
+                "cannot move out of a value while it is borrowed".to_string()
+            }
+            BorrowError::UnknownAlias { .. } => {
+                "cannot prove these two accesses don't overlap".to_string()
+            }
+            BorrowError::LoanNotFound(_)
+            | BorrowError::PlaceNotFound(_)
+            | BorrowError::ProvenanceNotFound(_) => "internal borrow-checker error".to_string(),
+        }
+    }
+
+    fn peek_type(&self, expr: &HirExpr<'a, 'bump>) -> HirType<'a, 'bump> {
+        match expr {
+            HirExpr::Ident(name, _) => {
+                let var_name = self.str_id_to_string(*name);
+                self.context
+                    .get_variable(&var_name)
+                    .unwrap_or(HirType::Unknown)
+            }
+            HirExpr::This { .. } => self.context.get_variable("this").unwrap_or(HirType::This),
+            HirExpr::FieldAccess { object, field, .. } | HirExpr::Get { object, field, .. } => {
+                match self.peek_type(object) {
+                    HirType::Struct(struct_name, _) => {
+                        let struct_name_str = self.str_id_to_string(struct_name);
+                        let field_name = self.str_id_to_string(*field);
+                        self.context
+                            .get_struct(&struct_name_str)
+                            .and_then(|s| {
+                                s.fields
+                                    .iter()
+                                    .find(|f| self.str_id_to_string(f.name) == field_name)
+                            })
+                            .map(|f| f.field_type)
+                            .unwrap_or(HirType::Unknown)
+                    }
+                    _ => HirType::Unknown,
+                }
+            }
+            HirExpr::Deref { expr, .. } => match self.peek_type(expr) {
+                HirType::Ref { inner, .. } => *inner,
+                HirType::SafePointer(inner) => *inner,
+                HirType::UnsafePointer(inner) => *inner,
+                _ => HirType::Unknown,
+            },
+            HirExpr::Index { object, .. } => match self.peek_type(object) {
+                HirType::Array(inner, _) => *inner,
+                HirType::Slice(inner) => *inner,
+                _ => HirType::Unknown,
+            },
+            _ => HirType::Unknown,
+        }
+    }
+
+    fn resolve_place(&mut self, expr: &HirExpr<'a, 'bump>) -> Option<PlaceId> {
+        match expr {
+            HirExpr::Ident(name, _) => self.borrow_checker.local_place(*name).copied(),
+
+            HirExpr::This { .. } => self.borrow_checker.local_place(self.this_id).copied(),
+
+            HirExpr::FieldAccess { object, field, .. } | HirExpr::Get { object, field, .. } => {
+                let base = self.resolve_place(object)?;
+                Some(self.borrow_checker.project_field(base, *field))
+            }
+
+            HirExpr::Deref { expr, .. } => {
+                let base = self.resolve_place(expr)?;
+                Some(self.borrow_checker.project_deref(base))
+            }
+
+            HirExpr::Index { object, index, .. } => match self.peek_type(object) {
+                HirType::Array(_, _) | HirType::Slice(_) => {
+                    let base = self.resolve_place(object)?;
+                    let bound = self.expr_to_bound(index);
+                    let interval = Interval {
+                        lower: bound.clone(),
+                        upper: bound,
+                    };
+                    Some(self.borrow_checker.project_index(
+                        base,
+                        interval,
+                        IndexContainer::Primitive,
+                    ))
+                }
+                _ => None,
+            },
+
+            _ => None,
+        }
+    }
+
+    fn expr_to_bound(&self, expr: &HirExpr<'a, 'bump>) -> Bound {
+        match expr {
+            HirExpr::Number(value, _) => Bound::Const(*value),
+            HirExpr::Ident(name, _) => Bound::Symbol(*name),
+            _ => Bound::Opaque,
         }
     }
 }
