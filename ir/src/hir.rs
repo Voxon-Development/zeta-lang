@@ -307,6 +307,8 @@ where
         bounds: &'bump [HirType<'a, 'bump>],
     },
     Tuple(&'bump [HirType<'a, 'bump>]),
+    Array(&'a HirType<'a, 'bump>, usize),
+    Slice(&'a HirType<'a, 'bump>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -514,6 +516,19 @@ where
         body: &'bump HirStmt<'a, 'bump>,
         span: SourceSpan<'a>,
     },
+    Index {
+        object: &'bump HirExpr<'a, 'bump>,
+        index: &'bump HirExpr<'a, 'bump>,
+        span: SourceSpan<'a>,
+    },
+    ArrayLiteral {
+        elements: &'bump [HirExpr<'a, 'bump>],
+        span: SourceSpan<'a>,
+    },
+    Undefined {
+        span: SourceSpan<'a>,
+        ty: HirType<'a, 'bump>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -652,6 +667,8 @@ where
 
                 write!(f, "({})", params_str)
             }
+            HirType::Array(hir_type, len) => write!(f, "&[{}]{}", len, hir_type),
+            HirType::Slice(hir_type) => write!(f, "&[]{}", hir_type),
         }
     }
 }

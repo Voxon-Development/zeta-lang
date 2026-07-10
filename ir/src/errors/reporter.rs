@@ -224,6 +224,10 @@ impl<'a> ErrorReporter<'a> {
                         .to_string(),
                 ],
             ),
+            TypeErrorKind::TypeCannotBeInferred => (
+                "Type cannot be inferred".to_string(),
+                vec!["please include an explicit type".to_string()],
+            ),
         };
 
         Diagnostic {

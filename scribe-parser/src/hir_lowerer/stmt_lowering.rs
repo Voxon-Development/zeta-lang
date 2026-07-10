@@ -222,7 +222,14 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     }
 
     fn lower_let_stmt(&self, l: &LetStmt<'a, 'bump>) -> HirStmt<'a, 'bump> {
-        let value = self.lower_expr(&l.value);
+        let value = self.lower_expr_expected(
+            l.value,
+            if l.type_annotation != Type::infer() {
+                self.lower_type(&l.type_annotation)
+            } else {
+                HirType::Unknown
+            },
+        );
         let final_type: HirType<'a, 'bump> = if l.type_annotation != Type::infer() {
             self.lower_type(&l.type_annotation)
         } else {

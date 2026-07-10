@@ -6,7 +6,8 @@ use core::panic;
 use ir::hir::{AssignmentOperator, HirExpr, HirStruct, HirType, Operator, StrId};
 use ir::ir_conversion::{assign_op_to_bin_op, lower_operator_bin, lower_type_hir};
 use ir::ir_hasher::{FxHashBuilder, HashSet};
-use ir::ssa_ir::{Function, Instruction, Operand, SsaType, Value};
+use ir::layout::TargetInfo;
+use ir::ssa_ir::{BinOp, Function, Instruction, Operand, SsaType, Value};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -151,6 +152,11 @@ where
                 args,
                 span: _,
             } => self.lower_class_init(name, args),
+
+            HirExpr::Undefined { span: _, ty } => {
+                let ssa_ty = lower_type_hir(ty);
+                self.lower_zeroed_value(&ssa_ty)
+            }
 
             HirExpr::FieldAccess {
                 object,
@@ -307,24 +313,8 @@ where
                 })
             }
             HirExpr::Ref { expr, .. } => {
-                let src = self.lower_expr(expr);
-
-                let dest = self.current_block_data.fresh_value();
-
-                self.emit(Instruction::AddressOf { dest, source: src });
-
-                let inner_ty = self
-                    .current_block_data
-                    .value_types
-                    .get(&src)
-                    .unwrap()
-                    .clone();
-
-                self.current_block_data
-                    .value_types
-                    .insert(dest, SsaType::Pointer(Box::new(inner_ty)));
-
-                dest
+                let (addr, _pointee_ty) = self.lower_place_addr(expr);
+                addr
             }
 
             HirExpr::Deref { expr, .. } => {
@@ -368,7 +358,87 @@ where
             HirExpr::Lambda { .. } => {
                 todo!("There should be no lambdas here so we should handle that error")
             }
+            HirExpr::Index {
+                object,
+                index,
+                span: _,
+            } => self.lower_index(object, index),
+            HirExpr::ArrayLiteral { elements, span: _ } => self.lower_array_literal(elements),
         }
+    }
+
+    fn lower_index_addr(
+        &mut self,
+        object: &HirExpr<'a, 'bump>,
+        index: &HirExpr<'a, 'bump>,
+    ) -> (Value, SsaType) {
+        let base = self.lower_expr(object);
+        let idx = self.lower_expr(index);
+
+        let base_ty = self
+            .current_block_data
+            .value_types
+            .get(&base)
+            .cloned()
+            .expect("lower_index_addr: base value has no known type");
+
+        let elem_ty = match &base_ty {
+            SsaType::Pointer(inner) => (**inner).clone(),
+            SsaType::Array(inner, _) => (**inner).clone(),
+            SsaType::Slice(inner) => (**inner).clone(),
+            other => panic!("lower_index_addr: cannot index into {:?}", other),
+        };
+
+        let elem_size = ir::layout::sizeof_ssa(&elem_ty, TargetInfo { ptr_bytes: 8 })
+            .expect("lower_index_addr: element type has no known size")
+            as i64;
+
+        let size_v = self.current_block_data.fresh_value();
+        self.emit(Instruction::Const {
+            dest: size_v,
+            ty: SsaType::I64,
+            value: Operand::ConstInt(elem_size),
+        });
+        self.current_block_data
+            .value_types
+            .insert(size_v, SsaType::I64);
+
+        let offset_v = self.current_block_data.fresh_value();
+        self.emit(Instruction::Binary {
+            dest: offset_v,
+            op: BinOp::Mul,
+            left: Operand::Value(idx),
+            right: Operand::Value(size_v),
+        });
+        self.current_block_data
+            .value_types
+            .insert(offset_v, SsaType::I64);
+
+        let addr_v = self.current_block_data.fresh_value();
+        self.emit(Instruction::Binary {
+            dest: addr_v,
+            op: BinOp::Add,
+            left: Operand::Value(base),
+            right: Operand::Value(offset_v),
+        });
+        self.current_block_data
+            .value_types
+            .insert(addr_v, SsaType::Pointer(Box::new(elem_ty.clone())));
+
+        (addr_v, elem_ty)
+    }
+
+    fn lower_index(&mut self, object: &HirExpr<'a, 'bump>, index: &HirExpr<'a, 'bump>) -> Value {
+        let (addr_v, elem_ty) = self.lower_index_addr(object, index);
+
+        let dest = self.current_block_data.fresh_value();
+        self.emit(Instruction::Load {
+            dest,
+            ptr: Operand::Value(addr_v),
+        });
+        self.current_block_data.value_types.insert(dest, elem_ty);
+
+        dest
     }
 
     fn try_flatten_module_path(&self, expr: &HirExpr<'a, 'bump>) -> Option<StrId> {
@@ -408,6 +478,177 @@ where
         )
     }
 
+    fn lower_array_literal(&mut self, elements: &[HirExpr<'a, 'bump>]) -> Value {
+        let elem_values: Vec<Value> = elements.iter().map(|e| self.lower_expr(e)).collect();
+
+        let elem_ty = self
+            .current_block_data
+            .value_types
+            .get(&elem_values[0])
+            .cloned()
+            .expect("lower_array_literal: element value has no known type");
+
+        let elem_size = ir::layout::sizeof_ssa(&elem_ty, TargetInfo { ptr_bytes: 8 })
+            .expect("lower_array_literal: element type has no known size")
+            as i64;
+
+        let arr_v = self.current_block_data.fresh_value();
+        self.emit(Instruction::StackAlloc {
+            dest: arr_v,
+            ty: elem_ty.clone(),
+            count: elem_values.len(),
+        });
+        self.current_block_data
+            .value_types
+            .insert(arr_v, SsaType::Pointer(Box::new(elem_ty.clone())));
+
+        for (i, val) in elem_values.into_iter().enumerate() {
+            let addr_v = self.current_block_data.fresh_value();
+            self.emit(Instruction::FieldAddr {
+                dest: addr_v,
+                base: Operand::Value(arr_v),
+                offset: (i as i64 * elem_size) as usize,
+            });
+            self.current_block_data
+                .value_types
+                .insert(addr_v, SsaType::Pointer(Box::new(elem_ty.clone())));
+
+            self.emit(Instruction::Store {
+                ptr: Operand::Value(addr_v),
+                value: Operand::Value(val),
+            });
+        }
+
+        arr_v
+    }
+
+    /// Recursively materializes a zero value of `ssa_ty`. For scalars this is
+    /// a plain `Const 0`. For arrays/structs/tuples, it stack-allocates and
+    /// stores a recursively-zeroed value into every field/element. Typechecker
+    /// guarantees (`is_zeroable`) that this is only ever called on types where
+    /// this is semantically valid, bool/char/enum/interface/pointer types
+    /// never reach here.
+    fn lower_zeroed_value(&mut self, ssa_ty: &SsaType) -> Value {
+        match ssa_ty {
+            SsaType::Array(inner, len) => {
+                let dest = self.current_block_data.fresh_value();
+                self.emit(Instruction::StackAlloc {
+                    dest,
+                    ty: (**inner).clone(),
+                    count: *len,
+                });
+                self.current_block_data
+                    .value_types
+                    .insert(dest, SsaType::Pointer(inner.clone()));
+
+                let elem_size = ir::layout::sizeof_ssa(inner, TargetInfo { ptr_bytes: 8 })
+                    .expect("lower_zeroed_value: element type has no known size")
+                    as i64;
+
+                for i in 0..*len {
+                    let zero_v = self.lower_zeroed_value(inner);
+                    let addr_v = self.current_block_data.fresh_value();
+                    self.emit(Instruction::FieldAddr {
+                        dest: addr_v,
+                        base: Operand::Value(dest),
+                        offset: (i as i64 * elem_size) as usize,
+                    });
+                    self.current_block_data
+                        .value_types
+                        .insert(addr_v, SsaType::Pointer(inner.clone()));
+                    self.emit(Instruction::Store {
+                        ptr: Operand::Value(addr_v),
+                        value: Operand::Value(zero_v),
+                    });
+                }
+
+                dest
+            }
+
+            SsaType::User(_, field_types) => {
+                let dest = self.current_block_data.fresh_value();
+                self.emit(Instruction::StackAlloc {
+                    dest,
+                    ty: ssa_ty.clone(),
+                    count: 1,
+                });
+                self.current_block_data
+                    .value_types
+                    .insert(dest, SsaType::Pointer(Box::new(ssa_ty.clone())));
+
+                let mut offset = 0usize;
+                for field_ty in field_types {
+                    let zero_v = self.lower_zeroed_value(field_ty);
+                    let addr_v = self.current_block_data.fresh_value();
+                    self.emit(Instruction::FieldAddr {
+                        dest: addr_v,
+                        base: Operand::Value(dest),
+                        offset,
+                    });
+                    self.current_block_data
+                        .value_types
+                        .insert(addr_v, SsaType::Pointer(Box::new(field_ty.clone())));
+                    self.emit(Instruction::Store {
+                        ptr: Operand::Value(addr_v),
+                        value: Operand::Value(zero_v),
+                    });
+                    offset += ir::layout::sizeof_ssa(field_ty, TargetInfo { ptr_bytes: 8 })
+                        .expect("lower_zeroed_value: field type has no known size");
+                }
+
+                dest
+            }
+
+            SsaType::Tuple(elem_types) => {
+                let dest = self.current_block_data.fresh_value();
+                self.emit(Instruction::StackAlloc {
+                    dest,
+                    ty: ssa_ty.clone(),
+                    count: 1,
+                });
+                self.current_block_data
+                    .value_types
+                    .insert(dest, SsaType::Pointer(Box::new(ssa_ty.clone())));
+
+                let mut offset = 0usize;
+                for elem_ty in elem_types {
+                    let zero_v = self.lower_zeroed_value(elem_ty);
+                    let addr_v = self.current_block_data.fresh_value();
+                    self.emit(Instruction::FieldAddr {
+                        dest: addr_v,
+                        base: Operand::Value(dest),
+                        offset,
+                    });
+                    self.current_block_data
+                        .value_types
+                        .insert(addr_v, SsaType::Pointer(Box::new(elem_ty.clone())));
+                    self.emit(Instruction::Store {
+                        ptr: Operand::Value(addr_v),
+                        value: Operand::Value(zero_v),
+                    });
+                    offset += ir::layout::sizeof_ssa(elem_ty, TargetInfo { ptr_bytes: 8 })
+                        .expect("lower_zeroed_value: tuple element type has no known size");
+                }
+
+                dest
+            }
+
+            // Scalars: I8..F64 etc.
+            _ => {
+                let dest = self.current_block_data.fresh_value();
+                self.emit(Instruction::Const {
+                    dest,
+                    ty: ssa_ty.clone(),
+                    value: Operand::ConstInt(0),
+                });
+                self.current_block_data
+                    .value_types
+                    .insert(dest, ssa_ty.clone());
+                dest
+            }
+        }
+    }
+
     fn lower_expr_assignment(
         &mut self,
         target: &HirExpr<'a, 'bump>,
@@ -429,6 +670,50 @@ where
                 field,
                 span: _,
             } => self.handle_field_access(op, rhs, object, *field),
+
+            HirExpr::Deref { expr, span: _ } => {
+                let ptr = self.lower_expr(expr);
+                self.handle_deref_assign(ptr, rhs, op)
+            }
+
+            HirExpr::Index { object, index, .. } => {
+                let (addr_v, elem_ty) = self.lower_index_addr(object, index);
+
+                let rhs_v = match op {
+                    AssignmentOperator::Assign => self.lower_expr(value),
+                    _ => {
+                        // compound assignment: arr[i] += x  =>  load, binop, store
+                        let cur = self.current_block_data.fresh_value();
+                        self.emit(Instruction::Load {
+                            dest: cur,
+                            ptr: Operand::Value(addr_v),
+                        });
+                        self.current_block_data
+                            .value_types
+                            .insert(cur, elem_ty.clone());
+
+                        let rhs = self.lower_expr(value);
+                        let result = self.current_block_data.fresh_value();
+                        self.emit(Instruction::Binary {
+                            dest: result,
+                            op: assign_op_to_bin_op(op), // strips the "Assign" suffix to base op
+                            left: Operand::Value(cur),
+                            right: Operand::Value(rhs),
+                        });
+                        self.current_block_data
+                            .value_types
+                            .insert(result, elem_ty.clone());
+                        result
+                    }
+                };
+
+                self.emit(Instruction::Store {
+                    ptr: Operand::Value(addr_v),
+                    value: Operand::Value(rhs_v),
+                });
+
+                rhs_v
+            }
 
             _ => unimplemented!("Assignment target {:?} not yet supported", target),
         }
@@ -857,6 +1142,102 @@ where
         }
     }
 
+    fn lower_place_addr(&mut self, expr: &HirExpr<'a, 'bump>) -> (Value, SsaType) {
+        match expr {
+            HirExpr::Index {
+                object,
+                index,
+                span: _,
+            } => self.lower_index_addr(object, index),
+
+            HirExpr::FieldAccess {
+                object,
+                field,
+                span: _,
+            }
+            | HirExpr::Get {
+                object,
+                field,
+                span: _,
+            } => self.lower_field_addr(object, *field),
+
+            HirExpr::Deref {
+                expr: inner,
+                span: _,
+            } => {
+                // &*ptr == ptr; no load needed, the pointer value already is
+                // the address.
+                let ptr = self.lower_expr(inner);
+                let pointee_ty = match self.current_block_data.value_types.get(&ptr).cloned() {
+                    Some(SsaType::Pointer(inner_ty)) => *inner_ty,
+                    other => panic!("lower_place_addr: Deref of non-pointer {:?}", other),
+                };
+                (ptr, pointee_ty)
+            }
+
+            // Whole-variable refs: if the value is already a pointer (arrays,
+            // structs, anything StackAlloc'd), that pointer IS the address.
+            // Scalar locals that were never stack-allocated have no address
+            // to take.
+            other => {
+                let val = self.lower_expr(other);
+                match self.current_block_data.value_types.get(&val).cloned() {
+                    Some(SsaType::Pointer(inner_ty)) => (val, *inner_ty),
+                    Some(ty) => panic!(
+                        "lower_place_addr: cannot take address of a non-pointer-backed \
+                         value of type {:?}, scalar locals must be stack-allocated to \
+                         be referenced, not yet implemented",
+                        ty
+                    ),
+                    None => panic!("lower_place_addr: value has no known type"),
+                }
+            }
+        }
+    }
+
+    fn lower_field_addr(&mut self, object: &HirExpr<'a, 'bump>, field: StrId) -> (Value, SsaType) {
+        let obj_val = self.lower_expr_as_receiver(object);
+
+        let cls_name = match self.current_block_data.value_types.get(&obj_val) {
+            Some(SsaType::User(name, _)) => *name,
+            Some(SsaType::Pointer(inner)) => match inner.as_ref() {
+                SsaType::User(name, _) => *name,
+                _ => panic!("lower_field_addr: pointer to non-User type: {:?}", inner),
+            },
+            other => panic!(
+                "lower_field_addr: could not determine object's class: {:?}",
+                other
+            ),
+        };
+
+        let offsets = self
+            .class_field_offsets
+            .get(&cls_name)
+            .unwrap_or_else(|| panic!("Unknown class {} in FieldAccess", cls_name));
+        let offset = *offsets
+            .get(&field)
+            .unwrap_or_else(|| panic!("Unknown field {} on class {}", field, cls_name));
+
+        let field_ty = self
+            .classes
+            .get(&cls_name)
+            .and_then(|hc| hc.fields.iter().find(|f| f.name == field))
+            .map(|f| lower_type_hir(&f.field_type))
+            .unwrap_or(SsaType::I64);
+
+        let addr = self.current_block_data.fresh_value();
+        self.emit(Instruction::FieldAddr {
+            dest: addr,
+            base: Operand::Value(obj_val),
+            offset,
+        });
+        self.current_block_data
+            .value_types
+            .insert(addr, SsaType::Pointer(Box::new(field_ty.clone())));
+
+        (addr, field_ty)
+    }
+
     fn lower_method_call(
         &mut self,
         object: &HirExpr<'a, 'bump>,
@@ -1162,6 +1543,58 @@ where
     #[inline(always)]
     fn new_value(&mut self) -> Value {
         self.current_block_data.fresh_value()
+    }
+
+    fn handle_deref_assign(&mut self, ptr: Value, rhs: Value, op: AssignmentOperator) -> Value {
+        // Load the current value if this is a compound assignment.
+        let value_to_store = match op {
+            AssignmentOperator::Assign => rhs,
+
+            _ => {
+                let current = self.new_value();
+
+                self.emit(Instruction::Load {
+                    dest: current,
+                    ptr: Operand::Value(ptr),
+                });
+
+                // Record the loaded type.
+                if let Some(SsaType::Pointer(inner)) =
+                    self.current_block_data.value_types.get(&ptr).cloned()
+                {
+                    self.current_block_data.value_types.insert(current, *inner);
+                }
+
+                let dest = self.new_value();
+                let bin_op = assign_op_to_bin_op(op);
+
+                self.emit(Instruction::Binary {
+                    dest,
+                    op: bin_op,
+                    left: Operand::Value(current),
+                    right: Operand::Value(rhs),
+                });
+
+                let result_ty = self
+                    .current_block_data
+                    .value_types
+                    .get(&current)
+                    .cloned()
+                    .or_else(|| self.current_block_data.value_types.get(&rhs).cloned())
+                    .unwrap_or(SsaType::I64);
+
+                self.current_block_data.value_types.insert(dest, result_ty);
+
+                dest
+            }
+        };
+
+        self.emit(Instruction::Store {
+            ptr: Operand::Value(ptr),
+            value: Operand::Value(value_to_store),
+        });
+
+        value_to_store
     }
 }
 

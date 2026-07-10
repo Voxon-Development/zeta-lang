@@ -48,6 +48,7 @@ pub enum TypeErrorKind {
     IllegalThisParam {
         func_name: String,
     },
+    TypeCannotBeInferred,
 }
 
 impl TypeErrorKind {
@@ -134,6 +135,7 @@ impl fmt::Display for TypeErrorKind {
                 "Illegal this parameter: free function {} contains `this`",
                 func_name
             ),
+            TypeErrorKind::TypeCannotBeInferred => write!(f, "Type cannot be inferre."),
         }
     }
 }

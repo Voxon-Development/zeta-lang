@@ -220,7 +220,6 @@ where
         let mut value_types = HashMap::with_hasher(FxHashBuilder);
 
         if let Some(params) = hir_fn.params {
-            // allocate params
             Self::insert_existing_params_with_class(
                 context.clone(),
                 &mut func,
@@ -232,7 +231,6 @@ where
             );
         }
 
-        // create entry block
         let entry_bb = BlockId(next_block);
         next_block += 1;
         func.entry = entry_bb;

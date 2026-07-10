@@ -326,6 +326,7 @@ pub enum TokenKind {
     Blocking,
     Await,
     Dyn,
+    Undefined,
 
     // ===== Types =====
     U8,
@@ -563,6 +564,7 @@ impl fmt::Display for TokenKind {
             Await => "await",
             By => "by",
             Catch => "catch",
+            Undefined => "undefined",
         };
         f.write_str(s)
     }

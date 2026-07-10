@@ -153,6 +153,21 @@ impl CraneliftBackend {
         func: &Function,
     ) {
         match inst {
+            Instruction::Undef { dest, ty } => {
+                let clif_ty = clif_type(ty);
+                let var = builder.declare_var(clif_ty);
+
+                let val = if clif_ty == types::F32 {
+                    builder.ins().f32const(0.0)
+                } else if clif_ty == types::F64 {
+                    builder.ins().f64const(0.0)
+                } else {
+                    builder.ins().iconst(clif_ty, 0)
+                };
+
+                builder.def_var(var, val);
+                var_map.insert(*dest, var);
+            }
             Instruction::Const { dest, ty, value } => {
                 let clif_ty = clif_type(ty);
                 let var = builder.declare_var(clif_ty);
@@ -422,13 +437,19 @@ impl CraneliftBackend {
                     builder.ins().return_(&[rv]);
                 }
             }
-            Instruction::StackAlloc { dest, ty, count: _ } => {
-                let size_bytes = sizeof_ssa(ty, self.target).unwrap();
+            Instruction::StackAlloc { dest, ty, count } => {
+                let elem_size = sizeof_ssa(ty, self.target)
+                    .unwrap_or_else(|_| panic!("StackAlloc: unknown size for {:?}", ty));
+
+                let size_bytes = match ty {
+                    SsaType::Array(_, _) => elem_size,
+                    _ => elem_size * count,
+                };
 
                 let ptr = cranelift_intrinsics::stack_alloc(builder, &mut self.module, size_bytes);
 
-                let clif_ty = clif_type(ty);
-                let var = builder.declare_var(clif_ty);
+                // stack_alloc always yields a pointer, regardless of `ty`.
+                let var = builder.declare_var(types::I64);
                 builder.def_var(var, ptr);
 
                 var_map.insert(*dest, var);
@@ -448,7 +469,7 @@ impl CraneliftBackend {
                     .expect("LoadField: dest type unknown");
                 let clif_ty = clif_type(field_ty);
 
-                let offset_bytes = (*offset as i64) * (self.target.ptr_bytes as i64);
+                let offset_bytes = *offset as i64;
                 let off_val = builder.ins().iconst(types::I64, offset_bytes);
                 let addr = builder.ins().iadd(base_val, off_val);
 
@@ -481,7 +502,7 @@ impl CraneliftBackend {
                     _ => unimplemented!("StoreField: unsupported value operand"),
                 };
 
-                let offset_bytes = (*offset as i64) * (self.target.ptr_bytes as i64);
+                let offset_bytes = *offset as i64;
                 let off_val = builder.ins().iconst(types::I64, offset_bytes);
                 let addr = builder.ins().iadd(base_val, off_val);
 

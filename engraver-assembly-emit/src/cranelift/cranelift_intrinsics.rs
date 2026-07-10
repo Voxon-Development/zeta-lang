@@ -3,7 +3,7 @@ use cranelift_codegen::ir::{
     Function as ClFunction, InstBuilder, MemFlags, Signature, StackSlotData, StackSlotKind, Type,
     Value, types,
 };
-use cranelift_frontend::{FuncInstBuilder, FunctionBuilder};
+use cranelift_frontend::FunctionBuilder;
 use ir::hir::HirType;
 use ir::layout::TargetInfo;
 use ir::layout::{layout_of_ssa, sizeof_ssa};
@@ -116,7 +116,7 @@ pub fn stack_alloc(builder: &mut FunctionBuilder, module: &dyn Module, size_byte
         0,
     ));
 
-    FuncInstBuilder::stack_addr(builder.ins(), ptr_ty, slot, 0)
+    builder.ins().stack_addr(ptr_ty, slot, 0)
 }
 
 #[inline(always)]

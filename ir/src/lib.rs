@@ -1,5 +1,8 @@
+pub mod alias_reasoner_pass;
 pub mod analysis_context;
 pub mod ast;
+pub mod borrow_checker;
+pub mod borrow_checking_pass;
 pub mod diagnostics_context;
 pub mod errors;
 pub mod hir;

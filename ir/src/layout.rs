@@ -61,7 +61,7 @@ pub fn layout_of_ssa(ty: &SsaType, target: TargetInfo) -> Result<Layout, LayoutE
         SsaType::I32 | SsaType::U32 | SsaType::F32 => Ok(Layout { size: 4, align: 4 }),
         SsaType::I64 | SsaType::U64 | SsaType::F64 => Ok(Layout { size: 8, align: 8 }),
 
-        SsaType::Slice | SsaType::Dyn => Err(LayoutError::Unsized("unsized type")),
+        SsaType::Slice(_) | SsaType::Dyn => Err(LayoutError::Unsized("unsized type")),
 
         // Tuples/structs: sequential fields with padding between and at end to struct align.
         SsaType::Tuple(fields) | SsaType::User(_, fields) => {
@@ -139,6 +139,10 @@ pub fn layout_of_ssa(ty: &SsaType, target: TargetInfo) -> Result<Layout, LayoutE
                 })
             }
         }
+        SsaType::Array(ssa_type, length) => Ok(Layout {
+            size: sizeof_ssa(ssa_type, TargetInfo { ptr_bytes: 8 })? * length,
+            align: 8,
+        }),
     }
 }
 
@@ -174,13 +178,10 @@ pub fn layout_of_hir(ty: &HirType, target: TargetInfo) -> Result<Layout, LayoutE
         }),
 
         // Pointers are always ptr_bytes in size
-        HirType::SafePointer(inner) | HirType::UnsafePointer(inner) => {
-            let inner_layout = layout_of_hir(inner, target)?;
-            Ok(Layout {
-                size: inner_layout.size,
-                align: inner_layout.align,
-            })
-        }
+        HirType::SafePointer(_) | HirType::UnsafePointer(_) => Ok(Layout {
+            size: target.ptr_bytes as usize,
+            align: target.ptr_bytes as usize,
+        }),
 
         HirType::Struct(_, _) | HirType::DynInterface(_, _) | HirType::Enum(_, _) => Ok(Layout {
             size: target.ptr_bytes as usize,
@@ -222,6 +223,18 @@ pub fn layout_of_hir(ty: &HirType, target: TargetInfo) -> Result<Layout, LayoutE
                 .iter()
                 .filter_map(|t| layout_of_hir(t, target).ok())
                 .fold(0, |layout_one, layout_two| layout_one + layout_two.size),
+            align: target.ptr_bytes as usize,
+        }),
+        HirType::Array(inner, len) => {
+            let inner = layout_of_hir(inner, target)?;
+
+            Ok(Layout {
+                size: inner.size * (*len as usize),
+                align: inner.align,
+            })
+        }
+        HirType::Slice(_) => Ok(Layout {
+            size: (target.ptr_bytes * 2) as usize,
             align: target.ptr_bytes as usize,
         }),
     }

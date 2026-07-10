@@ -210,7 +210,6 @@ where
         dep_graph.link_stdlib_to_user(stdlib_idx, &user_indices);
     }
 
-    // Surface unresolved imports as warnings for now
     for unresolved in &dep_graph.unresolved_imports {
         eprintln!(
             "Warning: unresolved import in module {}: {:?}",

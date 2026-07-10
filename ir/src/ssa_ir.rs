@@ -89,8 +89,9 @@ pub enum SsaType {
     Pointer(Box<SsaType>), // Pointer to another type
 
     // Dynamically sized types
-    Dyn,   // Trait object (fat pointer)
-    Slice, // Slice (fat pointer)
+    Dyn,                        // Trait object (fat pointer)
+    Slice(Box<SsaType>),        // Slice (fat pointer)
+    Array(Box<SsaType>, usize), // Array
     Char,
 
     Nullable(Box<SsaType>),
@@ -107,6 +108,11 @@ pub enum Instruction {
         op: BinOp,
         left: Operand,
         right: Operand,
+    },
+
+    Undef {
+        dest: Value,
+        ty: SsaType,
     },
 
     /// Unary operation: dest = OP operand

@@ -495,6 +495,13 @@ where
         member: StrId,
         span: SourceSpan<'a>,
     },
+    ArrayLiteral {
+        elements: &'bump [Expr<'a, 'bump>],
+        span: SourceSpan<'a>,
+    },
+    Undefined {
+        span: SourceSpan<'a>,
+    },
 }
 
 /// A closure/anonymous-function parameter. Unlike `NormalParam`, the type

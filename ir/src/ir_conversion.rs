@@ -76,6 +76,10 @@ pub fn lower_type_hir(ty: &HirType) -> SsaType {
         HirType::Dyn { bounds: _ } => todo!(),
         HirType::Unknown => todo!(),
         HirType::Tuple(args) => SsaType::Tuple(args.iter().map(lower_type_hir).collect()),
+        HirType::Array(hir_type, length) => {
+            SsaType::Array(Box::new(lower_type_hir(hir_type)), *length)
+        }
+        HirType::Slice(hir_type) => SsaType::Slice(Box::new(lower_type_hir(hir_type))),
     }
 }
 

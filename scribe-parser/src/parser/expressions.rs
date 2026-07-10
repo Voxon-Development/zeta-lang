@@ -234,6 +234,35 @@ where
                     span: tok.span,
                 })
             }
+            TokenKind::Undefined => {
+                self.cursor.advance();
+                Ok(Expr::Undefined { span: tok.span })
+            }
+
+            TokenKind::LBracket => {
+                self.cursor.advance();
+
+                let mut elements = Vec::new_in(self.bump);
+
+                if self.cursor.peek() != TokenKind::RBracket {
+                    loop {
+                        let elem = self.parse_expr_inner(0, true)?;
+                        elements.push(elem);
+
+                        if !self.cursor.consume(TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                }
+
+                let end_span = self.cursor.peek_token().span;
+                self.cursor.expect(TokenKind::RBracket)?;
+
+                Ok(Expr::ArrayLiteral {
+                    elements: self.bump.alloc_slice_copy(&elements),
+                    span: tok.span.merge(end_span),
+                })
+            }
             TokenKind::Decimal => {
                 self.cursor.advance();
                 let text = tok.text.unwrap_or_default();

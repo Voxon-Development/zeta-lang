@@ -29,10 +29,11 @@ fn clif_type(ty: &SsaType) -> Type {
         SsaType::Tuple(_) => types::I64,   // Tuples passed by reference
         SsaType::Pointer(_) => types::I64, // Pointers are 64-bit
         SsaType::Dyn => types::I64,        // Trait object (fat pointer)
-        SsaType::Slice => types::I64,      // Slice (fat pointer)
+        SsaType::Slice(_) => types::I64,   // Slice (fat pointer)
         SsaType::Null => types::I64,
         SsaType::Char => types::I32,
         SsaType::Interface(_str_id) => todo!(),
         SsaType::Nullable(_ssa_type) => types::I64, // pointer
+        SsaType::Array(_, _) => types::I64,         // pointer
     }
 }

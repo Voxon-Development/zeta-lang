@@ -609,6 +609,7 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         // Special case here, not an ident or a keyword but best solution (for now)
         // Is to put this here, just to ease the mind.
         "_" => TokenKind::Underscore,
+        "undefined" => TokenKind::Undefined,
         "true" => TokenKind::BooleanTrue,
         "false" => TokenKind::BooleanFalse,
         "null" => TokenKind::Null,

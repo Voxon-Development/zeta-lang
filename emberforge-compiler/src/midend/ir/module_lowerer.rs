@@ -229,9 +229,24 @@ where
 
     fn compute_field_offsets(&mut self, hir_class: &HirStruct<'a, 'bump>) {
         let mut offsets = HashMap::with_hasher(FxHashBuilder);
+        let mut current_offset = 0usize;
 
-        for (i, f) in hir_class.fields.iter().enumerate() {
-            offsets.insert(f.name, i);
+        for f in hir_class.fields.iter() {
+            let field_ssa_ty = lower_type_hir(&f.field_type);
+            let align =
+                ir::layout::alignof_ssa(&field_ssa_ty, ir::layout::TargetInfo { ptr_bytes: 8 })
+                    .unwrap_or_else(|e| {
+                        panic!("failed to compute alignment for field {}: {:?}", f.name, e)
+                    });
+
+            current_offset = ir::layout::round_up_to_align(current_offset, align);
+            offsets.insert(f.name, current_offset);
+
+            let size =
+                ir::layout::sizeof_ssa(&field_ssa_ty, ir::layout::TargetInfo { ptr_bytes: 8 })
+                    .ok()
+                    .unwrap_or_else(|| panic!("failed to compute size for field {}", f.name));
+            current_offset += size;
         }
 
         self.class_field_offsets.insert(hir_class.name, offsets);

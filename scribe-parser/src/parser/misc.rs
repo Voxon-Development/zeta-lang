@@ -4,8 +4,8 @@ use ir::ast::{
     Visibility,
 };
 use ir::errors::error::{DiagnosticError, ParseErrorKind};
+use ir::tokens::TokenKind;
 use ir::tokens::TokenKind::LBracket;
-use ir::tokens::{Token, TokenKind};
 use zetaruntime::bump::GrowableBump;
 
 impl<'a, 'bump> DescentParser<'a, 'bump>
@@ -265,12 +265,16 @@ where
 
     pub(crate) fn parse_type(&mut self) -> Result<Type<'a, 'bump>, DiagnosticError<'a>> {
         match self.cursor.peek() {
+            TokenKind::LBracket => {
+                let kind = self.parse_bracket_type_kind()?;
+                let nullable = self.cursor.consume(TokenKind::Question);
+                return Ok(Type { kind, nullable });
+            }
             TokenKind::BitAnd => {
                 self.cursor.advance();
 
-                let token = self.cursor.peek_token();
-                if token.kind == LBracket {
-                    let kind: TypeKind<'a, 'bump> = self.process_type_kind_after_lbracket(token)?;
+                if self.cursor.peek() == LBracket {
+                    let kind = self.parse_bracket_type_kind()?;
                     if let TypeKind::UnsafePointer { .. } = kind {
                         todo!("Handle error when & and [*] are mixed together.")
                     }
@@ -289,13 +293,10 @@ where
 
                     if is_dyn {
                         let mut bounds = Vec::new_in(self.bump);
-
                         bounds.push(self.parse_core_type()?);
-
                         while self.cursor.consume(TokenKind::Add) {
                             bounds.push(self.parse_core_type()?);
                         }
-
                         return Ok(Type {
                             kind: TypeKind::Ref {
                                 inner: self.bump.alloc_value(Type {
@@ -310,8 +311,8 @@ where
                         });
                     }
 
+                    // parse_core_type now handles `[` directly, so `&mut [4]i64` works.
                     let inner = self.parse_core_type()?;
-
                     let nullable = self.cursor.consume(TokenKind::Question);
 
                     return Ok(Type {
@@ -354,12 +355,12 @@ where
         Ok(ty)
     }
 
-    fn process_type_kind_after_lbracket(
+    /// Assumes `[` has already been consumed. Parses `]inner`, `N]inner`, or `*]mut/const inner`.
+    fn parse_bracket_type_kind_inner(
         &mut self,
-        token: Token<'a>,
     ) -> Result<TypeKind<'a, 'bump>, DiagnosticError<'a>> {
-        self.cursor.advance();
-        // can this be an array, slice or unsafe pointer?
+        let token = self.cursor.peek_token();
+
         if token.kind == TokenKind::RBracket {
             self.cursor.advance();
             let inner = self.parse_core_type()?;
@@ -368,8 +369,8 @@ where
         } else if token.kind == TokenKind::Number {
             self.cursor.advance();
             self.cursor.expect(TokenKind::RBracket)?;
-            // SAFETY: a token with kind TokenKind::Number always comes with a text to parse.
-            // Can this be optimized to be inline-parsed at the lexer and be stored in an ADT instead?
+
+            // SAFETY: a token with kind TokenKind::Number always comes with text.
             let number_unparsed = unsafe { token.text.unwrap_unchecked() };
             let length = number_unparsed.as_str().parse::<usize>().map_err(|_| {
                 DiagnosticError::new(
@@ -380,6 +381,7 @@ where
                     self.cursor.peek_token().span,
                 )
             })?;
+
             let inner = self.parse_core_type()?;
             let inner_ref = self.bump.alloc_value(inner);
             return Ok(TypeKind::Array {
@@ -393,7 +395,6 @@ where
             let mutability_token = self.cursor.expect_or(TokenKind::Mut, TokenKind::Const)?;
             let mutability_state = match mutability_token.kind {
                 TokenKind::Mut => MutabilityState::Mut,
-                // I wish rust knew that only Mut and Const is possible here :(
                 _ => MutabilityState::Const,
             };
 
@@ -412,6 +413,12 @@ where
                 self.cursor.peek_token().span,
             ));
         }
+    }
+
+    /// Consumes `[` itself, then delegates. Use this when `[` hasn't been consumed yet.
+    fn parse_bracket_type_kind(&mut self) -> Result<TypeKind<'a, 'bump>, DiagnosticError<'a>> {
+        self.cursor.expect(TokenKind::LBracket)?;
+        self.parse_bracket_type_kind_inner()
     }
 
     fn parse_core_type(&mut self) -> Result<Type<'a, 'bump>, DiagnosticError<'a>> {
@@ -439,6 +446,8 @@ where
             TokenKind::This => return Ok(Type::this()),
 
             TokenKind::Underscore => return Ok(Type::infer()),
+
+            TokenKind::LBracket => self.parse_bracket_type_kind_inner()?,
 
             TokenKind::Mul => {
                 let mutability_token = self.cursor.expect_or(TokenKind::Mut, TokenKind::Const)?;

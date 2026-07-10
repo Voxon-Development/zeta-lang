@@ -10,6 +10,22 @@ use ir::span::SourceSpan;
 use std::collections::HashMap;
 
 impl<'a, 'bump> HirLowerer<'a, 'bump> {
+    pub(super) fn lower_expr_expected(
+        &self,
+        expr: &Expr<'a, 'bump>,
+        expected_ty: HirType<'a, 'bump>,
+    ) -> HirExpr<'a, 'bump> {
+        if let Expr::Undefined { span } = expr {
+            // If the type is Unknown, the type checker will be in charge of nagging the users
+            return HirExpr::Undefined {
+                span: *span,
+                ty: expected_ty,
+            };
+        }
+
+        self.lower_expr(expr)
+    }
+
     pub(super) fn lower_expr(&self, expr: &Expr<'a, 'bump>) -> HirExpr<'a, 'bump> {
         match expr {
             Expr::Null { span } => HirExpr::Null(*span),
@@ -308,13 +324,11 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
 
             Expr::ArrayIndex { expr, index, span } => {
                 let array_expr = self.lower_expr(expr);
-                let _index_expr = self.lower_expr(index);
+                let index_expr = self.lower_expr(index);
 
-                // TODO: Implement properly
-                // Array indexing is represented as a Get operation
-                HirExpr::Get {
-                    object: self.ctx.bump.alloc_value(array_expr),
-                    field: StrId(self.ctx.context.intern("get")),
+                HirExpr::Index {
+                    object: self.ctx.bump.alloc_value_immutable(array_expr),
+                    index: self.ctx.bump.alloc_value_immutable(index_expr),
                     span: *span,
                 }
             }
@@ -383,6 +397,20 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 });
                 HirExpr::ModuleAccess(access)
             }
+            Expr::ArrayLiteral { elements, span } => HirExpr::ArrayLiteral {
+                elements: self.ctx.bump.alloc_slice_immutable(
+                    elements
+                        .iter()
+                        .map(|t| self.lower_expr(t))
+                        .collect::<Vec<_>>()
+                        .as_slice(),
+                ),
+                span: *span,
+            },
+            Expr::Undefined { span } => HirExpr::Undefined {
+                span: *span,
+                ty: HirType::Unknown,
+            },
         }
     }
 
@@ -566,6 +594,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             HirExpr::Decimal(_, _) => HirType::F64,
             HirExpr::Boolean(_, _) => HirType::Boolean,
             HirExpr::String(_, _) => HirType::String,
+            HirExpr::Undefined { span: _, ty } => *ty,
 
             HirExpr::Ident(name, _) => self
                 .ctx
@@ -1031,12 +1060,13 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 panic!("Infer type reached HIR lowering")
             }
 
-            TypeKind::Array { .. } => {
-                panic!("Array types not yet represented in HIR")
-            }
+            TypeKind::Array { inner, length } => HirType::Array(
+                self.ctx.bump.alloc_value_immutable(self.lower_type(inner)),
+                *length,
+            ),
 
-            TypeKind::Slice { .. } => {
-                panic!("Slice types not yet represented in HIR")
+            TypeKind::Slice { inner } => {
+                HirType::Slice(self.ctx.bump.alloc_value_immutable(self.lower_type(inner)))
             }
 
             TypeKind::Char => HirType::Char,
