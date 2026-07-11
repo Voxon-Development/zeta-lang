@@ -71,6 +71,7 @@ pub fn lower_type_hir(ty: &HirType) -> SsaType {
         HirType::Ref {
             inner,
             mutability_state: _,
+            provenance: _,
         } => SsaType::Pointer(Box::new(lower_type_hir(inner))),
         HirType::Nullable(hir_type) => SsaType::Nullable(Box::new(lower_type_hir(hir_type))),
         HirType::Dyn { bounds: _ } => todo!(),
@@ -80,6 +81,7 @@ pub fn lower_type_hir(ty: &HirType) -> SsaType {
             SsaType::Array(Box::new(lower_type_hir(hir_type)), *length)
         }
         HirType::Slice(hir_type) => SsaType::Slice(Box::new(lower_type_hir(hir_type))),
+        HirType::OwnedPointer(_hir_type) => todo!(),
     }
 }
 

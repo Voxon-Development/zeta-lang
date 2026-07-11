@@ -557,6 +557,61 @@ where
     pub nullable: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProvenanceRoot {
+    Var(StrId),
+    ThisRoot,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProvenancePathSegment {
+    Field(StrId),
+    Deref,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProvenanceAnnotation<'bump> {
+    pub root: ProvenanceRoot,
+    pub path: &'bump [ProvenancePathSegment],
+}
+
+impl fmt::Display for ProvenanceRoot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProvenanceRoot::Var(name) => write!(f, "{name}"),
+            ProvenanceRoot::ThisRoot => write!(f, "self"),
+        }
+    }
+}
+
+impl fmt::Display for ProvenancePathSegment {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProvenancePathSegment::Field(field) => write!(f, ".{field}"),
+            ProvenancePathSegment::Deref => write!(f, "*"),
+        }
+    }
+}
+
+impl<'bump> fmt::Display for ProvenanceAnnotation<'bump> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.root)?;
+
+        for segment in self.path {
+            match segment {
+                ProvenancePathSegment::Field(field) => {
+                    write!(f, ".{field}")?;
+                }
+                ProvenancePathSegment::Deref => {
+                    write!(f, "*")?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TypeKind<'a, 'bump>
 where
@@ -608,9 +663,13 @@ where
     Ref {
         inner: &'a Type<'a, 'bump>,
         mutability_state: MutabilityState,
+        provenance: Option<ProvenanceAnnotation<'bump>>,
     },
     Dyn {
         bounds: &'bump [Type<'a, 'bump>],
+    },
+    OwnedPointer {
+        inner: &'bump Type<'a, 'bump>,
     },
 }
 
@@ -1112,12 +1171,19 @@ impl<'a, 'bump> Display for Type<'a, 'bump> {
             TypeKind::Ref {
                 inner,
                 mutability_state,
+                provenance,
             } => {
-                if let MutabilityState::Mut = mutability_state {
-                    write!(f, "&mut {}", inner)
-                } else {
-                    write!(f, "&{}", inner)
+                write!(f, "&")?;
+
+                if let Some(provenance) = provenance {
+                    write!(f, "{} ", provenance)?;
                 }
+
+                if let MutabilityState::Mut = mutability_state {
+                    write!(f, "mut ")?;
+                }
+
+                write!(f, "{inner}")
             }
             TypeKind::SafePointer {
                 inner,
@@ -1142,6 +1208,7 @@ impl<'a, 'bump> Display for Type<'a, 'bump> {
                 }
                 Ok(())
             }
+            TypeKind::OwnedPointer { inner } => write!(f, "^{}", inner),
         }?;
 
         if self.nullable {

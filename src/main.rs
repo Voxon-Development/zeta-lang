@@ -1,36 +1,12 @@
-#![feature(allocator_api)]
-
-mod compilation_passes;
-mod file_handling;
-mod link;
-mod main_structs;
-
-use engraver_assembly_emit::backend::Backend;
-use engraver_assembly_emit::cranelift::cranelift_backend::CraneliftBackend;
-use ir::analysis_context::CopyAnalysisCtx;
-use ir::registry::global_registry::GlobalRegistry;
-use sentinel_typechecker::TypeChecker;
-use zetaruntime::bump::GrowableBump;
-use zetaruntime::string_pool::StringPool;
-
-use std::cell::RefCell;
 use std::path::PathBuf;
-use std::rc::Rc;
-use std::sync::Arc;
 use std::time::Instant;
 
 use clap::{ArgMatches, CommandFactory, Error, FromArgMatches, Parser, Subcommand};
-use ir::hir::StrId;
 use snmalloc_rs::SnMalloc;
+use zeta_compiler_api::Compiler;
 
-use crate::compilation_passes::{check_all_module_bodies, register_all_modules};
-use crate::file_handling::{
-    ast_modules_from_parsed, collect_extern_c_names, collect_zeta_files, compiler_lib_path,
-    emit_all, parse_files,
-};
-use crate::link::link;
-use crate::main_structs::CompilerError;
-use ir::errors::reporter::ErrorReporter;
+use zeta_compiler_api::file_handling::compiler_lib_path;
+use zeta_compiler_api::main_structs::CompilerError;
 
 #[global_allocator]
 static ALLOCATOR: SnMalloc = SnMalloc;
@@ -155,184 +131,26 @@ where
     } else {
         compiler_lib_path()?
     };
-
-    let stdlib_files = collect_zeta_files(&stdlib_path)?;
-    if verbose {
-        println!(
-            "Compiling standard library ({} modules):",
-            stdlib_files.len()
-        );
-        for f in &stdlib_files {
-            println!("  [STD] {}", f.display());
-        }
-    }
-
     let source_path = path.unwrap_or_else(|| PathBuf::from("./src"));
-    let user_files = collect_zeta_files(&source_path)?;
-    if verbose {
-        println!("Compiling project ({} modules):", user_files.len());
-        for f in &user_files {
-            println!("  [SRC] {}", f.display());
+
+    let mut compiler = Compiler::new()?;
+
+    let stdlib_diags = compiler.load_directory(&stdlib_path, true)?;
+    if !stdlib_diags.is_empty() {
+        for d in &stdlib_diags {
+            eprintln!("[stdlib] {}: {}", d.module, d.message);
         }
-    }
-
-    let pool = Arc::new(StringPool::new().map_err(|_| CompilerError::FailedToAllocateStringPool)?);
-
-    let stdlib_parsed = parse_files(stdlib_files, pool.clone())?;
-    let user_parsed = parse_files(user_files, pool.clone())?;
-
-    let mut error_reporter = ErrorReporter::new();
-    for m in stdlib_parsed.iter().chain(user_parsed.iter()) {
-        if m.parser_diagnostics.has_errors() {
-            for error in &m.parser_diagnostics.errors {
-                error_reporter
-                    .add_parser_error(StrId::from(pool.intern(error.to_string().as_str())), None);
-            }
-        }
-    }
-    if error_reporter.has_errors() {
-        error_reporter.report_all();
         return Err(CompilerError::ParserError(vec![]));
     }
 
-    let stdlib_ast = ast_modules_from_parsed(&stdlib_parsed);
-    let user_ast = ast_modules_from_parsed(&user_parsed);
-
-    let all_ast: Vec<_> = stdlib_ast.iter().chain(user_ast.iter()).copied().collect();
-    let stdlib_len = stdlib_ast.len();
-    let total_len = all_ast.len();
-
-    let mut dep_graph = codex_dependency_graph::dep_graph::DepGraph::new();
-    dep_graph.build_from_ast(&all_ast, &pool);
-
-    let user_indices: Vec<usize> = (stdlib_len..total_len).collect();
-    for stdlib_idx in 0..stdlib_len {
-        dep_graph.link_stdlib_to_user(stdlib_idx, &user_indices);
-    }
-
-    for unresolved in &dep_graph.unresolved_imports {
-        eprintln!(
-            "Warning: unresolved import in module {}: {:?}",
-            unresolved.from_module_idx, unresolved.path
-        );
-    }
-
-    let all_parsed: Vec<&main_structs::ModuleWithArena<'a, 'bump>> =
-        stdlib_parsed.iter().chain(user_parsed.iter()).collect();
-
-    let lowerer_bump = GrowableBump::new(4096, 8);
-    let registry = GlobalRegistry::new();
-    let (hir_modules, errors) = lower_all_from_refs(
-        &all_parsed,
-        &dep_graph,
-        &lowerer_bump,
-        pool.clone(),
-        registry.clone(),
-    );
-
-    if !errors.is_empty() {
-        for error in errors {
-            eprintln!("{}", error)
+    let user_diags = compiler.load_directory(&source_path, false)?;
+    if !user_diags.is_empty() {
+        for d in &user_diags {
+            eprintln!("{}: {}", d.module, d.message);
         }
-
-        return Ok(());
+        return Err(CompilerError::TypeCheckError);
     }
 
-    let compilation_order = dep_graph.get_module_compilation_order();
-
-    let mut backend = CraneliftBackend::new(pool.clone(), optimize, verbose);
-    let extern_c_names = collect_extern_c_names(&hir_modules);
-    emit_all(
-        &hir_modules,
-        &compilation_order,
-        &mut backend,
-        pool.clone(),
-        &extern_c_names,
-        &dep_graph,
-        registry.clone(),
-    );
-
-    let out_obj = match backend
-        .finish(&out_dir)
-        .map_err(|e| CompilerError::FinishError(Box::new(e)))
-    {
-        Ok(out_obj) => out_obj,
-        Err(e) => return Err(e),
-    };
-
-    if !emit_obj {
-        let program_path = out_dir.join("program");
-        link(
-            &[out_obj.to_str().unwrap()],
-            program_path.to_str().unwrap(),
-            true,
-        )?;
-    }
-
+    compiler.emit(&out_dir, optimize, verbose, emit_obj)?;
     Ok(())
-}
-
-fn lower_all_from_refs<'a, 'bump>(
-    modules: &[&'bump crate::main_structs::ModuleWithArena<'a, 'bump>],
-    dep_graph: &'a codex_dependency_graph::dep_graph::DepGraph,
-    bump: &'bump GrowableBump<'bump>,
-    pool: Arc<StringPool>,
-    registry: GlobalRegistry<'a, 'bump>,
-) -> (Vec<ir::hir::HirModule<'a, 'bump>>, Vec<CompilerError<'a>>) {
-    use crate::compilation_passes::pass_hir_lowering;
-
-    let mut errors: Vec<CompilerError<'a>> = Vec::new();
-
-    let mut file_names_and_contents: Vec<(StrId, StrId)> = Vec::with_capacity(modules.len());
-
-    let lowered_modules = modules
-        .iter()
-        .enumerate()
-        .filter_map(|(module_idx, m)| {
-            let mut stmt_vec = Vec::new_in(bump);
-            for stmt in m.stmts {
-                stmt_vec.push(*stmt);
-            }
-
-            file_names_and_contents.push((m.name, m.source));
-
-            match pass_hir_lowering(
-                stmt_vec,
-                pool.clone(),
-                m.bump.clone(),
-                dep_graph,
-                module_idx,
-                registry.clone(),
-            ) {
-                Ok(hir) => Some(hir),
-                Err(e) => {
-                    eprintln!("Compilation failed for module {:?}: {}", m.name, e);
-                    errors.push(e);
-                    None
-                }
-            }
-        })
-        .collect::<Vec<_>>();
-
-    let mut cpy_ctx =
-        CopyAnalysisCtx::new(lowered_modules.as_slice(), registry.clone(), pool.clone());
-    cpy_ctx.run();
-    let cpy_ctx = Rc::new(cpy_ctx);
-    let type_checker = Rc::new(RefCell::new(TypeChecker::new(
-        dep_graph,
-        bump,
-        cpy_ctx.clone(),
-        pool.clone(),
-    )));
-
-    register_all_modules(lowered_modules.as_slice(), type_checker.clone());
-
-    if let Err(e) = check_all_module_bodies(
-        lowered_modules.as_slice(),
-        file_names_and_contents.as_slice(),
-        type_checker,
-    ) {
-        errors.push(e);
-    }
-    (lowered_modules, errors)
 }

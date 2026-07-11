@@ -1,9 +1,21 @@
 use ir::hir::{HirExpr, StrId};
 
 #[derive(Clone, Copy)]
+pub enum DropKind {
+    /// A struct-typed local; freed via its own drop-glue function.
+    Struct(StrId),
+    /// An owned-pointer-typed local (`^T`). Freed by dropping the pointee
+    /// (if it needs glue) then deallocating the backing allocation.
+    /// `pointee_struct` is `Some` only when the pointee is itself a
+    /// droppable struct, primitive/non-droppable pointees still need the
+    /// dealloc call but skip the recursive drop-glue call.
+    OwnedPointer { pointee_struct: Option<StrId> },
+}
+
+#[derive(Clone, Copy)]
 pub struct DropLocal {
     pub name: StrId,
-    pub struct_name: StrId,
+    pub kind: DropKind,
 }
 
 #[derive(Clone)]
@@ -43,13 +55,13 @@ impl DropMoveState {
     }
 }
 
-pub(crate) fn local_is_droppable(scope_stack: &[DropScope], name: StrId) -> Option<StrId> {
+pub(crate) fn local_is_droppable(scope_stack: &[DropScope], name: StrId) -> Option<DropKind> {
     scope_stack
         .iter()
         .rev()
         .flat_map(|s| s.locals.iter())
         .find(|l| l.name == name)
-        .map(|l| l.struct_name)
+        .map(|l| l.kind)
 }
 
 pub fn record_move_if_any(
@@ -65,7 +77,11 @@ pub fn record_move_if_any(
         }
         HirExpr::FieldAccess { object, field, .. } | HirExpr::Get { object, field, .. } => {
             if let HirExpr::Ident(root, _) = &**object {
-                if local_is_droppable(scope_stack, *root).is_some() {
+                // Only Struct locals have fields to partially move out of.
+                // `p.field` where `p: ^T` is a move *through* the pointer
+                // (of the pointee's field), not a move of the pointer
+                // binding
+                if let Some(DropKind::Struct(_)) = local_is_droppable(scope_stack, *root) {
                     drop_state.mark_field_moved(*root, *field);
                 }
             }

@@ -1,4 +1,6 @@
 use crate::bump::align_up;
+use std::alloc::AllocError;
+use std::alloc::Allocator;
 use std::alloc::Layout;
 use std::hint::likely;
 use std::marker::PhantomData;
@@ -502,6 +504,39 @@ impl<'bump> Drop for GrowableAtomicBump<'bump> {
                 c = next;
             }
         }
+    }
+}
+
+/// SAFETY CONTRACT:
+/// - Memory returned by `allocate` remains valid until `deallocate` is
+///   called OR the allocator is dropped OR `reset()` is called, `reset()`
+///   invalidates all prior allocations exactly like it already does for
+///   `alloc_value`/`alloc_slice`. Callers using this as a collection
+///   allocator must not call `reset()` while any `Vec`/etc. built from it
+///   is still alive, same caveat that already applies to raw arena refs.
+/// - `deallocate` is a no-op: bump allocators reclaim in bulk,
+///   not per-allocation.
+unsafe impl<'bump> Allocator for GrowableAtomicBump<'bump> {
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        if layout.size() == 0 {
+            // Per the Allocator contract: for zero-sized layouts, return a
+            // well-aligned dangling pointer with length 0. No real memory
+            // needs to back this.
+            let dangling = NonNull::new(layout.align() as *mut u8).ok_or(AllocError)?;
+            return Ok(NonNull::slice_from_raw_parts(dangling, 0));
+        }
+
+        let slice: &mut [u8] = self.alloc_aligned_bytes(layout.size(), layout.align());
+        if slice.is_empty() {
+            return Err(AllocError);
+        }
+
+        let ptr = NonNull::new(slice.as_mut_ptr()).ok_or(AllocError)?;
+        Ok(NonNull::slice_from_raw_parts(ptr, slice.len()))
+    }
+
+    unsafe fn deallocate(&self, _ptr: NonNull<u8>, _layout: Layout) {
+        // Bump allocators cannot deallocate individual pointers.
     }
 }
 

@@ -58,6 +58,16 @@ impl StrId {
     }
 }
 
+impl PartialEq<&StrId> for StrId {
+    fn eq(&self, other: &&StrId) -> bool {
+        self == *other
+    }
+
+    fn ne(&self, other: &&StrId) -> bool {
+        self != *other
+    }
+}
+
 impl PartialEq<str> for StrId {
     fn eq(&self, other: &str) -> bool {
         self.as_str() == other
@@ -96,6 +106,61 @@ impl<'a, 'bump> Hir<'a, 'bump> {
             return true;
         }
         false
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ProvenanceRoot {
+    Var(StrId),
+    ThisRoot,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ProvenancePathSegment {
+    Field(StrId),
+    Deref,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Debug, Hash)]
+pub struct ProvenanceAnnotation<'bump> {
+    pub root: ProvenanceRoot,
+    pub path: &'bump [ProvenancePathSegment],
+}
+
+impl fmt::Display for ProvenanceRoot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProvenanceRoot::Var(name) => write!(f, "{name}"),
+            ProvenanceRoot::ThisRoot => write!(f, "self"),
+        }
+    }
+}
+
+impl fmt::Display for ProvenancePathSegment {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProvenancePathSegment::Field(field) => write!(f, ".{field}"),
+            ProvenancePathSegment::Deref => write!(f, "*"),
+        }
+    }
+}
+
+impl<'bump> fmt::Display for ProvenanceAnnotation<'bump> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.root)?;
+
+        for segment in self.path {
+            match segment {
+                ProvenancePathSegment::Field(field) => {
+                    write!(f, ".{field}")?;
+                }
+                ProvenancePathSegment::Deref => {
+                    write!(f, "*")?;
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -287,8 +352,10 @@ where
     Ref {
         inner: &'a HirType<'a, 'bump>,
         mutability_state: MutabilityState,
+        provenance: Option<ProvenanceAnnotation<'bump>>,
     },
     UnsafePointer(&'a HirType<'a, 'bump>),
+    OwnedPointer(&'bump HirType<'a, 'bump>),
     Lambda {
         params: &'bump [HirType<'a, 'bump>],
         return_type: &'a HirType<'a, 'bump>,
@@ -636,12 +703,19 @@ where
             HirType::Ref {
                 inner,
                 mutability_state,
+                provenance,
             } => {
-                if let MutabilityState::Mut = mutability_state {
-                    write!(f, "&mut {}", inner)
-                } else {
-                    write!(f, "&{}", inner)
+                write!(f, "&")?;
+
+                if let Some(provenance) = provenance {
+                    write!(f, "{} ", provenance)?;
                 }
+
+                if let MutabilityState::Mut = mutability_state {
+                    write!(f, "mut ")?;
+                }
+
+                write!(f, "{inner}")
             }
             HirType::Nullable(hir_type) => write!(f, "{}?", hir_type),
             HirType::Dyn { bounds } => {
@@ -669,6 +743,7 @@ where
             }
             HirType::Array(hir_type, len) => write!(f, "&[{}]{}", len, hir_type),
             HirType::Slice(hir_type) => write!(f, "&[]{}", hir_type),
+            HirType::OwnedPointer(hir_type) => write!(f, "^{}", hir_type),
         }
     }
 }
@@ -732,6 +807,51 @@ where
             HirType::SafePointer(inner) => Some(inner),
             HirType::UnsafePointer(inner) => Some(inner),
             _ => None,
+        }
+    }
+
+    pub fn get_name_of_ty(&self) -> Option<String> {
+        match self {
+            HirType::I8 => Some("i8".to_string()),
+            HirType::I16 => Some("i16".to_string()),
+            HirType::I32 => Some("i32".to_string()),
+            HirType::I64 => Some("i64".to_string()),
+            HirType::U8 => Some("u8".to_string()),
+            HirType::U16 => Some("u16".to_string()),
+            HirType::U32 => Some("u32".to_string()),
+            HirType::U64 => Some("u64".to_string()),
+            HirType::F32 => Some("f32".to_string()),
+            HirType::F64 => Some("f64".to_string()),
+            HirType::I128 => Some("i128".to_string()),
+            HirType::U128 => Some("u128".to_string()),
+            HirType::Boolean => Some("bool".to_string()),
+            HirType::String => Some("str".to_string()),
+            HirType::Struct(str_id, hir_types) => Some(str_id.to_string()),
+            HirType::DynInterface(str_id, hir_types) => Some(str_id.to_string()),
+            HirType::Enum(str_id, hir_types) => Some(str_id.to_string()),
+            HirType::SafePointer(hir_type) => hir_type.get_name_of_ty(),
+            HirType::Ref {
+                inner,
+                mutability_state,
+                provenance,
+            } => inner.get_name_of_ty(),
+            HirType::UnsafePointer(hir_type) => hir_type.get_name_of_ty(),
+            HirType::OwnedPointer(hir_type) => hir_type.get_name_of_ty(),
+            HirType::Lambda {
+                params,
+                return_type,
+            } => None,
+            HirType::Generic(str_id) => None,
+            HirType::Void => Some("void".to_string()),
+            HirType::This => Some("this".to_string()),
+            HirType::Null => Some("null".to_string()),
+            HirType::Char => Some("char".to_string()),
+            HirType::Unknown => None,
+            HirType::Nullable(hir_type) => hir_type.get_name_of_ty(),
+            HirType::Dyn { bounds } => None,
+            HirType::Tuple(hir_types) => None,
+            HirType::Array(hir_type, _) => hir_type.get_name_of_ty(),
+            HirType::Slice(hir_type) => hir_type.get_name_of_ty(),
         }
     }
 

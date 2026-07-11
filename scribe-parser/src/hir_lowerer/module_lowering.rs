@@ -18,9 +18,9 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         self.ctx.module_idx = module_idx;
         // Register all modules this file imports so expression lowering
         // can resolve module-qualified paths.
-        let imported_idxs = self.ctx.dep_graph.get_module_imports(module_idx);
+        let imported_idxs = self.ctx.dep_graph.borrow().get_module_imports(module_idx);
         for imp_idx in imported_idxs {
-            if let Some(pkg) = self.ctx.dep_graph.get_module_package(imp_idx) {
+            if let Some(pkg) = self.ctx.dep_graph.borrow().get_module_package(imp_idx) {
                 let local_name = pkg.as_str().split("_").last().unwrap_or(pkg.as_str());
                 let local_id = StrId(self.ctx.context.intern(local_name));
                 self.ctx
@@ -129,7 +129,12 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     }
 
     pub(super) fn mangle_function_name(&self, class_name: Option<StrId>, name: StrId) -> StrId {
-        let Some(pkg) = self.ctx.dep_graph.get_module_package(self.ctx.module_idx) else {
+        let Some(pkg) = self
+            .ctx
+            .dep_graph
+            .borrow()
+            .get_module_package(self.ctx.module_idx)
+        else {
             return match class_name {
                 Some(cls) => build_module_scoped_name(&[cls], name, None, self.ctx.context.clone()),
                 None => name,
@@ -151,7 +156,12 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     }
 
     pub(super) fn mangle_with_module_path(&self, name: StrId) -> StrId {
-        let Some(pkg) = self.ctx.dep_graph.get_module_package(self.ctx.module_idx) else {
+        let Some(pkg) = self
+            .ctx
+            .dep_graph
+            .borrow()
+            .get_module_package(self.ctx.module_idx)
+        else {
             // No package declaration for this module
             return name;
         };

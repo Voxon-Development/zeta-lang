@@ -2,12 +2,13 @@ use arrayvec::ArrayVec;
 use codex_dependency_graph::DepGraph;
 use ir::hir::StrId;
 use smallvec::SmallVec;
+use std::cell::RefCell;
 use std::ptr;
 use std::sync::Arc;
 use zetaruntime::string_pool::StringPool;
 
 pub fn mangle_method_name(
-    dep_graph: &DepGraph,
+    dep_graph: &RefCell<DepGraph>,
     module_idx: usize,
     class_name: StrId,
     method_name: StrId,
@@ -16,7 +17,7 @@ pub fn mangle_method_name(
     let mut segments: Vec<StrId> = Vec::with_capacity(4);
     segments.push(class_name);
 
-    if let Some(pkg) = dep_graph.get_module_package(module_idx) {
+    if let Some(pkg) = dep_graph.borrow().get_module_package(module_idx) {
         let pkg_str = context.resolve_string(&pkg);
         segments.extend(pkg_str.split("::").map(|seg| StrId(context.intern(seg))));
     }

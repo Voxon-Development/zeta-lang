@@ -95,6 +95,7 @@ impl DropGlueRegistry {
         match ty {
             HirType::Struct(name, _) => is_droppable.get(name).copied().unwrap_or(false),
             HirType::Nullable(inner) => Self::type_is_droppable(inner, is_droppable),
+            HirType::OwnedPointer(_) => true,
             _ => false,
         }
     }

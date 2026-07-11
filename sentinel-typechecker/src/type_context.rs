@@ -3,7 +3,7 @@ use ir::{
     hir::{HirEnum, HirFunc, HirInterface, HirStruct, HirType, StrId},
     ir_hasher::HashSet,
 };
-use std::{collections::HashMap, sync::Arc};
+use std::{cell::RefCell, collections::HashMap, sync::Arc};
 use zetaruntime::{bump::GrowableBump, string_pool::StringPool};
 
 #[derive(Debug, Clone, Default)]
@@ -32,7 +32,7 @@ pub struct TypeContext<'a, 'bump> {
     pub current_return_type: Option<HirType<'a, 'bump>>,
     pub in_loop: bool,
     pub current_module_idx: usize,
-    pub dep_graph: &'a DepGraph,
+    pub dep_graph: &'a RefCell<DepGraph>,
     pub bump: &'bump GrowableBump<'bump>,
     pub dangling_locals: HashSet<String>,
     pub struct_interfaces: HashMap<String, HashSet<String>>,
@@ -42,7 +42,7 @@ pub struct TypeContext<'a, 'bump> {
 
 impl<'a, 'bump> TypeContext<'a, 'bump> {
     pub fn new(
-        dep_graph: &'a DepGraph,
+        dep_graph: &'a RefCell<DepGraph>,
         bump: &'bump GrowableBump<'bump>,
         string_pool: Arc<StringPool>,
     ) -> Self {
@@ -181,7 +181,11 @@ impl<'a, 'bump> TypeContext<'a, 'bump> {
     }
 
     pub fn mangle_function_name(&self, name: StrId) -> StrId {
-        let Some(pkg) = self.dep_graph.get_module_package(self.current_module_idx) else {
+        let Some(pkg) = self
+            .dep_graph
+            .borrow()
+            .get_module_package(self.current_module_idx)
+        else {
             return name;
         };
 

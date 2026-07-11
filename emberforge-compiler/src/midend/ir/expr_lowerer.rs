@@ -9,6 +9,7 @@ use ir::ir_hasher::{FxHashBuilder, HashSet};
 use ir::layout::TargetInfo;
 use ir::ssa_ir::{BinOp, Function, Instruction, Operand, SsaType, Value};
 use smallvec::SmallVec;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -36,7 +37,7 @@ pub struct MirExprLowerer<'el, 'a, 'cx, 'bump> {
 
     pub cx_phantom: PhantomData<&'cx ()>,
     pub extern_c_names: &'a HashSet<StrId>,
-    pub dep_graph: &'a DepGraph,
+    pub dep_graph: &'a RefCell<DepGraph>,
     pub module_idx: usize,
     global_funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
     pub scope_stack: &'el [DropScope],
@@ -71,7 +72,7 @@ where
         >,
         classes: &'a HashMap<StrId, HirStruct<'a, 'bump>, FxHashBuilder>,
         extern_c_names: &'a HashSet<StrId>,
-        dep_graph: &'a DepGraph,
+        dep_graph: &'a RefCell<DepGraph>,
         module_idx: usize,
         scope_stack: &'el [DropScope],
         drop_state: &'el mut DropMoveState,

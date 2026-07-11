@@ -268,6 +268,14 @@ impl<'bump> GrowableBump<'bump> {
 
 unsafe impl<'bump> Allocator for GrowableBump<'bump> {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        if layout.size() == 0 {
+            // Per the Allocator contract: for zero-sized layouts, return a
+            // well-aligned dangling pointer with length 0. No real memory
+            // needs to back this.
+            let dangling = NonNull::new(layout.align() as *mut u8).ok_or(AllocError)?;
+            return Ok(NonNull::slice_from_raw_parts(dangling, 0));
+        }
+
         let mut chunks = self.chunks.borrow_mut();
 
         if let Some(last) = chunks.last_mut() {

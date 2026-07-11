@@ -1,5 +1,5 @@
 use crate::main_structs::{CompilerError, ModuleWithArena};
-use codex_dependency_graph::dep_graph::{AstModule, DepGraph};
+use codex_dependency_graph::dep_graph::DepGraph;
 use emberforge_compiler::midend::copy_analysis::drop_glue::DropGlueRegistry;
 use emberforge_compiler::midend::ir::module_lowerer::MirModuleLowerer;
 use engraver_assembly_emit::backend::Backend;
@@ -8,14 +8,16 @@ use ir::hir::{HirModule, StrId};
 use ir::ir_hasher::{FxHashBuilder, HashSet};
 use ir::registry::global_registry::GlobalRegistry;
 use ir::ssa_ir::{Function, Module};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use walkdir::WalkDir;
 use zetaruntime::arena::GrowableAtomicBump;
 use zetaruntime::string_pool::StringPool;
 
-pub(crate) fn compiler_lib_path<'a>() -> Result<PathBuf, CompilerError<'a>> {
+pub fn compiler_lib_path<'a>() -> Result<PathBuf, CompilerError<'a>> {
     let exe = std::env::current_exe()
         .map_err(|_| CompilerError::SourceNotFound(PathBuf::from("current_exe()")))?;
 
@@ -50,32 +52,6 @@ pub(crate) fn collect_zeta_files<'a>(dir: &Path) -> Result<Vec<PathBuf>, Compile
     Ok(files)
 }
 
-pub(crate) fn parse_files<'a, 'bump>(
-    files: Vec<PathBuf>,
-    pool: Arc<StringPool>,
-) -> Result<Vec<ModuleWithArena<'a, 'bump>>, CompilerError<'a>> {
-    let modules: Vec<ModuleWithArena> = files
-        .iter()
-        .filter_map(|f| match parse_single_file(pool.clone(), f.clone()) {
-            Ok(m) => Some(m),
-            Err(e) => {
-                println!("{}", e);
-                None
-            }
-        })
-        .collect();
-
-    if modules.is_empty() {
-        eprintln!(
-            "hit `modules.is_empty()`, iter: {:?}",
-            files.iter().collect::<Vec<_>>()
-        );
-        return Err(CompilerError::NoSourceFiles);
-    }
-
-    Ok(modules)
-}
-
 pub fn collect_extern_c_names<'a, 'bump>(
     hir_modules: &[ir::hir::HirModule<'a, 'bump>],
 ) -> HashSet<StrId> {
@@ -95,7 +71,7 @@ pub fn collect_extern_c_names<'a, 'bump>(
     externs
 }
 
-fn parse_single_file<'a, 'bump>(
+pub fn parse_single_file<'a, 'bump>(
     pool: Arc<StringPool>,
     path: PathBuf,
 ) -> Result<ModuleWithArena<'a, 'bump>, CompilerError<'a>>
@@ -111,6 +87,30 @@ where
         .and_then(|s| s.to_str())
         .ok_or_else(|| CompilerError::InvalidFileName(Vec::new()))?;
 
+    parse_single_module(pool, file_name_str, contents)
+}
+
+pub fn parse_single_file_from_source<'a, 'bump>(
+    pool: Arc<StringPool>,
+    name: &str,
+    source: String,
+) -> Result<ModuleWithArena<'a, 'bump>, CompilerError<'a>>
+where
+    'a: 'bump,
+    'bump: 'a,
+{
+    parse_single_module(pool, name, source)
+}
+
+fn parse_single_module<'a, 'bump>(
+    pool: Arc<StringPool>,
+    file_name_str: &str,
+    contents: String,
+) -> Result<ModuleWithArena<'a, 'bump>, CompilerError<'a>>
+where
+    'a: 'bump,
+    'bump: 'a,
+{
     let name = StrId(pool.intern(file_name_str));
 
     if contents.is_empty() {
@@ -158,25 +158,13 @@ where
     })
 }
 
-pub(crate) fn ast_modules_from_parsed<'a, 'bump>(
-    parsed: &'bump [ModuleWithArena<'a, 'bump>],
-) -> Vec<AstModule<'a, 'bump>> {
-    parsed
-        .iter()
-        .map(|m| AstModule {
-            name: m.name,
-            stmts: m.stmts,
-        })
-        .collect()
-}
-
 pub(crate) fn emit_all<'a, 'bump>(
     hir_modules: &[HirModule<'a, 'bump>],
     compilation_order: &[usize],
     backend: &mut CraneliftBackend,
     pool: Arc<StringPool>,
-    extern_c_names: &'a HashSet<StrId>,
-    dep_graph: &'a DepGraph,
+    extern_c_names: Rc<HashSet<StrId>>,
+    dep_graph: &'a RefCell<DepGraph>,
     registry: GlobalRegistry<'a, 'bump>,
 ) where
     'bump: 'a,
@@ -193,7 +181,7 @@ pub(crate) fn emit_all<'a, 'bump>(
         if module_idx < len {
             let mir_module: Module = MirModuleLowerer::new(
                 pool.clone(),
-                extern_c_names,
+                extern_c_names.clone(),
                 dep_graph,
                 module_idx,
                 &funcs_snapshot,

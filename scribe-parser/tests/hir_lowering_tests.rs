@@ -8,6 +8,7 @@ use ir::hir::StrId;
 use ir::pretty::IrPrettyPrinter;
 use ir::registry::global_registry::GlobalRegistry;
 use scribe_parser::parser::parse_program;
+use std::cell::RefCell;
 use std::sync::Arc;
 use zetaruntime::arena::GrowableAtomicBump;
 use zetaruntime::string_pool::StringPool;
@@ -15,11 +16,11 @@ use zetaruntime::string_pool::StringPool;
 fn make_context() -> (
     Arc<StringPool>,
     Arc<GrowableAtomicBump<'static>>,
-    &'static DepGraph,
+    &'static RefCell<DepGraph>,
 ) {
     let context = Arc::new(StringPool::new().unwrap());
     let bump = Arc::new(GrowableAtomicBump::with_capacity_and_aligned(4096, 8).unwrap());
-    let dep_graph = Box::leak(Box::new(Default::default()));
+    let dep_graph = Box::leak(Box::new(RefCell::new(Default::default())));
     (context, bump, dep_graph)
 }
 

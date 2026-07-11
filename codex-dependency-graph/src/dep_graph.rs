@@ -141,6 +141,143 @@ impl DepGraph {
         }
     }
 
+    fn remove_node(&mut self, idx: NodeIdx) {
+        let deps = std::mem::take(&mut self.nodes[idx].deps);
+        for d in deps {
+            if let Some(dn) = self.nodes.get_mut(d) {
+                dn.rev_deps.retain(|&x| x != idx);
+            }
+        }
+        let rev_deps = std::mem::take(&mut self.nodes[idx].rev_deps);
+        for r in rev_deps {
+            if let Some(rn) = self.nodes.get_mut(r) {
+                rn.deps.retain(|&x| x != idx);
+            }
+        }
+        self.nodes[idx].hint = None;
+    }
+
+    /// Tear down all item-level nodes owned by `module_idx` (func sigs/bodies,
+    /// types, consts, traits, impls) and this module's outgoing import edges.
+    /// The Module node itself is preserved so importers' edges into it stay valid.
+    pub fn remove_module_items(&mut self, module_idx: usize) {
+        let keys: Vec<ItemKey> = self
+            .item_index
+            .keys()
+            .filter(|(m, _, tag)| *m == module_idx && *tag != "module")
+            .copied()
+            .collect();
+
+        for key in keys {
+            if let Some(node_idx) = self.item_index.remove(&key) {
+                self.remove_node(node_idx);
+            }
+        }
+
+        self.symbol_table.retain(|&(_, m), _| m != module_idx);
+        self.unresolved_imports
+            .retain(|imp| imp.from_module_idx != module_idx);
+
+        if let Some(mod_node_idx) = self.lookup_item_node(module_idx, 0, "module") {
+            let old_deps = self.nodes[mod_node_idx].deps.clone();
+            for d in old_deps {
+                let is_module_dep = matches!(
+                    self.nodes.get(d).map(|n| &n.kind),
+                    Some(NodeKind::Module { .. })
+                );
+                if is_module_dep {
+                    self.nodes[mod_node_idx].deps.retain(|&x| x != d);
+                    if let Some(dn) = self.nodes.get_mut(d) {
+                        dn.rev_deps.retain(|&x| x != mod_node_idx);
+                    }
+                }
+            }
+        }
+    }
+
+    fn create_nodes_for_module<'a, 'bump>(
+        &mut self,
+        module_idx: usize,
+        module: &AstModule<'a, 'bump>,
+        pool: &StringPool,
+    ) {
+        let module_node = self.get_or_create_module_node(module_idx);
+        if let Some(node) = self.nodes.get_mut(module_node) {
+            node.hint = Some(module.name);
+        }
+        self.register_item_node(module_idx, 0, "module", module_node);
+
+        for stmt in module.stmts {
+            if let Stmt::Package(pkg) = stmt {
+                let path_str = path_to_strid(&pkg.path, pool);
+                self.package_hierarchy.insert(module_idx, path_str);
+                let seg_vec: Vec<StrId> = pkg.path.path.to_vec();
+                self.path_index.insert(seg_vec, module_idx);
+            }
+        }
+        for (item_idx, stmt) in module.stmts.iter().enumerate() {
+            self.create_node_for_stmt(module_idx, item_idx, stmt);
+        }
+    }
+
+    fn populate_symbol_table_for_module(&mut self, module_idx: usize) {
+        let entries: Vec<(ItemKey, NodeIdx)> = self
+            .item_index
+            .iter()
+            .filter(|((m, _, _), _)| *m == module_idx)
+            .map(|(&k, &v)| (k, v))
+            .collect();
+
+        for ((m, item_idx, tag), node_idx) in entries {
+            if let Some(node) = self.nodes.get(node_idx) {
+                if let Some(hint) = node.hint {
+                    self.symbol_table.insert((hint, m), (m, item_idx, tag));
+                }
+            }
+        }
+    }
+
+    pub fn extract_edges_for_module<'a, 'bump>(
+        &mut self,
+        module_idx: usize,
+        module: &AstModule<'a, 'bump>,
+        pool: &StringPool,
+    ) {
+        for (item_idx, stmt) in module.stmts.iter().enumerate() {
+            self.extract_edges_for_stmt(module_idx, item_idx, stmt, pool);
+        }
+    }
+
+    /// Full incremental update for one module: tear down its old item
+    /// nodes/edges, rebuild from the new AST. Does NOT touch importers,
+    /// caller (Compiler) re-extracts those separately, since it owns the ASTs.
+    pub fn update_module_items<'a, 'bump>(
+        &mut self,
+        module_idx: usize,
+        module: &AstModule<'a, 'bump>,
+        pool: &StringPool,
+    ) {
+        self.remove_module_items(module_idx);
+        self.create_nodes_for_module(module_idx, module, pool);
+        self.populate_symbol_table_for_module(module_idx);
+        self.extract_edges_for_module(module_idx, module, pool);
+    }
+
+    pub fn reverse_deps_transitive_modules(&self, module_idx: usize) -> HashSet<usize> {
+        let mut visited = HashSet::default();
+        let mut queue = VecDeque::new();
+        visited.insert(module_idx);
+        queue.push_back(module_idx);
+        while let Some(m) = queue.pop_front() {
+            for importer in self.get_module_importers(m) {
+                if visited.insert(importer) {
+                    queue.push_back(importer);
+                }
+            }
+        }
+        visited
+    }
+
     /// Resolve a `::`-segmented path to a module index, using the same
     /// path_index built from `package` declarations during graph construction.
     pub fn resolve_module_path(&self, path: &[StrId]) -> Option<usize> {

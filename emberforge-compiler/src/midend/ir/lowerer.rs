@@ -1,5 +1,5 @@
 use crate::midend::copy_analysis::drop_glue::DropGlueRegistry;
-use crate::midend::copy_analysis::drop_tracking::{DropLocal, DropMoveState, DropScope};
+use crate::midend::copy_analysis::drop_tracking::{DropKind, DropLocal, DropMoveState, DropScope};
 use crate::midend::ir::block_data::CurrentBlockData;
 use crate::midend::ir::expr_lowerer::MirExprLowerer;
 use codex_dependency_graph::DepGraph;
@@ -12,6 +12,7 @@ use ir::ir_hasher::{FxHashBuilder, HashSet};
 use ir::layout::{TargetInfo, alignof_ssa, layout_of_ssa, round_up_to_align};
 use ir::ssa_ir::{BasicBlock, BinOp, BlockId, Function, Instruction, Operand, SsaType, Value};
 use smallvec::SmallVec;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -63,7 +64,7 @@ pub struct FunctionLowerer<'a, 'bump> {
     context: Arc<StringPool>,
 
     extern_c_names: &'a HashSet<StrId>,
-    pub dep_graph: &'a DepGraph,
+    pub dep_graph: &'a RefCell<DepGraph>,
     pub module_idx: usize,
     return_type: Option<HirType<'a, 'bump>>,
     global_funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
@@ -99,7 +100,7 @@ where
         enum_variant_tags: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
         context: Arc<StringPool>,
         extern_c_names: &'a HashSet<StrId>,
-        dep_graph: &'a DepGraph,
+        dep_graph: &'a RefCell<DepGraph>,
         module_idx: usize,
         glue_registry: &'a DropGlueRegistry,
         interface_methods: &'a HashMap<StrId, Vec<(StrId, Vec<SsaType>, SsaType)>, FxHashBuilder>,
@@ -149,7 +150,7 @@ where
         enum_variant_tags: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
         context: Arc<StringPool>,
         extern_c_names: &'a HashSet<StrId>,
-        dep_graph: &'a DepGraph,
+        dep_graph: &'a RefCell<DepGraph>,
         module_idx: usize,
         glue_registry: &'a DropGlueRegistry,
         interface_methods: &'a HashMap<StrId, Vec<(StrId, Vec<SsaType>, SsaType)>, FxHashBuilder>,
@@ -199,7 +200,7 @@ where
         enum_variant_tags: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
         context: Arc<StringPool>,
         extern_c_names: &'a HashSet<StrId>,
-        dep_graph: &'a DepGraph,
+        dep_graph: &'a RefCell<DepGraph>,
         module_idx: usize,
         glue_registry: &'a DropGlueRegistry,
         interface_methods: &'a HashMap<StrId, Vec<(StrId, Vec<SsaType>, SsaType)>, FxHashBuilder>,
@@ -397,9 +398,18 @@ where
                     if self.glue_registry.is_droppable(*struct_name) {
                         self.scope_stack.last_mut().unwrap().locals.push(DropLocal {
                             name: *name,
-                            struct_name: *struct_name,
+                            kind: DropKind::Struct(*name),
                         });
                     }
+                } else if let HirType::OwnedPointer(ty) = ty {
+                    self.scope_stack.last_mut().unwrap().locals.push(DropLocal {
+                        name: *name,
+                        kind: DropKind::OwnedPointer {
+                            pointee_struct: ty
+                                .get_name_of_ty()
+                                .map(|name| StrId(self.context.intern(name.as_str()))),
+                        },
+                    });
                 }
             }
 
@@ -1103,7 +1113,7 @@ where
         self.current_block_data.bb().instructions.push(instruction);
     }
 
-    fn record_move_if_any(&mut self, expr: &HirExpr<'a, 'bump>) {
+    pub fn record_move_if_any(&mut self, expr: &HirExpr) {
         match expr {
             HirExpr::Ident(name, _) => {
                 if self.local_is_droppable(*name).is_some() {
@@ -1112,7 +1122,11 @@ where
             }
             HirExpr::FieldAccess { object, field, .. } | HirExpr::Get { object, field, .. } => {
                 if let HirExpr::Ident(root, _) = &**object {
-                    if self.local_is_droppable(*root).is_some() {
+                    // Only Struct locals have fields to partially move out of.
+                    // `p.field` where `p: ^T` is a move through the pointer
+                    // (of the pointee's field), not a move of the pointer
+                    // binding
+                    if let Some(DropKind::Struct(_)) = self.local_is_droppable(*root) {
                         self.drop_state.mark_field_moved(*root, *field);
                     }
                 }
@@ -1121,13 +1135,13 @@ where
         }
     }
 
-    fn local_is_droppable(&self, name: StrId) -> Option<StrId> {
+    pub(crate) fn local_is_droppable(&self, name: StrId) -> Option<DropKind> {
         self.scope_stack
             .iter()
             .rev()
             .flat_map(|s| s.locals.iter())
             .find(|l| l.name == name)
-            .map(|l| l.struct_name)
+            .map(|l| l.kind)
     }
 
     fn emit_scope_drops(&mut self, scope: &DropScope) {
@@ -1136,11 +1150,11 @@ where
                 continue;
             }
             let Some(&val) = self.var_map.get(&local.name) else {
-                continue; // shadowed/out of scope already
+                continue;
             };
 
-            if self.glue_registry.has_own_drop(local.struct_name) {
-                if let Some(glue) = self.glue_registry.glue_name_for(local.struct_name) {
+            if self.glue_registry.has_own_drop(local.name) {
+                if let Some(glue) = self.glue_registry.glue_name_for(local.name) {
                     self.emit(Instruction::Call {
                         dest: None,
                         func: Operand::FunctionRef(glue),
@@ -1150,10 +1164,10 @@ where
                 continue;
             }
 
-            let Some(hir_struct) = self.classes.get(&local.struct_name) else {
+            let Some(hir_struct) = self.classes.get(&local.name) else {
                 continue;
             };
-            let Some(offsets) = self.class_field_offsets.get(&local.struct_name) else {
+            let Some(offsets) = self.class_field_offsets.get(&local.name) else {
                 continue;
             };
 

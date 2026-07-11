@@ -22,3 +22,8 @@ pub extern "C" fn println_long(i: i64) {
 pub extern "C" fn println_bool(i: bool) {
     println!("{}", i);
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn get_index() -> i64 {
+    1
+}

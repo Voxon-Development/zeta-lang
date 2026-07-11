@@ -130,7 +130,7 @@ pub fn layout_of_ssa(ty: &SsaType, target: TargetInfo) -> Result<Layout, LayoutE
                 // Tagged union: 1-byte discriminant + payload, payload aligned
                 // after the tag. Layout: [tag: u8][padding][payload: T]
                 let payload_size = sizeof_ssa(inner, target)?;
-                let payload_align = alignof_ssa(inner, target)?; // assumes this helper exists; see note below
+                let payload_align = alignof_ssa(inner, target)?;
                 let tag_size = 1usize;
                 let padded_offset = round_up_to_align(tag_size, payload_align);
                 Ok(Layout {
@@ -235,6 +235,10 @@ pub fn layout_of_hir(ty: &HirType, target: TargetInfo) -> Result<Layout, LayoutE
         }
         HirType::Slice(_) => Ok(Layout {
             size: (target.ptr_bytes * 2) as usize,
+            align: target.ptr_bytes as usize,
+        }),
+        HirType::OwnedPointer(_) => Ok(Layout {
+            size: target.ptr_bytes as usize,
             align: target.ptr_bytes as usize,
         }),
     }

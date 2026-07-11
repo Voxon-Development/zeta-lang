@@ -1,9 +1,9 @@
 use super::context::HirLowerer;
 use super::utils::lower_cmp_operator;
-use ir::ast::{Expr, InlineModifier, Op, Pattern, Type, TypeKind};
+use ir::ast::{self, Expr, InlineModifier, Op, Pattern, ProvenanceAnnotation, Type, TypeKind};
 use ir::hir::{
-    AssignmentOperator, HirExpr, HirFunc, HirLambdaParam, HirModuleAccess, HirPattern, HirStmt,
-    HirType, Operator, StrId,
+    self, AssignmentOperator, HirExpr, HirFunc, HirLambdaParam, HirModuleAccess, HirPattern,
+    HirStmt, HirType, Operator, StrId,
 };
 use ir::ir_hasher::{FxHashBuilder, FxHashMap};
 use ir::span::SourceSpan;
@@ -971,7 +971,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         }
     }
 
-    pub(super) fn lower_type(&self, t: &Type) -> HirType<'a, 'bump> {
+    pub(super) fn lower_type(&self, t: &Type<'a, 'bump>) -> HirType<'a, 'bump> {
         let ty = self.lower_type_inner(t);
         if t.nullable {
             HirType::Nullable(self.ctx.bump.alloc_value(ty))
@@ -980,7 +980,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         }
     }
 
-    pub(super) fn lower_type_inner(&self, t: &Type) -> HirType<'a, 'bump> {
+    pub(super) fn lower_type_inner(&self, t: &Type<'a, 'bump>) -> HirType<'a, 'bump> {
         match &t.kind {
             TypeKind::I8 => HirType::I8,
             TypeKind::I16 => HirType::I16,
@@ -1018,6 +1018,11 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 HirType::Struct(*name, &[])
             }
 
+            TypeKind::OwnedPointer { inner } => {
+                let inner = self.ctx.bump.alloc_value(self.lower_type(inner));
+                HirType::OwnedPointer(inner)
+            }
+
             TypeKind::SafePointer { inner, .. } => {
                 let inner = self.ctx.bump.alloc_value(self.lower_type(inner));
                 HirType::SafePointer(inner)
@@ -1031,11 +1036,13 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             TypeKind::Ref {
                 inner,
                 mutability_state,
+                provenance: ast_provenance,
             } => {
                 let inner = self.ctx.bump.alloc_value(self.lower_type(inner));
                 HirType::Ref {
                     inner,
                     mutability_state: *mutability_state,
+                    provenance: self.lower_provenance(ast_provenance),
                 }
             }
 
@@ -1088,5 +1095,39 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 ),
             },
         }
+    }
+
+    fn lower_provenance_root(&self, root: ast::ProvenanceRoot) -> hir::ProvenanceRoot {
+        match root {
+            ast::ProvenanceRoot::Var(id) => hir::ProvenanceRoot::Var(id),
+            ast::ProvenanceRoot::ThisRoot => hir::ProvenanceRoot::ThisRoot,
+        }
+    }
+
+    fn lower_provenance_segment(
+        &self,
+        seg: ast::ProvenancePathSegment,
+    ) -> hir::ProvenancePathSegment {
+        match seg {
+            ast::ProvenancePathSegment::Field(id) => hir::ProvenancePathSegment::Field(id),
+            ast::ProvenancePathSegment::Deref => hir::ProvenancePathSegment::Deref,
+        }
+    }
+
+    fn lower_provenance(
+        &self,
+        option: &Option<ProvenanceAnnotation<'bump>>,
+    ) -> Option<hir::ProvenanceAnnotation<'bump>> {
+        option.as_ref().map(|ast_provenance| {
+            let path: Vec<hir::ProvenancePathSegment> = ast_provenance
+                .path
+                .iter()
+                .map(|seg| self.lower_provenance_segment(*seg))
+                .collect();
+            hir::ProvenanceAnnotation {
+                root: self.lower_provenance_root(ast_provenance.root),
+                path: self.ctx.bump.alloc_slice(&path),
+            }
+        })
     }
 }

@@ -1,7 +1,7 @@
 use crate::parser::descent_parser::DescentParser;
 use ir::ast::{
-    Generic, MutabilityState, NormalParam, Param, ParamPassingKind, ThisParam, Type, TypeKind,
-    Visibility,
+    Generic, MutabilityState, NormalParam, Param, ParamPassingKind, ProvenanceAnnotation,
+    ProvenancePathSegment, ProvenanceRoot, ThisParam, Type, TypeKind, Visibility,
 };
 use ir::errors::error::{DiagnosticError, ParseErrorKind};
 use ir::tokens::TokenKind;
@@ -273,6 +273,8 @@ where
             TokenKind::BitAnd => {
                 self.cursor.advance();
 
+                let provenance = self.parse_optional_provenance()?;
+
                 if self.cursor.peek() == LBracket {
                     let kind = self.parse_bracket_type_kind()?;
                     if let TypeKind::UnsafePointer { .. } = kind {
@@ -306,6 +308,7 @@ where
                                     nullable: false,
                                 }),
                                 mutability_state: MutabilityState::Const,
+                                provenance,
                             },
                             nullable: false,
                         });
@@ -319,6 +322,7 @@ where
                         kind: TypeKind::Ref {
                             inner: self.bump.alloc_value_immutable(inner),
                             mutability_state,
+                            provenance,
                         },
                         nullable,
                     });
@@ -415,6 +419,59 @@ where
         }
     }
 
+    fn parse_optional_provenance(
+        &mut self,
+    ) -> Result<Option<ProvenanceAnnotation<'bump>>, DiagnosticError<'a>> {
+        // &self Player / &self.world Player
+        if self.cursor.peek() == TokenKind::This {
+            let save = self.cursor.pos();
+            self.cursor.advance();
+
+            if self.cursor.consume(TokenKind::Dot) {
+                let (field, _) = self.cursor.expect_ident()?;
+                if self.starts_type() {
+                    let path = self
+                        .bump
+                        .alloc_slice_copy(&[ProvenancePathSegment::Field(field)]);
+                    return Ok(Some(ProvenanceAnnotation {
+                        root: ProvenanceRoot::ThisRoot,
+                        path,
+                    }));
+                }
+            } else if self.starts_type() {
+                return Ok(Some(ProvenanceAnnotation {
+                    root: ProvenanceRoot::ThisRoot,
+                    path: &[],
+                }));
+            }
+
+            self.cursor.reset(save); // wasn't provenance, e.g. bare `&this` as a type
+            return Ok(None);
+        }
+
+        // &world Player
+        if self.cursor.peek() == TokenKind::Ident {
+            let save = self.cursor.pos();
+            let (name, _) = self.cursor.expect_ident()?;
+            if self.starts_type() {
+                return Ok(Some(ProvenanceAnnotation {
+                    root: ProvenanceRoot::Var(name),
+                    path: &[],
+                }));
+            }
+            self.cursor.reset(save);
+        }
+
+        Ok(None)
+    }
+
+    fn starts_type(&self) -> bool {
+        matches!(
+            self.cursor.peek(),
+            TokenKind::Ident | TokenKind::This | TokenKind::LBracket
+        ) || self.cursor.peek().is_primitive_type()
+    }
+
     /// Consumes `[` itself, then delegates. Use this when `[` hasn't been consumed yet.
     fn parse_bracket_type_kind(&mut self) -> Result<TypeKind<'a, 'bump>, DiagnosticError<'a>> {
         self.cursor.expect(TokenKind::LBracket)?;
@@ -462,6 +519,12 @@ where
                     inner: inner_ref,
                     mutability_state,
                 }
+            }
+
+            TokenKind::BitXor => {
+                let inner = self.parse_core_type()?;
+                let inner_ref = self.bump.alloc_value(inner);
+                TypeKind::OwnedPointer { inner: inner_ref }
             }
 
             TokenKind::Fn => {

@@ -24,7 +24,7 @@ pub struct LoweringCtx<'a, 'bump> {
     pub variable_types: RefCell<FxHashMap<StrId, HirType<'a, 'bump>>>,
     pub generic_params: RefCell<HashSet<StrId>>,
     pub context: Arc<StringPool>,
-    pub dep_graph: &'a DepGraph,
+    pub dep_graph: &'a RefCell<DepGraph>,
     pub imported_modules: RefCell<FxHashMap<StrId, usize>>,
     pub bump: Arc<GrowableAtomicBump<'bump>>,
     pub module_idx: usize,
@@ -43,7 +43,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     pub fn new(
         context: Arc<StringPool>,
         bump: Arc<GrowableAtomicBump<'bump>>,
-        dep_graph: &'a DepGraph,
+        dep_graph: &'a RefCell<DepGraph>,
         registry: GlobalRegistry<'a, 'bump>,
     ) -> Self {
         Self {

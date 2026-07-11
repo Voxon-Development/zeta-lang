@@ -260,6 +260,18 @@ impl<'a> Cursor<'a> {
             }),
         }
     }
+
+    /// Checkpoint the current position for later backtracking.
+    #[inline]
+    pub fn pos(&self) -> usize {
+        self.index
+    }
+
+    /// Rewind to a previously saved `pos()`.
+    #[inline]
+    pub fn reset(&mut self, pos: usize) {
+        self.index = pos;
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -416,6 +428,30 @@ pub enum TokenKind {
     // ===== Special =====
     EOF,
     Unknown,
+}
+impl TokenKind {
+    pub fn is_primitive_type(&self) -> bool {
+        matches!(
+            self,
+            TokenKind::U8
+                | TokenKind::U16
+                | TokenKind::U32
+                | TokenKind::U64
+                | TokenKind::U128
+                | TokenKind::I8
+                | TokenKind::I16
+                | TokenKind::I32
+                | TokenKind::I64
+                | TokenKind::I128
+                | TokenKind::F32
+                | TokenKind::F64
+                | TokenKind::Usize
+                | TokenKind::Isize
+                | TokenKind::Char
+                | TokenKind::Str
+                | TokenKind::Boolean
+        )
+    }
 }
 
 impl fmt::Display for TokenKind {

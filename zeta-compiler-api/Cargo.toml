@@ -1,0 +1,14 @@
+[package]
+name = "zeta-compiler-api"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+scribe-parser = { path = "../scribe-parser" }
+emberforge-compiler = { path = "../emberforge-compiler" }
+codex-dependency-graph = { path = "../codex-dependency-graph" }
+zetaruntime = { path = "../zeta_utilities" }
+engraver-assembly-emit = { path = "../engraver-assembly-emit" }
+ir = { path = "../ir" }
+sentinel-typechecker = { path = "../sentinel-typechecker" }
+walkdir = "2.5.0"

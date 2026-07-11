@@ -5,8 +5,10 @@ use ir::hir::{Hir, HirFunc, HirInterface, HirModule, HirParam, HirStruct, StrId,
 use ir::ir_conversion::lower_type_hir;
 use ir::ir_hasher::{FxHashBuilder, HashSet};
 use ir::ssa_ir::{Function, Module, SsaType};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::marker::PhantomData;
+use std::rc::Rc;
 use std::sync::Arc;
 use zetaruntime::string_pool::StringPool;
 
@@ -30,11 +32,11 @@ where
     phantom_data: PhantomData<&'cx ()>,
 
     context: Arc<StringPool>,
-    extern_c_names: &'a HashSet<StrId>,
+    extern_c_names: Rc<HashSet<StrId>>,
 
     enum_variant_tags: HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
     struct_interfaces: HashMap<StrId, Vec<StrId>, FxHashBuilder>,
-    pub dep_graph: &'a DepGraph,
+    pub dep_graph: &'a RefCell<DepGraph>,
     pub module_idx: usize,
     global_funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
     g_phantom_data: PhantomData<&'g ()>,
@@ -49,8 +51,8 @@ where
 {
     pub fn new(
         context: Arc<StringPool>,
-        extern_c_names: &'a HashSet<StrId>,
-        dep_graph: &'a DepGraph,
+        extern_c_names: Rc<HashSet<StrId>>,
+        dep_graph: &'a RefCell<DepGraph>,
         module_idx: usize,
         global_funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
         glue_registry: &'a DropGlueRegistry,
@@ -338,7 +340,7 @@ where
             &self.module.classes,
             &self.enum_variant_tags,
             self.context.clone(),
-            self.extern_c_names,
+            &self.extern_c_names,
             self.dep_graph,
             self.module_idx,
             self.glue_registry,
@@ -376,7 +378,7 @@ where
             &self.module.classes,
             &self.enum_variant_tags,
             Arc::clone(&self.context),
-            self.extern_c_names,
+            &self.extern_c_names,
             self.dep_graph,
             self.module_idx,
             self.glue_registry,

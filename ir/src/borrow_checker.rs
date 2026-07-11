@@ -185,6 +185,7 @@ pub struct BorrowChecker {
     pub(super) field_places: FxHashMap<(PlaceId, StrId), PlaceId>,
     pub(super) deref_places: FxHashMap<PlaceId, PlaceId>,
     pub(super) index_places: FxHashMap<(PlaceId, Bound), PlaceId>,
+    pub pointee_origin: FxHashMap<PlaceId, (PlaceId, Interval)>,
 }
 
 #[derive(Debug, Clone)]
@@ -301,10 +302,16 @@ pub enum Bound {
     ///
     ///     i + 1
     ///     len - 4
-    Offset { base: Box<Bound>, offset: i64 },
+    Offset {
+        base: Box<Bound>,
+        offset: i64,
+    },
 
     /// base * factor, needed for `index * elem_size`.
-    Scale { base: Box<Bound>, factor: i64 },
+    Scale {
+        base: Box<Bound>,
+        factor: i64,
+    },
 
     /// A read of a field on the shared base object. Sound to treat as
     /// identical across both sides of a comparison ONLY because
@@ -330,6 +337,8 @@ pub enum Bound {
 
     /// Analysis gave up on this subexpression.
     Opaque,
+
+    Sum(Box<Bound>, Box<Bound>),
 }
 
 #[derive(Clone, Debug)]

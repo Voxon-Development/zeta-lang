@@ -8,20 +8,31 @@ mod hir_lowerer_tests {
     use ir::hir::{Hir, HirExpr, HirFunc, HirModule, HirStmt, HirType, StrId};
     use ir::ir_hasher::HashMap;
     use ir::registry::global_registry::GlobalRegistry;
+    use std::cell::RefCell;
     use std::mem::transmute;
     use std::sync::Arc;
     use zetaruntime::arena::GrowableAtomicBump;
     use zetaruntime::bump::GrowableBump;
     use zetaruntime::string_pool::StringPool;
 
-    fn create_test_context() -> (Arc<StringPool>, GrowableBump<'static>, &'static DepGraph) {
+    fn create_test_context() -> (
+        Arc<StringPool>,
+        GrowableBump<'static>,
+        &'static RefCell<DepGraph>,
+    ) {
         let context = Arc::new(StringPool::new().expect("Failed to create StringPool"));
         let bump = GrowableBump::new(4096, 8);
-        let dep_graph = Box::leak(Box::new(Default::default()));
+        let dep_graph = Box::leak(Box::new(RefCell::new(Default::default())));
         (context, bump, dep_graph)
     }
 
-    fn parse_and_lower(source: &str) -> (HirModule<'_, '_>, Arc<StringPool>, &'static DepGraph) {
+    fn parse_and_lower(
+        source: &str,
+    ) -> (
+        HirModule<'_, '_>,
+        Arc<StringPool>,
+        &'static RefCell<DepGraph>,
+    ) {
         let (context, _bump, dep_graph) = create_test_context();
         let lexer = Lexer::new(context.clone());
 

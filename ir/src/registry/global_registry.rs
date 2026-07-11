@@ -2,6 +2,15 @@ use crate::hir::{HirFunc, HirInterface, HirStruct, StrId};
 use crate::ir_hasher::FxHashMap;
 use std::{cell::RefCell, rc::Rc};
 
+#[derive(Clone, Default)]
+pub struct ModuleSymbols {
+    pub classes: Vec<StrId>,
+    pub interfaces: Vec<StrId>,
+    pub functions: Vec<StrId>,
+    pub struct_interfaces: Vec<StrId>,
+    pub struct_methods: Vec<(StrId, StrId)>, // (struct_name, method_name)
+}
+
 /// Cloning this is very cheap as every field is wrapped in Rc
 #[derive(Clone)]
 pub struct GlobalRegistry<'a, 'bump> {
@@ -10,6 +19,7 @@ pub struct GlobalRegistry<'a, 'bump> {
     pub functions: Rc<RefCell<FxHashMap<StrId, HirFunc<'a, 'bump>>>>,
     pub struct_interfaces: Rc<RefCell<FxHashMap<StrId, Vec<StrId>>>>,
     pub struct_methods: Rc<RefCell<FxHashMap<StrId, FxHashMap<StrId, StrId>>>>,
+    owned_by_module: Rc<RefCell<FxHashMap<StrId, ModuleSymbols>>>, // key = module name StrId
 }
 
 impl<'a, 'bump> GlobalRegistry<'a, 'bump> {
@@ -20,6 +30,39 @@ impl<'a, 'bump> GlobalRegistry<'a, 'bump> {
             functions: Rc::new(RefCell::new(FxHashMap::default())),
             struct_interfaces: Rc::new(RefCell::new(FxHashMap::default())),
             struct_methods: Rc::new(RefCell::new(FxHashMap::default())),
+            owned_by_module: Rc::new(RefCell::new(FxHashMap::default())),
         }
+    }
+
+    pub fn unregister_module(&self, module: StrId) {
+        let Some(owned) = self.owned_by_module.borrow_mut().remove(&module) else {
+            return;
+        };
+        let mut classes = self.classes.borrow_mut();
+        for k in owned.classes {
+            classes.remove(&k);
+        }
+        let mut interfaces = self.interfaces.borrow_mut();
+        for k in owned.interfaces {
+            interfaces.remove(&k);
+        }
+        let mut functions = self.functions.borrow_mut();
+        for k in owned.functions {
+            functions.remove(&k);
+        }
+        let mut si = self.struct_interfaces.borrow_mut();
+        for k in owned.struct_interfaces {
+            si.remove(&k);
+        }
+        let mut sm = self.struct_methods.borrow_mut();
+        for (struct_name, method_name) in owned.struct_methods {
+            if let Some(methods) = sm.get_mut(&struct_name) {
+                methods.remove(&method_name);
+            }
+        }
+    }
+
+    pub fn record_owned(&self, module: StrId, symbols: ModuleSymbols) {
+        self.owned_by_module.borrow_mut().insert(module, symbols);
     }
 }

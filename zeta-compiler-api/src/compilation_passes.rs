@@ -15,10 +15,10 @@ use zetaruntime::bump::GrowableBump;
 use zetaruntime::string_pool::StringPool;
 
 pub fn pass_hir_lowering<'a, 'bump>(
-    statements: Vec<Stmt<'a, 'bump>, &'bump GrowableBump<'bump>>,
+    statements: Vec<Stmt<'a, 'bump>, &GrowableBump<'bump>>,
     context: Arc<StringPool>,
     bump: Arc<GrowableAtomicBump<'bump>>,
-    dep_graph: &'a DepGraph,
+    dep_graph: &'a RefCell<DepGraph>,
     module_idx: usize,
     registry: GlobalRegistry<'a, 'bump>,
 ) -> Result<HirModule<'a, 'bump>, CompilerError<'a>> {
