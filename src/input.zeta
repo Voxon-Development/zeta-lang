@@ -1,18 +1,17 @@
-package zeta::input;
-
-public struct Resource { id: i64 }
-impl Resource by Drop {
-    fn drop(mut this) -> void {
-        zeta::repro.println_str("dropping Resource");
-    }
-}
-
-fn consume(r: Resource) -> void {
-    zeta::repro.println_int(r.id);
-}
+extern(C) fn get_index() -> i64;
+extern(C) fn println_long(num: i64);
 
 fn main() {
-    let r: Resource = Resource { id: 1 };
-    consume(r);
-    consume(r);
+    let mut arr: [4]i64 = [1, 2, 3, 4];
+
+    let index: i64 = get_index();
+    if (index == 2) {
+        let a: &mut i64 = &mut arr[index];
+        let b: &mut i64 = &mut arr[1];
+
+        *a = 10;
+        *b = 20;
+        println_long(*a);
+        println_long(*b);
+    }
 }
