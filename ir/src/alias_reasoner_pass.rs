@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::hir::StrId;
 use crate::ir_hasher::FxHashMap;
 
 use crate::borrow_checker::{
@@ -21,6 +22,7 @@ impl AliasReasoner {
     pub fn relation(
         &self,
         places: &FxHashMap<PlaceId, Place>,
+        place_to_local: &FxHashMap<PlaceId, StrId>,
         lhs: PlaceId,
         rhs: PlaceId,
     ) -> MemoryRelation {
@@ -68,6 +70,30 @@ impl AliasReasoner {
                     return self.reason_about_indices(lhs, rhs, *container);
                 }
                 _ => {}
+            }
+        }
+
+        if let (Some(l), Some(r)) = (places.get(&lhs.id), places.get(&rhs.id)) {
+            if let (Some(Projection::Deref), Some(Projection::Deref)) =
+                (&l.projection, &r.projection)
+            {
+                if l.parent != r.parent {
+                    if let (Some(lb), Some(rb)) = (
+                        l.parent
+                            .and_then(|p| place_to_local.get(&p))
+                            .map(|&s| Bound::Symbol(s)),
+                        r.parent
+                            .and_then(|p| place_to_local.get(&p))
+                            .map(|&s| Bound::Symbol(s)),
+                    ) {
+                        if self.not_equal.get(&lb).is_some_and(|s| s.contains(&rb)) {
+                            return MemoryRelation::Disjoint;
+                        }
+                        if self.equal.get(&lb).is_some_and(|s| s.contains(&rb)) {
+                            return MemoryRelation::Overlap;
+                        }
+                    }
+                }
             }
         }
 
@@ -235,6 +261,13 @@ impl AliasReasoner {
             (FreshPerCall, FreshPerCall) => Some(false),
 
             (Opaque, _) | (_, Opaque) => None,
+
+            (Sum(a1, b1), Sum(a2, b2)) => {
+                match (self.compare_linear(a1, a2), self.compare_linear(b1, b2)) {
+                    (Some(true), Some(true)) => Some(true),
+                    _ => None,
+                }
+            }
 
             _ => self.constraint_verdict(lhs, rhs),
         }

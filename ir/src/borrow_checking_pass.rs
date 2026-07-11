@@ -28,6 +28,7 @@ impl BorrowChecker {
             field_places: FxHashMap::default(),
             deref_places: FxHashMap::default(),
             index_places: FxHashMap::default(),
+            pointee_origin: FxHashMap::default(),
         }
     }
 
@@ -108,13 +109,62 @@ impl BorrowChecker {
     }
 
     pub fn borrow_shared(&mut self, place: PlaceId) -> BorrowResult<LoanId> {
-        self.check_shared_borrow(place)?;
+        self.check_definite_conflict(place, BorrowKind::Shared)?;
         self.create_loan(place, BorrowKind::Shared)
     }
 
     pub fn borrow_mut(&mut self, place: PlaceId) -> BorrowResult<LoanId> {
-        self.check_mutable_borrow(place)?;
+        self.check_definite_conflict(place, BorrowKind::Mutable)?;
         self.create_loan(place, BorrowKind::Mutable)
+    }
+
+    fn check_definite_conflict(&self, place: PlaceId, kind: BorrowKind) -> BorrowResult<()> {
+        let root = self.place_roots[&place];
+        let Some(loans) = self.root_loans.get(&root) else {
+            return Ok(());
+        };
+
+        for loan_id in loans {
+            let loan = &self.active_loans[loan_id];
+            if let MemoryRelation::Overlap = self.overlaps(place, loan.place)? {
+                if kind == BorrowKind::Mutable || loan.kind == BorrowKind::Mutable {
+                    return Err(match loan.kind {
+                        BorrowKind::Shared => BorrowError::Borrowed { place: loan.place },
+                        BorrowKind::Mutable => {
+                            BorrowError::AlreadyMutablyBorrowed { place: loan.place }
+                        }
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn check_use(&self, place: PlaceId, kind: BorrowKind) -> BorrowResult<()> {
+        let root = self.place_roots[&place];
+        let Some(loans) = self.root_loans.get(&root) else {
+            return Ok(());
+        };
+
+        for loan_id in loans {
+            let loan = &self.active_loans[loan_id];
+            if loan.place == place {
+                continue; // a loan doesn't conflict with reading/writing through itself
+            }
+            match self.overlaps(place, loan.place)? {
+                MemoryRelation::Disjoint => {}
+                MemoryRelation::Overlap | MemoryRelation::Unknown
+                    if kind == BorrowKind::Mutable || loan.kind == BorrowKind::Mutable =>
+                {
+                    return Err(BorrowError::UnknownAlias {
+                        lhs: place,
+                        rhs: loan.place,
+                    });
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     fn create_loan(&mut self, place: PlaceId, kind: BorrowKind) -> BorrowResult<LoanId> {
@@ -478,7 +528,9 @@ impl BorrowChecker {
             return Err(BorrowError::PlaceNotFound(rhs));
         }
 
-        Ok(self.reasoning.relation(&self.places, lhs, rhs))
+        Ok(self
+            .reasoning
+            .relation(&self.places, &self.place_to_local, lhs, rhs))
     }
 
     pub fn assume_equal(&mut self, lhs: Bound, rhs: Bound) {
@@ -529,66 +581,11 @@ impl BorrowChecker {
         self.reasoning.disjoint_intervals.push((right, left));
     }
 
-    pub(crate) fn check_mutable_borrow(&self, place: PlaceId) -> BorrowResult<()> {
-        let root = self.place_roots[&place];
-
-        let Some(loans) = self.root_loans.get(&root) else {
-            return Ok(());
-        };
-
-        for loan_id in loans {
-            let loan = &self.active_loans[loan_id];
-
-            match self.overlaps(place, loan.place)? {
-                MemoryRelation::Disjoint => {}
-
-                MemoryRelation::Overlap => {
-                    return Err(match loan.kind {
-                        BorrowKind::Shared => BorrowError::Borrowed { place: loan.place },
-
-                        BorrowKind::Mutable => {
-                            BorrowError::AlreadyMutablyBorrowed { place: loan.place }
-                        }
-                    });
-                }
-
-                MemoryRelation::Unknown => {
-                    return Err(BorrowError::UnknownAlias {
-                        lhs: place,
-                        rhs: loan.place,
-                    });
-                }
-            }
-        }
-
-        Ok(())
+    pub fn record_pointee(&mut self, ptr_place: PlaceId, base: PlaceId, offset: Interval) {
+        self.pointee_origin.insert(ptr_place, (base, offset));
     }
 
-    pub(crate) fn check_shared_borrow(&self, place: PlaceId) -> BorrowResult<()> {
-        let root = self.place_roots[&place];
-
-        let Some(loans) = self.root_loans.get(&root) else {
-            return Ok(());
-        };
-
-        for loan_id in loans {
-            let loan = &self.active_loans[loan_id];
-
-            match self.overlaps(place, loan.place)? {
-                MemoryRelation::Disjoint => {}
-                MemoryRelation::Overlap => {
-                    if loan.kind == BorrowKind::Mutable {
-                        return Err(BorrowError::MutablyBorrowed { place: loan.place });
-                    }
-                }
-                MemoryRelation::Unknown => {
-                    return Err(BorrowError::UnknownAlias {
-                        lhs: place,
-                        rhs: loan.place,
-                    });
-                }
-            }
-        }
-        Ok(())
+    pub fn pointee_of(&self, ptr_place: PlaceId) -> Option<&(PlaceId, Interval)> {
+        self.pointee_origin.get(&ptr_place)
     }
 }

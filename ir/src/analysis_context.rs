@@ -455,6 +455,11 @@ impl<'a, 'bump> IndexDisjointCtx<'a, 'bump> {
                     .map(|b| Self::substitute_lower(b, subst))
                     .collect(),
             ),
+
+            Bound::Sum(first, second) => Bound::Sum(
+                Box::new(Self::substitute_lower(first, subst)),
+                Box::new(Self::substitute_lower(second, subst)),
+            ),
         }
     }
 
@@ -494,6 +499,10 @@ impl<'a, 'bump> IndexDisjointCtx<'a, 'bump> {
                     .map(|b| Self::substitute_upper(b, subst))
                     .collect(),
             ),
+            Bound::Sum(first, second) => Bound::Sum(
+                Box::new(Self::substitute_upper(first, subst)),
+                Box::new(Self::substitute_upper(second, subst)),
+            ),
         }
     }
 
@@ -511,6 +520,7 @@ impl<'a, 'bump> IndexDisjointCtx<'a, 'bump> {
 pub struct CopyAnalysisCtx<'a, 'bump> {
     registry: GlobalRegistry<'a, 'bump>,
     enums: FxHashMap<StrId, HirEnum<'a, 'bump>>,
+    enums_by_module: FxHashMap<usize, Vec<StrId>>,
 
     #[allow(unused)] // May be used in the future
     copy_iface: StrId,
@@ -521,26 +531,70 @@ pub struct CopyAnalysisCtx<'a, 'bump> {
 
 impl<'a, 'bump> CopyAnalysisCtx<'a, 'bump> {
     pub fn new(
-        hir_modules: &[HirModule<'a, 'bump>],
+        hir_modules: &[(usize, HirModule<'a, 'bump>)],
         registry: GlobalRegistry<'a, 'bump>,
         context: Arc<StringPool>,
     ) -> Self {
         let mut enums: FxHashMap<StrId, HirEnum<'a, 'bump>> = FxHashMap::default();
-        for module in hir_modules {
+        let mut enums_by_module: FxHashMap<usize, Vec<StrId>> = FxHashMap::default();
+        for (module_idx, module) in hir_modules {
+            let mut names = Vec::new();
             for item in module.items {
                 if let Hir::Enum(e) = item {
                     enums.insert(e.name, **e);
+                    names.push(e.name);
                 }
             }
+            enums_by_module.insert(*module_idx, names);
         }
 
         Self {
             registry,
             enums,
+            enums_by_module,
             copy_iface: StrId(context.intern("Copy")),
             drop_iface: StrId(context.intern("Drop")),
             is_copy: FxHashMap::default(),
         }
+    }
+
+    /// Incrementally refresh the enum cache for the given modules (an edit
+    /// may add/remove/rename enums), then rerun the whole-program fixpoint.
+    /// The fixpoint itself can't be scoped to just `updated_modules`, a
+    /// struct anywhere in the program may hold a field of an enum/struct
+    /// that just changed, so Copy-ness has to be re-derived globally. This
+    /// only avoids the O(program) rescan `new()` used to require on every edit.
+    pub fn recompute(&mut self, updated_modules: &[(usize, &HirModule<'a, 'bump>)]) {
+        for &(module_idx, module) in updated_modules {
+            self.upsert_module_enums(module_idx, module);
+        }
+        self.run();
+    }
+
+    /// Call when a module is closed/removed entirely (not just edited).
+    pub fn remove_module(&mut self, module_idx: usize) {
+        if let Some(old) = self.enums_by_module.remove(&module_idx) {
+            for name in old {
+                self.enums.remove(&name);
+                self.is_copy.remove(&name);
+            }
+        }
+    }
+
+    fn upsert_module_enums(&mut self, module_idx: usize, module: &HirModule<'a, 'bump>) {
+        if let Some(old) = self.enums_by_module.remove(&module_idx) {
+            for name in old {
+                self.enums.remove(&name);
+            }
+        }
+        let mut names = Vec::new();
+        for item in module.items {
+            if let Hir::Enum(e) = item {
+                self.enums.insert(e.name, **e);
+                names.push(e.name);
+            }
+        }
+        self.enums_by_module.insert(module_idx, names);
     }
 
     pub fn run(&mut self) {
@@ -670,6 +724,7 @@ impl<'a, 'bump> CopyAnalysisCtx<'a, 'bump> {
             HirType::Array(_, _) => false,
             // A kind of reference to an array of compile-time-unknown length, known to be able to store multiple elements
             HirType::Slice(_) => true,
+            HirType::OwnedPointer(_) => false,
         }
     }
 
