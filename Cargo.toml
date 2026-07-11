@@ -16,19 +16,14 @@ members = [
     "sentinel-typechecker",
     "engraver-assembly-emit",
     "zeta_utilities",
-    "iris-math"
+    "iris-math",
+    "zeta-lsp",
+    "zeta-compiler-api"
 ]
 
 [dependencies]
 snmalloc-rs = "0.7.4"
-scribe-parser = { path = "./scribe-parser" }
-emberforge-compiler = { path = "./emberforge-compiler" }
-#smelter-optimizer = { path = "./smelter-optimizer" }
+zeta-compiler-api = { path = "./zeta-compiler-api"}
 walkdir = "2.5.0"
-codex-dependency-graph = { path = "./codex-dependency-graph" }
-zetaruntime = { path = "zeta_utilities" }
-engraver-assembly-emit = { path = "./engraver-assembly-emit" }
-ir = { path = "./ir" }
 thiserror = "2.0.17"
 clap = { version = "4.5.53", features = ["derive"] }
-sentinel-typechecker = { path = "./sentinel-typechecker" }

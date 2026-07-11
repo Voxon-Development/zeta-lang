@@ -1,0 +1,11 @@
+[package]
+name = "zeta-lsp"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.103"
+lsp-server = "0.9.0"
+lsp-types = "0.97.0"
+serde_json = "1.0.150"
+zeta-compiler-api = { path = "../zeta-compiler-api"}
