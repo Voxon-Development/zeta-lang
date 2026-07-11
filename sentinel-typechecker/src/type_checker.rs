@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -7,12 +8,13 @@ use codex_dependency_graph::DepGraph;
 use ir::analysis_context::CopyAnalysisCtx;
 use ir::ast::MutabilityState;
 use ir::borrow_checker::{
-    BorrowChecker, BorrowError, Bound, IndexContainer, IndexTemplate, Interval, LoanId, PlaceId,
-    RefTemplate, TemplateProjection,
+    BorrowChecker, BorrowError, BorrowKind, Bound, IndexContainer, IndexTemplate, Interval, LoanId,
+    PlaceId, RefTemplate, TemplateProjection,
 };
 use ir::errors::type_error::{TypeCheckResult, TypeError, TypeErrorKind};
 use ir::hir::{
-    Hir, HirExpr, HirFunc, HirModule, HirParam, HirStmt, HirType, Operator, StrId, ThisPassingKind,
+    Hir, HirExpr, HirFunc, HirModule, HirParam, HirStmt, HirType, Operator, ProvenanceAnnotation,
+    ProvenancePathSegment, ProvenanceRoot, StrId, ThisPassingKind,
 };
 use ir::ir_hasher::FxHashMap;
 use ir::span::SourceSpan;
@@ -23,7 +25,7 @@ pub struct TypeChecker<'a, 'bump> {
     context: TypeContext<'a, 'bump>,
     errors: Vec<TypeError<'a>>,
     current_span: SourceSpan<'a>,
-    copy_analysis: Rc<CopyAnalysisCtx<'a, 'bump>>,
+    copy_analysis: Rc<RefCell<CopyAnalysisCtx<'a, 'bump>>>,
     move_state: MoveState,
     borrow_checker: BorrowChecker,
     this_id: StrId,
@@ -33,9 +35,9 @@ pub struct TypeChecker<'a, 'bump> {
 
 impl<'a, 'bump> TypeChecker<'a, 'bump> {
     pub fn new(
-        dep_graph: &'a DepGraph,
+        dep_graph: &'a RefCell<DepGraph>,
         bump: &'bump GrowableBump<'bump>,
-        copy_analysis: Rc<CopyAnalysisCtx<'a, 'bump>>,
+        copy_analysis: Rc<RefCell<CopyAnalysisCtx<'a, 'bump>>>,
         string_pool: Arc<StringPool>,
     ) -> Self {
         Self {
@@ -147,6 +149,18 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 }
             }
 
+            HirType::Nullable(inner) => match **inner {
+                // Pointer-shaped: all-zero bits legitimately means "null". Safe to zero-init.
+                HirType::SafePointer(_)
+                | HirType::UnsafePointer(_)
+                | HirType::OwnedPointer(_)
+                | HirType::Ref { .. } => true,
+                // Non-pointer nullable (e.g. i32?) needs a discriminant/tag, not just zero
+                // bits
+                // We could probably add some optimizations like `NonZero<u32>` like in Rust, but for now, this is good enough.
+                _ => false,
+            },
+
             // Impermissible: bool, char, string, enums, interfaces/dyn, lambdas,
             // pointers/refs, nullable, slices, generics, void/null/this/unknown.
             // Zeroing these either produces an invalid bit pattern (bool/char/enum
@@ -254,6 +268,8 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             self.context = old_context;
         }
 
+        self.check_return_provenance(func);
+
         self.borrow_checker.end_scope();
     }
 
@@ -309,6 +325,16 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 self.context
                     .add_variable_with_mutability(var_name, *ty, *mutable);
                 self.borrow_checker.declare_local(*name);
+
+                if matches!(ty, HirType::SafePointer(_) | HirType::UnsafePointer(_)) {
+                    if let Some(place) = self.resolve_place(value) {
+                        if let Some(&(base, ref offset)) = self.borrow_checker.pointee_of(place) {
+                            let declared = *self.borrow_checker.local_place(*name).unwrap();
+                            self.borrow_checker
+                                .record_pointee(declared, base, offset.clone());
+                        }
+                    }
+                }
 
                 None
             }
@@ -784,9 +810,15 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                                 let result = self.check_receiver_is_mutable(object, &method_name);
                                 self.recover(result, ());
                             }
-
                             if matches!(kind, ThisPassingKind::Move | ThisPassingKind::MoveMut) {
                                 self.check_and_record_value_use(object, &obj_type);
+                            } else if let Some(place) = self.resolve_place(object) {
+                                let borrow_kind = if requires_mut {
+                                    BorrowKind::Mutable
+                                } else {
+                                    BorrowKind::Shared
+                                };
+                                self.check_borrow_use(expr, place, borrow_kind);
                             }
                         }
 
@@ -804,8 +836,11 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 }
                 HirExpr::ModuleAccess(access) => {
                     let member_name = access.member.to_string();
-                    let resolved_module_idx =
-                        self.context.dep_graph.resolve_module_path(access.path);
+                    let resolved_module_idx = self
+                        .context
+                        .dep_graph
+                        .borrow()
+                        .resolve_module_path(access.path);
 
                     let free_func = resolved_module_idx
                         .and_then(|midx| self.context.get_module_function(midx, &member_name));
@@ -832,6 +867,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                             let candidate_modules = self
                                 .context
                                 .dep_graph
+                                .borrow()
                                 .find_function_by_name_anywhere(access.member);
                             if candidate_modules.is_empty() {
                                 self.record(TypeErrorKind::UndefinedFunction(qualified_name));
@@ -839,7 +875,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                                 let suggestion_paths: Vec<String> = candidate_modules
                                     .iter()
                                     .filter_map(|&midx| {
-                                        self.context.dep_graph.get_module_package(midx)
+                                        self.context.dep_graph.borrow().get_module_package(midx)
                                     })
                                     .map(|pkg| pkg.to_string())
                                     .collect();
@@ -861,12 +897,12 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                         });
                     }
                     if let Some(params) = func.params {
-                        for (arg, param) in args.iter().zip(params.iter()) {
-                            let arg_type = self.check_expr(arg);
-                            self.check_and_record_value_use(arg, &arg_type);
-                            if let Some(param_type) = param.get_type() {
-                                let result = self.types_compatible(param_type, &arg_type);
-                                self.recover(result, ());
+                        let arg_loans = self.check_all_func_args(args, params, None);
+
+                        let ret_ty = func.return_type.unwrap_or(HirType::Void);
+                        if !self.return_type_may_alias(&ret_ty) {
+                            for loan in arg_loans {
+                                self.borrow_checker.end_loan_now(loan);
                             }
                         }
                     }
@@ -961,6 +997,13 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 self.set_span(*span);
                 let value_type = self.check_expr(value);
                 let target_type = self.check_expr(target);
+
+                if let HirExpr::Deref { expr, .. } = target {
+                    if let Some(base) = self.resolve_place(expr) {
+                        let place = self.borrow_checker.project_deref(base);
+                        self.check_borrow_use(expr, place, BorrowKind::Mutable);
+                    }
+                }
 
                 if let HirExpr::Ident(name, _) = target {
                     let var_name = self.str_id_to_string(*name);
@@ -1090,10 +1133,15 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             HirExpr::Deref { expr, span } => {
                 self.set_span(*span);
                 let inner_ty = self.check_expr(expr);
+                if let Some(base) = self.resolve_place(expr) {
+                    let place = self.borrow_checker.project_deref(base);
+                    self.check_borrow_use(expr, place, BorrowKind::Shared);
+                }
                 match inner_ty {
                     HirType::Ref { inner, .. } => *inner,
                     HirType::SafePointer(inner) => *inner,
                     HirType::UnsafePointer(inner) => *inner,
+                    HirType::OwnedPointer(inner) => *inner,
                     _ => {
                         self.record(TypeErrorKind::Generic(format!(
                             "cannot dereference non-pointer type `{}`",
@@ -1115,7 +1163,11 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             HirExpr::ModuleAccess(access) => {
                 self.set_span(access.span);
                 let member_name = access.member.to_string();
-                let resolved_module_idx = self.context.dep_graph.resolve_module_path(access.path);
+                let resolved_module_idx = self
+                    .context
+                    .dep_graph
+                    .borrow()
+                    .resolve_module_path(access.path);
 
                 let func = resolved_module_idx
                     .and_then(|midx| self.context.get_module_function(midx, &member_name));
@@ -1222,6 +1274,46 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         }
     }
 
+    fn infer_provenance(&self, expr: &HirExpr<'a, 'bump>) -> Option<ProvenanceAnnotation<'bump>> {
+        let mut segments = Vec::new();
+        let root = self.infer_provenance_root(expr, &mut segments)?;
+        segments.reverse();
+        Some(ProvenanceAnnotation {
+            root,
+            path: self.context.bump.alloc_slice(&segments),
+        })
+    }
+
+    fn infer_provenance_root(
+        &self,
+        expr: &HirExpr<'a, 'bump>,
+        segments: &mut Vec<ProvenancePathSegment>,
+    ) -> Option<ProvenanceRoot> {
+        match expr {
+            HirExpr::Ident(name, _) => Some(ProvenanceRoot::Var(*name)),
+            HirExpr::This { .. } => Some(ProvenanceRoot::ThisRoot),
+
+            HirExpr::FieldAccess { object, field, .. } | HirExpr::Get { object, field, .. } => {
+                segments.push(ProvenancePathSegment::Field(*field));
+                self.infer_provenance_root(object, segments)
+            }
+
+            HirExpr::Deref { expr: inner, .. } => {
+                segments.push(ProvenancePathSegment::Deref);
+                self.infer_provenance_root(inner, segments)
+            }
+
+            // Indexing loses static field-path precision (the index is runtime
+            // data), but the borrowed region is still rooted in `object`, keep
+            // the root so diagnostics can still say "derived from `x`" instead
+            // of dropping to nothing. This intentionally does NOT push a path
+            // segment, since there's no StrId/Deref to represent "at index i".
+            HirExpr::Index { object, .. } => self.infer_provenance_root(object, segments),
+
+            _ => None,
+        }
+    }
+
     fn check_ref_expr(
         &mut self,
         expr: &HirExpr<'a, 'bump>,
@@ -1231,6 +1323,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
     ) -> HirType<'a, 'bump> {
         self.set_span(span);
         let inner_ty = self.check_expr(expr);
+        let provenance = self.infer_provenance(expr);
 
         if register_loan {
             if let Some(place) = self.resolve_place(expr) {
@@ -1240,7 +1333,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     self.borrow_checker.borrow_shared(place)
                 };
                 if let Err(e) = result {
-                    let msg = self.describe_borrow_error(&e);
+                    let msg = self.describe_borrow_error(&e, provenance.as_ref());
                     self.record(TypeErrorKind::Generic(msg));
                 }
             }
@@ -1253,6 +1346,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             } else {
                 MutabilityState::Const
             },
+            provenance,
         }
     }
 
@@ -1351,7 +1445,10 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
     fn return_type_may_alias(&self, ty: &HirType<'a, 'bump>) -> bool {
         match ty {
             // Direct reference-like types.
-            HirType::Ref { .. } | HirType::SafePointer(_) | HirType::UnsafePointer(_) => true,
+            HirType::Ref { .. }
+            | HirType::SafePointer(_)
+            | HirType::UnsafePointer(_)
+            | HirType::OwnedPointer(_) => true,
 
             HirType::Nullable(inner) => self.return_type_may_alias(inner),
 
@@ -1389,6 +1486,43 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         }
     }
 
+    fn provenance_from_template(
+        &self,
+        template: &RefTemplate,
+        args: &[HirExpr<'a, 'bump>],
+    ) -> Option<ProvenanceAnnotation<'bump>> {
+        let RefTemplate::Path {
+            base_param,
+            projections,
+            ..
+        } = template
+        else {
+            return None;
+        };
+
+        let base_arg = args.get(*base_param)?;
+        let base_expr = match base_arg {
+            HirExpr::Ref { expr, .. } => expr,
+            other => other,
+        };
+
+        // Root/path of the argument expression itself, e.g. `list` in `&list.head`.
+        let mut base_provenance = self.infer_provenance(base_expr)?;
+
+        // Then extend with the template's own projections (skipping Index, same
+        // rationale as infer_provenance_root: no static field/deref to name).
+        let mut path: Vec<ProvenancePathSegment> = base_provenance.path.to_vec();
+        for proj in projections {
+            match proj {
+                TemplateProjection::Field(f) => path.push(ProvenancePathSegment::Field(*f)),
+                TemplateProjection::Deref => path.push(ProvenancePathSegment::Deref),
+                TemplateProjection::Index(_) => {}
+            }
+        }
+        base_provenance.path = self.context.bump.alloc_slice(&path);
+        Some(base_provenance)
+    }
+
     fn finalize_call_loans(
         &mut self,
         args: &[HirExpr<'a, 'bump>],
@@ -1424,7 +1558,8 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             };
 
             if let Err(e) = result {
-                let msg = self.describe_borrow_error(&e);
+                let provenance = self.provenance_from_template(&template, args);
+                let msg = self.describe_borrow_error(&e, provenance.as_ref());
                 self.record(TypeErrorKind::Generic(msg));
             }
         }
@@ -1441,6 +1576,41 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         let template = Self::build_ref_template(func);
         self.ref_templates.insert(func.name, template.clone());
         template
+    }
+
+    fn check_return_provenance(&mut self, func: &HirFunc<'a, 'bump>) {
+        let Some(HirType::Ref {
+            provenance: Some(ann),
+            ..
+        }) = func.return_type
+        else {
+            return;
+        };
+
+        let template = Self::build_ref_template(func);
+        let RefTemplate::Path { base_param, .. } = template else {
+            self.record(TypeErrorKind::Generic(format!(
+                "return type declares provenance `{}` but the body's returned reference isn't a simple projection",
+                self.provenance_to_string(&ann)
+            )));
+            return;
+        };
+
+        let param = func.params.and_then(|p| p.get(base_param));
+        let root_matches = match (ann.root, param) {
+            (ProvenanceRoot::Var(name), Some(HirParam::Normal { name: pname, .. })) => {
+                name == *pname
+            }
+            (ProvenanceRoot::ThisRoot, Some(HirParam::This { .. })) => true,
+            _ => false,
+        };
+
+        if !root_matches {
+            self.record(TypeErrorKind::Generic(format!(
+                "declared provenance `{}` doesn't match the parameter the returned reference is actually rooted in",
+                self.provenance_to_string(&ann)
+            )));
+        }
     }
 
     fn build_ref_template(func: &HirFunc<'a, 'bump>) -> RefTemplate {
@@ -1744,7 +1914,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         field_ty: &HirType<'a, 'bump>,
         container_ty: Option<&HirType<'a, 'bump>>,
     ) {
-        if self.copy_analysis.type_is_copy(field_ty) {
+        if self.copy_analysis.borrow().type_is_copy(field_ty) {
             return;
         }
 
@@ -1754,7 +1924,15 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 Some(f) => self.borrow_checker.project_field(base_place, f),
             };
             if let Err(e) = self.borrow_checker.check_move(moved_place) {
-                let msg = self.describe_borrow_error(&e);
+                let path = match field {
+                    None => &[][..],
+                    Some(f) => &[ProvenancePathSegment::Field(f)][..],
+                };
+                let provenance = ProvenanceAnnotation {
+                    root: ProvenanceRoot::Var(root),
+                    path: self.context.bump.alloc_slice(path),
+                };
+                let msg = self.describe_borrow_error(&e, Some(&provenance));
                 self.record(TypeErrorKind::Generic(msg));
             }
         }
@@ -1764,7 +1942,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             Some(f) => {
                 let blocks_partial_move = container_ty.is_some_and(|cty| match cty {
                     HirType::Struct(name, _) | HirType::Enum(name, _) => {
-                        self.copy_analysis.implements_drop(*name)
+                        self.copy_analysis.borrow().implements_drop(*name)
                     }
                     _ => false,
                 });
@@ -1785,7 +1963,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
     }
 
     fn check_use(&mut self, root: StrId, field: Option<StrId>, root_ty: &HirType<'a, 'bump>) {
-        if self.copy_analysis.type_is_copy(root_ty) {
+        if self.copy_analysis.borrow().type_is_copy(root_ty) {
             return;
         }
         let name = self.str_id_to_string(root);
@@ -1811,6 +1989,9 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
     }
 
     fn check_and_record_value_use(&mut self, expr: &HirExpr<'a, 'bump>, ty: &HirType<'a, 'bump>) {
+        if let Some(place) = self.resolve_place(expr) {
+            self.check_borrow_use(expr, place, BorrowKind::Shared);
+        }
         match expr {
             HirExpr::Ident(name, _) => {
                 self.check_use(*name, None, ty);
@@ -1828,12 +2009,74 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         }
     }
 
+    fn types_structurally_equal(&self, a: &HirType<'a, 'bump>, b: &HirType<'a, 'bump>) -> bool {
+        use HirType::*;
+        match (a, b) {
+            (
+                Ref {
+                    inner: ia,
+                    mutability_state: ma,
+                    ..
+                },
+                Ref {
+                    inner: ib,
+                    mutability_state: mb,
+                    ..
+                },
+            ) => {
+                // Deliberately ignore provenance here, it's borrow-checker
+                // bookkeeping about where a reference came from, not part of
+                // the reference's type identity. Two `&mut i64` are the same
+                // type regardless of which place each one happens to alias.
+                ma == mb && self.types_structurally_equal(ia, ib)
+            }
+            (Nullable(ia), Nullable(ib)) => self.types_structurally_equal(ia, ib),
+            (SafePointer(ia), SafePointer(ib)) => self.types_structurally_equal(ia, ib),
+            (UnsafePointer(ia), UnsafePointer(ib)) => self.types_structurally_equal(ia, ib),
+            (OwnedPointer(ia), OwnedPointer(ib)) => self.types_structurally_equal(ia, ib),
+            (Array(ia, la), Array(ib, lb)) => la == lb && self.types_structurally_equal(ia, ib),
+            (Slice(ia), Slice(ib)) => self.types_structurally_equal(ia, ib),
+            (Tuple(ta), Tuple(tb)) => {
+                ta.len() == tb.len()
+                    && ta
+                        .iter()
+                        .zip(tb.iter())
+                        .all(|(x, y)| self.types_structurally_equal(x, y))
+            }
+            (Dyn { bounds: ba }, Dyn { bounds: bb }) => {
+                ba.len() == bb.len()
+                    && ba
+                        .iter()
+                        .zip(bb.iter())
+                        .all(|(x, y)| self.types_structurally_equal(x, y))
+            }
+            (
+                Lambda {
+                    params: pa,
+                    return_type: ra,
+                },
+                Lambda {
+                    params: pb,
+                    return_type: rb,
+                },
+            ) => {
+                pa.len() == pb.len()
+                    && pa
+                        .iter()
+                        .zip(pb.iter())
+                        .all(|(x, y)| self.types_structurally_equal(x, y))
+                    && self.types_structurally_equal(ra, rb)
+            }
+            _ => a == b,
+        }
+    }
+
     fn types_compatible(
         &self,
         expected: &HirType<'a, 'bump>,
         found: &HirType<'a, 'bump>,
     ) -> TypeCheckResult<'a, ()> {
-        if expected == found {
+        if self.types_structurally_equal(expected, found) {
             return Ok(());
         }
 
@@ -1904,6 +2147,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         match ty {
             HirType::Ref { inner, .. } => inner,
             HirType::SafePointer(inner) => inner,
+            HirType::OwnedPointer(inner) => inner,
             _ => ty,
         }
     }
@@ -1967,7 +2211,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             HirType::Boolean => "bool".to_string(),
             HirType::String => "string".to_string(),
             HirType::Void => "void".to_string(),
-            HirType::Unknown => "<inferred>".to_string(),
+            HirType::Unknown => "<unknown>".to_string(),
             HirType::Struct(name, _) => format!("struct {}", self.str_id_to_string(*name)),
             HirType::DynInterface(name, _) => format!("interface {}", self.str_id_to_string(*name)),
             HirType::Enum(name, _) => format!("enum {}", self.str_id_to_string(*name)),
@@ -1981,11 +2225,17 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             HirType::Ref {
                 inner,
                 mutability_state,
+                provenance,
             } => {
-                if let MutabilityState::Mut = mutability_state {
-                    format!("&mut {}", inner)
+                let displayed_provenance = if let Some(provenance) = provenance {
+                    format!("{}", provenance)
                 } else {
-                    format!("&{}", inner)
+                    String::new()
+                };
+                if let MutabilityState::Mut = mutability_state {
+                    format!("&{}mut {}", displayed_provenance, inner)
+                } else {
+                    format!("&{}{}", displayed_provenance, inner)
                 }
             }
             HirType::Nullable(hir_type) => format!("{}?", hir_type),
@@ -2012,11 +2262,16 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             ),
             HirType::Array(inner, len) => format!("[{}]{}", len, self.type_to_string(inner)),
             HirType::Slice(inner) => format!("[]{}", self.type_to_string(inner)),
+            HirType::OwnedPointer(inner) => format!("^{}", self.type_to_string(inner)),
         }
     }
 
-    fn describe_borrow_error(&self, err: &BorrowError) -> String {
-        match err {
+    fn describe_borrow_error(
+        &self,
+        err: &BorrowError,
+        provenance: Option<&ProvenanceAnnotation>,
+    ) -> String {
+        let base = match err {
             BorrowError::UseAfterMove { .. } => "use of a value after it was moved".to_string(),
             BorrowError::MutablyBorrowed { .. } => {
                 "cannot borrow: value is already mutably borrowed".to_string()
@@ -2039,7 +2294,23 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             BorrowError::LoanNotFound(_)
             | BorrowError::PlaceNotFound(_)
             | BorrowError::ProvenanceNotFound(_) => "internal borrow-checker error".to_string(),
+        };
+
+        match provenance {
+            Some(p) => format!("{} (via {})", base, self.provenance_to_string(p)),
+            None => base.to_string(),
         }
+    }
+
+    fn provenance_to_string(&self, p: &ProvenanceAnnotation) -> String {
+        let root = match p.root {
+            ProvenanceRoot::Var(name) => self.str_id_to_string(name),
+            ProvenanceRoot::ThisRoot => "this".to_string(),
+        };
+        p.path.iter().fold(root, |acc, seg| match seg {
+            ProvenancePathSegment::Field(f) => format!("{}.{}", acc, self.str_id_to_string(*f)),
+            ProvenancePathSegment::Deref => format!("*{}", acc),
+        })
     }
 
     fn peek_type(&self, expr: &HirExpr<'a, 'bump>) -> HirType<'a, 'bump> {
@@ -2073,6 +2344,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 HirType::Ref { inner, .. } => *inner,
                 HirType::SafePointer(inner) => *inner,
                 HirType::UnsafePointer(inner) => *inner,
+                HirType::OwnedPointer(inner) => *inner,
                 _ => HirType::Unknown,
             },
             HirExpr::Index { object, .. } => match self.peek_type(object) {
@@ -2092,6 +2364,13 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
 
             HirExpr::FieldAccess { object, field, .. } | HirExpr::Get { object, field, .. } => {
                 let base = self.resolve_place(object)?;
+                let base = match self.peek_type(object) {
+                    HirType::Ref { .. }
+                    | HirType::SafePointer(_)
+                    | HirType::UnsafePointer(_)
+                    | HirType::OwnedPointer(_) => self.borrow_checker.project_deref(base),
+                    _ => base,
+                };
                 Some(self.borrow_checker.project_field(base, *field))
             }
 
@@ -2117,6 +2396,39 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 _ => None,
             },
 
+            HirExpr::Binary {
+                left,
+                op: op @ (Operator::Add | Operator::Subtract),
+                right,
+                ..
+            } => {
+                if !matches!(
+                    self.peek_type(left),
+                    HirType::SafePointer(_) | HirType::UnsafePointer(_)
+                ) {
+                    return None;
+                }
+                let ptr_place = self.resolve_place(left)?;
+                let (base, cur) = self.borrow_checker.pointee_of(ptr_place)?.clone();
+                let delta = self.expr_to_bound(right);
+                let signed = match op {
+                    Operator::Subtract => Bound::Scale {
+                        base: Box::new(delta),
+                        factor: -1,
+                    },
+                    _ => delta,
+                };
+                let combined = Bound::Sum(Box::new(cur.lower.clone()), Box::new(signed));
+                let interval = Interval {
+                    lower: combined.clone(),
+                    upper: combined,
+                };
+                Some(
+                    self.borrow_checker
+                        .project_index(base, interval, IndexContainer::Primitive),
+                )
+            }
+
             _ => None,
         }
     }
@@ -2126,6 +2438,14 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             HirExpr::Number(value, _) => Bound::Const(*value),
             HirExpr::Ident(name, _) => Bound::Symbol(*name),
             _ => Bound::Opaque,
+        }
+    }
+
+    fn check_borrow_use(&mut self, expr: &HirExpr<'a, 'bump>, place: PlaceId, kind: BorrowKind) {
+        if let Err(e) = self.borrow_checker.check_use(place, kind) {
+            let provenance = self.infer_provenance(expr);
+            let msg = self.describe_borrow_error(&e, provenance.as_ref());
+            self.record(TypeErrorKind::Generic(msg));
         }
     }
 }
@@ -2141,12 +2461,16 @@ mod tests {
 
     #[test]
     fn test_type_checker_creation() {
-        let dep_graph = DepGraph::new();
+        let dep_graph = RefCell::new(DepGraph::new());
 
         let bump = GrowableBump::new(4096, 8);
         let context = Arc::new(StringPool::new().unwrap());
         let registry = GlobalRegistry::new();
-        let cpy_ctx = Rc::new(CopyAnalysisCtx::new(&[], registry.clone(), context.clone()));
+        let cpy_ctx = Rc::new(RefCell::new(CopyAnalysisCtx::new(
+            &[],
+            registry.clone(),
+            context.clone(),
+        )));
         let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx, context.clone());
         assert_eq!(checker.context.variables.len(), 0);
         assert!(!checker.has_errors());
@@ -2154,11 +2478,15 @@ mod tests {
 
     #[test]
     fn test_is_numeric() {
-        let dep_graph = DepGraph::new();
+        let dep_graph = RefCell::new(DepGraph::new());
         let bump = GrowableBump::new(4096, 8);
         let context = Arc::new(StringPool::new().unwrap());
         let registry = GlobalRegistry::new();
-        let cpy_ctx = Rc::new(CopyAnalysisCtx::new(&[], registry.clone(), context.clone()));
+        let cpy_ctx = Rc::new(RefCell::new(CopyAnalysisCtx::new(
+            &[],
+            registry.clone(),
+            context.clone(),
+        )));
         let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx, context.clone());
         assert!(checker.is_numeric(&HirType::I32));
         assert!(checker.is_numeric(&HirType::F64));
@@ -2168,11 +2496,15 @@ mod tests {
 
     #[test]
     fn test_is_comparable() {
-        let dep_graph = DepGraph::new();
+        let dep_graph = RefCell::new(DepGraph::new());
         let bump = GrowableBump::new(4096, 8);
         let context = Arc::new(StringPool::new().unwrap());
         let registry = GlobalRegistry::new();
-        let cpy_ctx = Rc::new(CopyAnalysisCtx::new(&[], registry.clone(), context.clone()));
+        let cpy_ctx = Rc::new(RefCell::new(CopyAnalysisCtx::new(
+            &[],
+            registry.clone(),
+            context.clone(),
+        )));
         let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx, context.clone());
         assert!(checker.is_comparable(&HirType::I32));
         assert!(checker.is_comparable(&HirType::Boolean));
@@ -2181,11 +2513,15 @@ mod tests {
 
     #[test]
     fn test_type_to_string() {
-        let dep_graph = DepGraph::new();
+        let dep_graph = RefCell::new(DepGraph::new());
         let bump = GrowableBump::new(4096, 8);
         let context = Arc::new(StringPool::new().unwrap());
         let registry = GlobalRegistry::new();
-        let cpy_ctx = Rc::new(CopyAnalysisCtx::new(&[], registry.clone(), context.clone()));
+        let cpy_ctx = Rc::new(RefCell::new(CopyAnalysisCtx::new(
+            &[],
+            registry.clone(),
+            context.clone(),
+        )));
         let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx, context.clone());
         assert_eq!(checker.type_to_string(&HirType::I32), "i32");
         assert_eq!(checker.type_to_string(&HirType::Boolean), "bool");
@@ -2195,11 +2531,15 @@ mod tests {
 
     #[test]
     fn test_types_compatible_same_type() {
-        let dep_graph = DepGraph::new();
+        let dep_graph = RefCell::new(DepGraph::new());
         let bump = GrowableBump::new(4096, 8);
         let context = Arc::new(StringPool::new().unwrap());
         let registry = GlobalRegistry::new();
-        let cpy_ctx = Rc::new(CopyAnalysisCtx::new(&[], registry.clone(), context.clone()));
+        let cpy_ctx = Rc::new(RefCell::new(CopyAnalysisCtx::new(
+            &[],
+            registry.clone(),
+            context.clone(),
+        )));
         let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx, context.clone());
         let result = checker.types_compatible(&HirType::I32, &HirType::I32);
         assert!(result.is_ok());
@@ -2207,11 +2547,15 @@ mod tests {
 
     #[test]
     fn test_types_compatible_different_type() {
-        let dep_graph = DepGraph::new();
+        let dep_graph = RefCell::new(DepGraph::new());
         let bump = GrowableBump::new(4096, 8);
         let context = Arc::new(StringPool::new().unwrap());
         let registry = GlobalRegistry::new();
-        let cpy_ctx = Rc::new(CopyAnalysisCtx::new(&[], registry.clone(), context.clone()));
+        let cpy_ctx = Rc::new(RefCell::new(CopyAnalysisCtx::new(
+            &[],
+            registry.clone(),
+            context.clone(),
+        )));
         let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx, context.clone());
         let result = checker.types_compatible(&HirType::I32, &HirType::I64);
         assert!(result.is_err());
@@ -2219,11 +2563,15 @@ mod tests {
 
     #[test]
     fn test_binary_op_addition() {
-        let dep_graph = DepGraph::new();
+        let dep_graph = RefCell::new(DepGraph::new());
         let bump = GrowableBump::new(4096, 8);
         let context = Arc::new(StringPool::new().unwrap());
         let registry = GlobalRegistry::new();
-        let cpy_ctx = Rc::new(CopyAnalysisCtx::new(&[], registry.clone(), context.clone()));
+        let cpy_ctx = Rc::new(RefCell::new(CopyAnalysisCtx::new(
+            &[],
+            registry.clone(),
+            context.clone(),
+        )));
         let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx, context.clone());
         let result = checker.check_binary_op(&HirType::I32, &Operator::Add, &HirType::I32);
         assert!(result.is_ok());
@@ -2232,11 +2580,15 @@ mod tests {
 
     #[test]
     fn test_binary_op_comparison() {
-        let dep_graph = DepGraph::new();
+        let dep_graph = RefCell::new(DepGraph::new());
         let bump = GrowableBump::new(4096, 8);
         let context = Arc::new(StringPool::new().unwrap());
         let registry = GlobalRegistry::new();
-        let cpy_ctx = Rc::new(CopyAnalysisCtx::new(&[], registry.clone(), context.clone()));
+        let cpy_ctx = Rc::new(RefCell::new(CopyAnalysisCtx::new(
+            &[],
+            registry.clone(),
+            context.clone(),
+        )));
         let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx, context.clone());
         let result = checker.check_binary_op(&HirType::I32, &Operator::LessThan, &HirType::I32);
         assert!(result.is_ok());
@@ -2245,11 +2597,15 @@ mod tests {
 
     #[test]
     fn test_binary_op_logical() {
-        let dep_graph = DepGraph::new();
+        let dep_graph = RefCell::new(DepGraph::new());
         let bump = GrowableBump::new(4096, 8);
         let context = Arc::new(StringPool::new().unwrap());
         let registry = GlobalRegistry::new();
-        let cpy_ctx = Rc::new(CopyAnalysisCtx::new(&[], registry.clone(), context.clone()));
+        let cpy_ctx = Rc::new(RefCell::new(CopyAnalysisCtx::new(
+            &[],
+            registry.clone(),
+            context.clone(),
+        )));
         let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx, context.clone());
         let result =
             checker.check_binary_op(&HirType::Boolean, &Operator::LogicalAnd, &HirType::Boolean);
@@ -2259,11 +2615,15 @@ mod tests {
 
     #[test]
     fn test_binary_op_type_mismatch() {
-        let dep_graph = DepGraph::new();
+        let dep_graph = RefCell::new(DepGraph::new());
         let bump = GrowableBump::new(4096, 8);
         let context = Arc::new(StringPool::new().unwrap());
         let registry = GlobalRegistry::new();
-        let cpy_ctx = Rc::new(CopyAnalysisCtx::new(&[], registry.clone(), context.clone()));
+        let cpy_ctx = Rc::new(RefCell::new(CopyAnalysisCtx::new(
+            &[],
+            registry.clone(),
+            context.clone(),
+        )));
         let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx, context.clone());
         let result = checker.check_binary_op(&HirType::I32, &Operator::Add, &HirType::String);
         assert!(result.is_err());
