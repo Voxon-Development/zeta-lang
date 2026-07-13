@@ -141,6 +141,16 @@ impl DepGraph {
         }
     }
 
+    pub fn module_symbols(
+        &self,
+        module_idx: usize,
+    ) -> impl Iterator<Item = (StrId, &'static str)> + '_ {
+        self.symbol_table
+            .iter()
+            .filter(move |&(&(_, m), _)| m == module_idx)
+            .map(|(&(name, _), &(_, _, tag))| (name, tag))
+    }
+
     fn remove_node(&mut self, idx: NodeIdx) {
         let deps = std::mem::take(&mut self.nodes[idx].deps);
         for d in deps {
@@ -935,7 +945,7 @@ impl DepGraph {
             } => {
                 self.walk_expr(callee, from_node, module_idx, pool);
                 for arg in *arguments {
-                    self.walk_expr(arg, from_node, module_idx, pool);
+                    self.walk_expr(&arg.value, from_node, module_idx, pool);
                 }
             }
             Expr::FieldAccess { object, .. } | Expr::Get { object, .. } => {
