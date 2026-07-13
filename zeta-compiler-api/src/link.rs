@@ -1,5 +1,6 @@
-use crate::CompilerError;
 use std::process::{Command, ExitStatus};
+
+use crate::main_structs::CompilerError;
 
 pub fn link<'a>(objects: &[&str], output: &str, link_libc: bool) -> Result<(), CompilerError<'a>> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]

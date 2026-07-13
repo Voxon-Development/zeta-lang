@@ -9,3 +9,6 @@ lsp-server = "0.9.0"
 lsp-types = "0.97.0"
 serde_json = "1.0.150"
 zeta-compiler-api = { path = "../zeta-compiler-api"}
+sentinel-typechecker = { path = "../sentinel-typechecker"}
+ir = { path = "../ir"}
+url = "2.5.8"
