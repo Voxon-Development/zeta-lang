@@ -1,5 +1,5 @@
-use std::collections::{VecDeque};
 use crate::symbol_table::ModulesSoA;
+use std::collections::VecDeque;
 
 pub fn topo_sort(modules: &ModulesSoA) -> Vec<usize> {
     let mut indegree: Vec<usize> = vec![0usize; modules.names.len()];
@@ -12,7 +12,9 @@ pub fn topo_sort(modules: &ModulesSoA) -> Vec<usize> {
 
     let mut queue: VecDeque<usize> = VecDeque::new();
     for (i, &deg) in indegree.iter().enumerate() {
-        if deg == 0 { queue.push_back(i); }
+        if deg == 0 {
+            queue.push_back(i);
+        }
     }
 
     let mut sorted: Vec<usize> = Vec::with_capacity(modules.names.len());
@@ -22,7 +24,9 @@ pub fn topo_sort(modules: &ModulesSoA) -> Vec<usize> {
 
         for &dep_idx in &modules.deps[idx] {
             indegree[dep_idx] -= 1;
-            if indegree[dep_idx] == 0 { queue.push_back(dep_idx); }
+            if indegree[dep_idx] == 0 {
+                queue.push_back(dep_idx);
+            }
         }
     }
 
