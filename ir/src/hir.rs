@@ -1,6 +1,7 @@
 use crate::ast::LambdaModifier;
 use crate::ast::MutabilityState;
 pub use crate::ast::{FuncModifiers, Path, Visibility};
+use crate::hir::DropKind::Undroppable;
 use crate::span::SourceSpan;
 use std::cell::UnsafeCell;
 use std::fmt;
@@ -290,9 +291,11 @@ where
     Normal {
         name: StrId,
         param_type: HirType<'a, 'bump>,
+        span: SourceSpan<'a>,
     },
     This {
         kind: ThisPassingKind,
+        span: SourceSpan<'a>,
     },
 }
 
@@ -315,6 +318,7 @@ impl<'a, 'bump> HirParam<'a, 'bump> {
                     | ThisPassingKind::ConstSafePtr
                     | ThisPassingKind::MutUnsafePtr
                     | ThisPassingKind::ConstUnsafePtr,
+                ..
             }
         )
     }
@@ -401,6 +405,7 @@ where
         is_static: bool,
         catch_pattern: Option<HirErrorHandlerPattern<'a, 'bump>>,
         else_block: Option<&'bump HirStmt<'a, 'bump>>,
+        span: SourceSpan<'a>,
     },
     Const(&'bump ConstStmt<'a, 'bump>),
     Return(Option<&'bump HirExpr<'a, 'bump>>),
@@ -497,6 +502,16 @@ pub struct HirFuncProto<'a, 'bump> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HirFieldInit<'a, 'bump>
+where
+    'bump: 'a,
+{
+    pub name: StrId,
+    pub name_span: SourceSpan<'a>,
+    pub value: HirExpr<'a, 'bump>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum HirExpr<'a, 'bump>
 where
     'bump: 'a,
@@ -517,6 +532,7 @@ where
     Call {
         callee: &'bump HirExpr<'a, 'bump>,
         args: &'bump [HirExpr<'a, 'bump>],
+        type_args: Option<&'bump [HirType<'a, 'bump>]>,
         span: SourceSpan<'a>,
     },
     InterfaceCall {
@@ -554,7 +570,8 @@ where
     },
     StructInit {
         name: &'bump HirExpr<'a, 'bump>,
-        args: &'bump [HirExpr<'a, 'bump>],
+        args: &'bump [HirFieldInit<'a, 'bump>],
+        type_args: Option<&'bump [HirType<'a, 'bump>]>,
         span: SourceSpan<'a>,
     },
     Comparison {
@@ -596,6 +613,7 @@ where
         span: SourceSpan<'a>,
         ty: HirType<'a, 'bump>,
     },
+    GenericIdent(StrId, &'bump [HirType<'a, 'bump>], SourceSpan<'a>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -810,48 +828,33 @@ where
         }
     }
 
-    pub fn get_name_of_ty(&self) -> Option<String> {
+    pub fn drop_kind(&self) -> DropKind {
         match self {
-            HirType::I8 => Some("i8".to_string()),
-            HirType::I16 => Some("i16".to_string()),
-            HirType::I32 => Some("i32".to_string()),
-            HirType::I64 => Some("i64".to_string()),
-            HirType::U8 => Some("u8".to_string()),
-            HirType::U16 => Some("u16".to_string()),
-            HirType::U32 => Some("u32".to_string()),
-            HirType::U64 => Some("u64".to_string()),
-            HirType::F32 => Some("f32".to_string()),
-            HirType::F64 => Some("f64".to_string()),
-            HirType::I128 => Some("i128".to_string()),
-            HirType::U128 => Some("u128".to_string()),
-            HirType::Boolean => Some("bool".to_string()),
-            HirType::String => Some("str".to_string()),
-            HirType::Struct(str_id, hir_types) => Some(str_id.to_string()),
-            HirType::DynInterface(str_id, hir_types) => Some(str_id.to_string()),
-            HirType::Enum(str_id, hir_types) => Some(str_id.to_string()),
-            HirType::SafePointer(hir_type) => hir_type.get_name_of_ty(),
-            HirType::Ref {
-                inner,
-                mutability_state,
-                provenance,
-            } => inner.get_name_of_ty(),
-            HirType::UnsafePointer(hir_type) => hir_type.get_name_of_ty(),
-            HirType::OwnedPointer(hir_type) => hir_type.get_name_of_ty(),
-            HirType::Lambda {
-                params,
-                return_type,
-            } => None,
-            HirType::Generic(str_id) => None,
-            HirType::Void => Some("void".to_string()),
-            HirType::This => Some("this".to_string()),
-            HirType::Null => Some("null".to_string()),
-            HirType::Char => Some("char".to_string()),
-            HirType::Unknown => None,
-            HirType::Nullable(hir_type) => hir_type.get_name_of_ty(),
-            HirType::Dyn { bounds } => None,
-            HirType::Tuple(hir_types) => None,
-            HirType::Array(hir_type, _) => hir_type.get_name_of_ty(),
-            HirType::Slice(hir_type) => hir_type.get_name_of_ty(),
+            HirType::Struct(name, _) | HirType::Enum(name, _) | HirType::DynInterface(name, _) => {
+                DropKind::Type(*name)
+            }
+
+            HirType::OwnedPointer(inner) => DropKind::OwnedPointer(Box::new(inner.drop_kind())),
+
+            _ => DropKind::Undroppable,
+        }
+    }
+
+    pub fn nominal_type_name(&self) -> Option<StrId> {
+        match self {
+            HirType::Struct(name, _) | HirType::Enum(name, _) | HirType::DynInterface(name, _) => {
+                Some(*name)
+            }
+
+            HirType::Ref { inner, .. }
+            | HirType::SafePointer(inner)
+            | HirType::UnsafePointer(inner)
+            | HirType::OwnedPointer(inner)
+            | HirType::Nullable(inner)
+            | HirType::Array(inner, _)
+            | HirType::Slice(inner) => inner.nominal_type_name(),
+
+            _ => None,
         }
     }
 
@@ -861,6 +864,22 @@ where
         } else {
             let args_str: Vec<_> = args.iter().map(|a| a.to_string()).collect();
             write!(f, "{}<{}>", name, args_str.join(", "))
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum DropKind {
+    Type(StrId),
+    OwnedPointer(Box<DropKind>),
+    Undroppable,
+}
+
+impl DropKind {
+    pub fn is_droppable(&self) -> bool {
+        match self {
+            Undroppable => false,
+            _ => true,
         }
     }
 }
@@ -905,4 +924,5 @@ pub struct HirModuleAccess<'a, 'bump> {
 pub struct HirLambdaParam<'a, 'bump> {
     pub name: StrId,
     pub param_type: Option<HirType<'a, 'bump>>,
+    pub span: SourceSpan<'a>,
 }

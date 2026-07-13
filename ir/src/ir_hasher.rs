@@ -1,5 +1,5 @@
-use std::hash::BuildHasher;
 pub use fxhash::FxHashMap;
+use std::hash::BuildHasher;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct FxHashBuilder;

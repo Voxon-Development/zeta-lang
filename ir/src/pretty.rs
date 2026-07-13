@@ -142,11 +142,15 @@ impl IrPrettyPrinter {
                     write!(output, ", ")?;
                 }
                 match param {
-                    HirParam::Normal { name, param_type } => {
+                    HirParam::Normal {
+                        name,
+                        param_type,
+                        span: _,
+                    } => {
                         write!(output, "{}: ", self.resolve_str(*name))?;
                         self.format_hir_type(output, param_type)?;
                     }
-                    HirParam::This { kind } => {
+                    HirParam::This { kind, span: _ } => {
                         write!(output, "{}", kind)?;
                     }
                 }
@@ -453,7 +457,8 @@ impl IrPrettyPrinter {
                     if i > 0 {
                         write!(output, ", ")?;
                     }
-                    self.format_hir_expression(output, arg)?;
+                    write!(output, "{}: ", arg.name)?;
+                    self.format_hir_expression(output, &arg.value)?;
                 }
                 write!(output, "}}")?;
             }
