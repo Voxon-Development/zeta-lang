@@ -1,6 +1,6 @@
-use std::path::PathBuf;
-use ir::ssa_ir::{Function, Module};
 use crate::cranelift::cranelift_backend::EmitError;
+use ir::ssa_ir::{Function, Module};
+use std::path::PathBuf;
 
 /// Trait defining code generation interface
 pub trait Backend {
