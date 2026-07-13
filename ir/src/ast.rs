@@ -357,6 +357,13 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FieldInit<'a, 'bump> {
+    pub name: StrId,
+    pub name_span: SourceSpan<'a>,
+    pub value: Expr<'a, 'bump>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Expr<'a, 'bump>
 where
     'bump: 'a,
@@ -399,7 +406,8 @@ where
     },
     StructInit {
         callee: &'bump Expr<'a, 'bump>,
-        arguments: &'bump [Expr<'a, 'bump>],
+        arguments: &'bump [FieldInit<'a, 'bump>],
+        type_args: &'bump [Type<'a, 'bump>],
         span: SourceSpan<'a>,
     },
     FieldAccess {
