@@ -1,10 +1,13 @@
 use crate::parser::descent_parser::DescentParser;
-use ir::ast::{ErrorHandlerBranch, ErrorHandlerPattern, LambdaModifier, LambdaParam};
+use ir::ast::{
+    ErrorHandlerBranch, ErrorHandlerPattern, FieldInit, LambdaModifier, LambdaParam, Type,
+};
 use ir::tokens::TokenKind;
 use ir::{
     ast::{Expr, Op},
     errors::error::{DiagnosticError, ParseErrorKind},
 };
+use zetaruntime::bump::GrowableBump;
 
 impl<'a, 'bump> DescentParser<'a, 'bump>
 where
@@ -100,46 +103,112 @@ where
                         };
                     }
 
+                    TokenKind::Lt => {
+                        // TODO: fix overlap with < operator
+                        self.cursor.advance();
+
+                        let mut generic_args = Vec::new_in(self.bump);
+                        let mut args = Vec::new_in(self.bump);
+
+                        if self.cursor.peek() != TokenKind::Gt {
+                            loop {
+                                let arg = self.parse_type()?;
+                                generic_args.push(arg);
+
+                                if !self.cursor.consume(TokenKind::Comma) {
+                                    break;
+                                }
+                            }
+                        } else {
+                            todo!(
+                                "Handle error when trying to call like `hello<>()` because you cannot have an empty generic list"
+                            )
+                        }
+
+                        self.cursor.expect(TokenKind::Gt)?;
+                        self.cursor.expect(TokenKind::LParen)?;
+
+                        if self.cursor.peek() != TokenKind::RParen {
+                            loop {
+                                let arg = self.parse_expr_inner(0, true)?;
+                                args.push(arg);
+
+                                if !self.cursor.consume(TokenKind::Comma) {
+                                    break;
+                                }
+                            }
+                        }
+
+                        let span = self.cursor.peek_token().span;
+                        self.cursor.expect(TokenKind::RParen)?;
+
+                        let callee = self.bump.alloc_value_immutable(lhs);
+
+                        lhs = Expr::Call {
+                            callee,
+                            generic_args: self.bump.alloc_slice_copy(&generic_args),
+                            arguments: self.bump.alloc_slice_copy(&args),
+                            span,
+                        };
+                    }
+
                     TokenKind::LBrace => {
                         if allow_struct_init {
-                            if let Expr::Ident { .. } = lhs {
-                                self.cursor.advance();
-
-                                let mut args = Vec::new_in(self.bump);
-
-                                while self.cursor.peek() != TokenKind::RBrace
-                                    && self.cursor.peek() != TokenKind::EOF
-                                {
-                                    let (field_name, field_span) = self.cursor.expect_ident()?;
-
-                                    let value = if self.cursor.consume(TokenKind::Colon) {
-                                        self.parse_expr_inner(0, true)?
-                                    } else {
-                                        Expr::Ident {
-                                            name: field_name,
-                                            span: field_span,
-                                        }
-                                    };
-
-                                    args.push(value);
-
-                                    if !self.cursor.consume(TokenKind::Comma) {
-                                        break;
-                                    }
+                            let (callee, type_args) = match lhs {
+                                Expr::Ident { .. } => {
+                                    let generic_args: &'bump [Type<'a, 'bump>] = &[];
+                                    (self.bump.alloc_value_immutable(lhs), generic_args)
                                 }
 
-                                let span = self.cursor.peek_token().span;
+                                Expr::Call {
+                                    callee,
+                                    generic_args,
+                                    arguments,
+                                    ..
+                                } if arguments.is_empty() => (callee, generic_args),
 
-                                self.cursor.expect(TokenKind::RBrace)?;
+                                _ => break,
+                            };
 
-                                lhs = Expr::StructInit {
-                                    callee: self.bump.alloc_value_immutable(lhs),
-                                    arguments: self.bump.alloc_slice_copy(&args),
-                                    span,
+                            self.cursor.advance();
+
+                            let mut args: Vec<FieldInit<'a, 'bump>, &GrowableBump<'bump>> =
+                                Vec::new_in(self.bump);
+
+                            while self.cursor.peek() != TokenKind::RBrace
+                                && self.cursor.peek() != TokenKind::EOF
+                            {
+                                let (field_name, field_span) = self.cursor.expect_ident()?;
+
+                                let value = if self.cursor.consume(TokenKind::Colon) {
+                                    self.parse_expr_inner(0, true)?
+                                } else {
+                                    Expr::Ident {
+                                        name: field_name,
+                                        span: field_span,
+                                    }
                                 };
-                            } else {
-                                break;
+
+                                args.push(FieldInit {
+                                    name: field_name,
+                                    name_span: field_span,
+                                    value,
+                                });
+
+                                if !self.cursor.consume(TokenKind::Comma) {
+                                    break;
+                                }
                             }
+
+                            let span = self.cursor.peek_token().span;
+                            self.cursor.expect(TokenKind::RBrace)?;
+
+                            lhs = Expr::StructInit {
+                                callee,
+                                type_args,
+                                arguments: self.bump.alloc_slice_copy(args.as_slice()),
+                                span,
+                            };
                         } else {
                             break;
                         }
@@ -393,7 +462,7 @@ where
                 })
             }
 
-            TokenKind::Suspend | TokenKind::Nosuspend | TokenKind::Blocking | TokenKind::Fn => {
+            TokenKind::Suspend | TokenKind::Nosuspend | TokenKind::Blocking | TokenKind::Func => {
                 self.parse_lambda()
             }
 
@@ -426,7 +495,7 @@ where
             _ => None,
         };
 
-        let fn_token = self.cursor.expect(TokenKind::Fn)?;
+        let fn_token = self.cursor.expect(TokenKind::Func)?;
 
         self.cursor.expect(TokenKind::LParen)?;
 

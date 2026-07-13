@@ -1,10 +1,10 @@
-pub mod descent_parser;
-mod functions;
-mod expressions;
-mod statements;
 mod declarations;
+pub mod descent_parser;
+mod expressions;
+mod functions;
 mod misc;
+mod statements;
 
-pub use descent_parser::{parse_program, ParseResult, ParserDiagnostics};
+pub use descent_parser::{ParseResult, ParserDiagnostics, parse_program};
 pub use ir::diagnostics_context::ParserDiagnosticsContext;
-pub use ir::errors::error::{DiagnosticError, ParseErrorKind, ParseContext};
+pub use ir::errors::error::{DiagnosticError, ParseContext, ParseErrorKind};

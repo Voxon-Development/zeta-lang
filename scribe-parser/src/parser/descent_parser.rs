@@ -75,7 +75,7 @@ where
                 self.cursor.advance(); // consume 'static'
                 self.parse_static_let_stmt()
             }
-            TokenKind::Fn => self.parse_function_with_visibility(visibility),
+            TokenKind::Func => self.parse_function_with_visibility(visibility),
             TokenKind::If => self.parse_if_stmt(),
             TokenKind::While => self.parse_while_stmt(),
             TokenKind::For => self.parse_for_stmt(),

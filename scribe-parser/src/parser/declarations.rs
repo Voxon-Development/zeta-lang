@@ -323,7 +323,7 @@ where
                 Visibility::Public
             };
 
-            if self.cursor.peek() == TokenKind::Fn {
+            if self.cursor.peek() == TokenKind::Func {
                 let func = self.parse_function_signature(method_vis)?;
                 methods.push(func);
             } else {

@@ -527,7 +527,7 @@ where
                 TypeKind::OwnedPointer { inner: inner_ref }
             }
 
-            TokenKind::Fn => {
+            TokenKind::Func => {
                 self.cursor.expect(TokenKind::LParen)?;
                 let mut params: Vec<Type<'a, 'bump>> = Vec::new();
                 while self.cursor.peek() != TokenKind::RParen {

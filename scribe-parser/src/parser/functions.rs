@@ -14,7 +14,7 @@ where
         visibility: Visibility,
     ) -> Result<FuncDecl<'a, 'bump>, DiagnosticError<'a>> {
         let function_metadata = Self::get_func_metadata(&mut self.cursor, visibility)?;
-        let fn_token = self.cursor.expect(TokenKind::Fn)?;
+        let fn_token = self.cursor.expect(TokenKind::Func)?;
 
         let name_token = self.cursor.bump();
         let name = match name_token.kind {
@@ -47,7 +47,7 @@ where
 
         let params = self.parse_params()?;
 
-        let return_type = if self.cursor.consume(TokenKind::Arrow) {
+        let return_type = if self.cursor.consume(TokenKind::Colon) {
             self.parse_return_type()
         } else {
             None
