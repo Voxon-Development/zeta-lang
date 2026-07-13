@@ -34,27 +34,27 @@ const F64_MIN: f64 = -1.7976931348623157e308;
 
 const F64_NAN: f64 = 0.0 / 0.0;
 
-inline fn floor(x: f64) -> f64 {
+inline func floor(x: f64): f64 {
     xi := x as i64;
     if (x < xi as f64) { return (xi - 1) as f64 } else { xi as f64 }
 }
 
-inline fn ceil(x: f64) -> f64 {
+inline func ceil(x: f64): f64 {
     xi := x as i64;
     if (x > xi as f64) { return (xi + 1) as f64 } else { xi as f64 }
 }
 
-inline fn abs(x: f64) -> f64 {
+inline func abs(x: f64): f64 {
     if (x < 0.0) { -x } else { x }
 }
 
-extern "intrinsic" fn fsqrt(x: f64) -> f64;
+extern "intrinsic" func fsqrt(x: f64): f64;
 
-inline fn pow(x: f64, y: f64) -> f64 {
+inline func pow(x: f64, y: f64): f64 {
     exp(y * ln(x))
 }
 
-fn ln(x: f64) -> f64 {
+func ln(x: f64): f64 {
     if (x <= 0.0) { return F64_NAN; }
 
     mut n := 0;
@@ -76,7 +76,7 @@ fn ln(x: f64) -> f64 {
     2.0 * result + (n as f64)
 }
 
-fn exp(x: f64) -> f64 {
+func exp(x: f64): f64 {
     mut sum := 1.0;
     mut term := 1.0;
     for (let mut i = 1; i < 50; i += 1) {
@@ -86,7 +86,7 @@ fn exp(x: f64) -> f64 {
     sum
 }
 
-fn sin(x: f64) -> f64 {
+func sin(x: f64): f64 {
     mut term := x;
     mut sum := x;
     mut n := 1;
@@ -98,7 +98,7 @@ fn sin(x: f64) -> f64 {
     sum
 }
 
-fn cos(x: f64) -> f64 {
+func cos(x: f64): f64 {
     mut term := 1.0;
     mut sum := 1.0;
     mut n := 1;
@@ -110,6 +110,6 @@ fn cos(x: f64) -> f64 {
     sum
 }
 
-inline fn tan(x: f64): f64 {
+inline func tan(x: f64): f64 {
     sin(x) / cos(x)
 }

@@ -329,7 +329,7 @@ pub enum TokenKind {
     Let,
     Catch,
     Void,
-    Fn,
+    Func,
     Internal,
     Throws,
     Throw,
@@ -429,6 +429,7 @@ pub enum TokenKind {
     EOF,
     Unknown,
 }
+
 impl TokenKind {
     pub fn is_primitive_type(&self) -> bool {
         matches!(
@@ -506,7 +507,7 @@ impl fmt::Display for TokenKind {
             Ensures => "ensures",
             Let => "let",
             Void => "void",
-            Fn => "fn",
+            Func => "fn",
             Dyn => "dyn",
 
             U8 => "u8",

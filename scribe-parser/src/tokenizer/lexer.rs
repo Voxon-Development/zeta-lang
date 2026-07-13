@@ -657,7 +657,7 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "statem" => TokenKind::Statem,
         "trait" => TokenKind::Trait,
         "where" => TokenKind::Where,
-        "fn" => TokenKind::Fn,
+        "func" => TokenKind::Func,
         "catch" => TokenKind::Catch,
         "requires" => TokenKind::Requires,
         "ensures" => TokenKind::Ensures,

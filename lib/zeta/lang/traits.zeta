@@ -12,7 +12,7 @@ public interface Copy {
 // Unlike `Copy`, cloning is never implicit and must be spelled out with a
 // call to `.clone()`.
 public interface Clone {
-    fn clone(&this) -> this;
+    func clone(&this): this;
 }
 
 // Types that need to run cleanup logic before their storage is reclaimed,
@@ -20,5 +20,5 @@ public interface Clone {
 // `drop` takes `this` by value (moved, mutably) so it consumes the value
 // exactly once and may still mutate its own fields while tearing down.
 public interface Drop {
-    fn drop(mut this) -> void;
+    func drop(mut this): void;
 }
