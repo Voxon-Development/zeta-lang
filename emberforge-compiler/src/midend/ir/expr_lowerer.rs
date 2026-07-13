@@ -3,7 +3,7 @@ use crate::midend::ir::block_data::CurrentBlockData;
 use crate::optimized_string_buffering;
 use codex_dependency_graph::DepGraph;
 use core::panic;
-use ir::hir::{AssignmentOperator, HirExpr, HirStruct, HirType, Operator, StrId};
+use ir::hir::{AssignmentOperator, HirExpr, HirFieldInit, HirStruct, HirType, Operator, StrId};
 use ir::ir_conversion::{assign_op_to_bin_op, lower_operator_bin, lower_type_hir};
 use ir::ir_hasher::{FxHashBuilder, HashSet};
 use ir::layout::TargetInfo;
@@ -152,6 +152,7 @@ where
                 name,
                 args,
                 span: _,
+                type_args: _,
             } => self.lower_class_init(name, args),
 
             HirExpr::Undefined { span: _, ty } => {
@@ -174,6 +175,7 @@ where
                 callee,
                 args,
                 span: _,
+                type_args: _, // Turns into None after monomorphization
             } => self.lower_call(callee, args),
 
             HirExpr::InterfaceCall {
@@ -365,6 +367,7 @@ where
                 span: _,
             } => self.lower_index(object, index),
             HirExpr::ArrayLiteral { elements, span: _ } => self.lower_array_literal(elements),
+            HirExpr::GenericIdent(str_id, hir_types, source_span) => unreachable!(),
         }
     }
 
@@ -886,7 +889,7 @@ where
         v
     }
 
-    fn lower_class_init(&mut self, name: &HirExpr, args: &[HirExpr<'a, 'bump>]) -> Value {
+    fn lower_class_init(&mut self, name: &HirExpr, args: &[HirFieldInit<'a, 'bump>]) -> Value {
         let class_name = match name {
             HirExpr::Ident(n, _) => *n,
             other => panic!("ClassInit name must be identifier; got {:?}", other),
@@ -911,9 +914,10 @@ where
             // Assigning a droppable struct value into a field consumes the
             // source place, same as passing it to a by-value param.
             if matches!(field_types.get(i), Some(SsaType::User(_, _))) {
-                record_move_if_any(self.scope_stack, self.drop_state, arg);
+                // TODO: make arg.value in a way where it ignores position
+                record_move_if_any(self.scope_stack, self.drop_state, &arg.value);
             }
-            arg_values.push(self.lower_expr(arg));
+            arg_values.push(self.lower_expr(&arg.value));
         }
 
         let alloc_ty = SsaType::User(class_name, field_types.clone());
@@ -1066,20 +1070,16 @@ where
                 args: arg_ops,
             });
 
-            let ret_ty = if self.extern_c_names.contains(&mangled) {
-                SsaType::I64
-            } else {
-                self.funcs
-                    .get(&mangled)
-                    .or_else(|| self.global_funcs.get(&mangled))
-                    .map(|f| f.ret_type.clone())
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "lower_call: unknown non-extern function `{:?}`, not in funcs table or global_funcs",
-                            mangled
-                        )
-                    })
-            };
+            let ret_ty = self.funcs
+                .get(&mangled)
+                .or_else(|| self.global_funcs.get(&mangled))
+                .map(|f| f.ret_type.clone())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "lower_call: unknown non-extern function `{:?}`, not in funcs table or global_funcs",
+                        mangled
+                    )
+                });
             self.current_block_data.value_types.insert(dest, ret_ty);
             return dest;
         }

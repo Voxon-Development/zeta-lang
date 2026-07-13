@@ -1,24 +1,12 @@
-use ir::hir::{HirExpr, StrId};
+use ir::hir::{DropKind, HirExpr, StrId};
 
-#[derive(Clone, Copy)]
-pub enum DropKind {
-    /// A struct-typed local; freed via its own drop-glue function.
-    Struct(StrId),
-    /// An owned-pointer-typed local (`^T`). Freed by dropping the pointee
-    /// (if it needs glue) then deallocating the backing allocation.
-    /// `pointee_struct` is `Some` only when the pointee is itself a
-    /// droppable struct, primitive/non-droppable pointees still need the
-    /// dealloc call but skip the recursive drop-glue call.
-    OwnedPointer { pointee_struct: Option<StrId> },
-}
-
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct DropLocal {
     pub name: StrId,
     pub kind: DropKind,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct DropScope {
     pub locals: Vec<DropLocal>,
 }
@@ -38,6 +26,7 @@ impl DropMoveState {
     pub fn mark_whole_moved(&mut self, name: StrId) {
         self.locals.entry(name).or_default().moved_whole = true;
     }
+
     pub fn mark_field_moved(&mut self, name: StrId, field: StrId) {
         self.locals
             .entry(name)
@@ -45,9 +34,17 @@ impl DropMoveState {
             .moved_fields
             .insert(field);
     }
+
+    pub fn has_any_field_moves(&self, name: StrId) -> bool {
+        self.locals
+            .get(&name)
+            .map_or(false, |s| !s.moved_fields.is_empty())
+    }
+
     pub fn is_whole_moved(&self, name: StrId) -> bool {
         self.locals.get(&name).map_or(false, |l| l.moved_whole)
     }
+
     pub fn is_field_moved(&self, name: StrId, field: StrId) -> bool {
         self.locals
             .get(&name)
@@ -61,7 +58,7 @@ pub(crate) fn local_is_droppable(scope_stack: &[DropScope], name: StrId) -> Opti
         .rev()
         .flat_map(|s| s.locals.iter())
         .find(|l| l.name == name)
-        .map(|l| l.kind)
+        .map(|l| l.kind.clone())
 }
 
 pub fn record_move_if_any(
@@ -81,7 +78,7 @@ pub fn record_move_if_any(
                 // `p.field` where `p: ^T` is a move *through* the pointer
                 // (of the pointee's field), not a move of the pointer
                 // binding
-                if let Some(DropKind::Struct(_)) = local_is_droppable(scope_stack, *root) {
+                if let Some(_) = local_is_droppable(scope_stack, *root) {
                     drop_state.mark_field_moved(*root, *field);
                 }
             }

@@ -1,11 +1,11 @@
 use crate::midend::copy_analysis::drop_glue::DropGlueRegistry;
-use crate::midend::copy_analysis::drop_tracking::{DropKind, DropLocal, DropMoveState, DropScope};
+use crate::midend::copy_analysis::drop_tracking::{DropLocal, DropMoveState, DropScope};
 use crate::midend::ir::block_data::CurrentBlockData;
 use crate::midend::ir::expr_lowerer::MirExprLowerer;
 use codex_dependency_graph::DepGraph;
 use ir::hir::{
-    HirErrorHandlerPattern, HirExpr, HirFunc, HirParam, HirStmt, HirStruct, HirType, StrId,
-    ThisPassingKind,
+    DropKind, HirErrorHandlerPattern, HirExpr, HirFunc, HirParam, HirStmt, HirStruct, HirType,
+    StrId, ThisPassingKind,
 };
 use ir::ir_conversion::lower_type_hir;
 use ir::ir_hasher::{FxHashBuilder, HashSet};
@@ -284,7 +284,7 @@ where
             *next_value += 1;
 
             match *p {
-                HirParam::This { kind } => {
+                HirParam::This { kind, span: _ } => {
                     let name = StrId(context.intern("this"));
                     // For ref/ptr passing kinds, `this` arrives as a pointer (i64 address).
                     // For move/move-mut, it arrives as an inline struct value, but since our
@@ -304,7 +304,11 @@ where
                     value_types.insert(v, ty);
                     var_map.insert(name, v);
                 }
-                HirParam::Normal { name, param_type } => {
+                HirParam::Normal {
+                    name,
+                    param_type,
+                    span: _,
+                } => {
                     let ty = lower_type_hir(&param_type);
                     func.params.push((v, ty.clone()));
                     value_types.insert(v, ty);
@@ -318,7 +322,12 @@ where
         if let Some(b) = body {
             match b {
                 HirStmt::Block { body } => {
+                    self.scope_stack.push(DropScope { locals: Vec::new() });
                     self.lower_stmt_seq(body);
+                    let scope = self.scope_stack.pop().unwrap();
+                    if !self.block_terminated() {
+                        self.emit_scope_drops(&scope);
+                    }
                 }
                 _ => panic!(),
             }
@@ -398,17 +407,13 @@ where
                     if self.glue_registry.is_droppable(*struct_name) {
                         self.scope_stack.last_mut().unwrap().locals.push(DropLocal {
                             name: *name,
-                            kind: DropKind::Struct(*name),
+                            kind: DropKind::Type(*struct_name),
                         });
                     }
                 } else if let HirType::OwnedPointer(ty) = ty {
                     self.scope_stack.last_mut().unwrap().locals.push(DropLocal {
                         name: *name,
-                        kind: DropKind::OwnedPointer {
-                            pointee_struct: ty
-                                .get_name_of_ty()
-                                .map(|name| StrId(self.context.intern(name.as_str()))),
-                        },
+                        kind: ty.drop_kind(),
                     });
                 }
             }
@@ -1126,7 +1131,7 @@ where
                     // `p.field` where `p: ^T` is a move through the pointer
                     // (of the pointee's field), not a move of the pointer
                     // binding
-                    if let Some(DropKind::Struct(_)) = self.local_is_droppable(*root) {
+                    if let Some(_) = self.local_is_droppable(*root) {
                         self.drop_state.mark_field_moved(*root, *field);
                     }
                 }
@@ -1141,7 +1146,7 @@ where
             .rev()
             .flat_map(|s| s.locals.iter())
             .find(|l| l.name == name)
-            .map(|l| l.kind)
+            .map(|l| l.kind.clone())
     }
 
     fn emit_scope_drops(&mut self, scope: &DropScope) {
@@ -1149,57 +1154,78 @@ where
             if self.drop_state.is_whole_moved(local.name) {
                 continue;
             }
+
             let Some(&val) = self.var_map.get(&local.name) else {
                 continue;
             };
 
-            if self.glue_registry.has_own_drop(local.name) {
-                if let Some(glue) = self.glue_registry.glue_name_for(local.name) {
-                    self.emit(Instruction::Call {
-                        dest: None,
-                        func: Operand::FunctionRef(glue),
-                        args: SmallVec::from_slice_copy(&[Operand::Value(val)]),
-                    });
+            match &local.kind {
+                DropKind::Type(struct_name) => {
+                    let partial_move = self.drop_state.has_any_field_moves(local.name);
+
+                    if !partial_move {
+                        if let Some(glue) = self.glue_registry.glue_name_for(*struct_name) {
+                            self.emit(Instruction::Call {
+                                dest: None,
+                                func: Operand::FunctionRef(glue),
+                                args: SmallVec::from_slice_copy(&[Operand::Value(val)]),
+                            });
+                            continue;
+                        }
+                    }
+
+                    // Partial move (or no generated glue): recursively drop remaining fields.
+                    let Some(hir_struct) = self.classes.get(struct_name) else {
+                        continue;
+                    };
+                    let Some(offsets) = self.class_field_offsets.get(struct_name) else {
+                        continue;
+                    };
+
+                    for field in hir_struct.fields.iter().rev() {
+                        if self.drop_state.is_field_moved(local.name, field.name) {
+                            continue;
+                        }
+
+                        let HirType::Struct(field_struct_name, _) = &field.field_type else {
+                            continue;
+                        };
+
+                        let Some(field_glue) = self.glue_registry.glue_name_for(*field_struct_name)
+                        else {
+                            continue;
+                        };
+
+                        let Some(&offset) = offsets.get(&field.name) else {
+                            continue;
+                        };
+
+                        let field_ptr = self.current_block_data.fresh_value();
+                        self.current_block_data.value_types.insert(
+                            field_ptr,
+                            SsaType::Pointer(Box::new(SsaType::User(*field_struct_name, vec![]))),
+                        );
+
+                        self.emit(Instruction::FieldAddr {
+                            dest: field_ptr,
+                            base: Operand::Value(val),
+                            offset,
+                        });
+
+                        self.emit(Instruction::Call {
+                            dest: None,
+                            func: Operand::FunctionRef(field_glue),
+                            args: SmallVec::from_slice_copy(&[Operand::Value(field_ptr)]),
+                        });
+                    }
                 }
-                continue;
-            }
 
-            let Some(hir_struct) = self.classes.get(&local.name) else {
-                continue;
-            };
-            let Some(offsets) = self.class_field_offsets.get(&local.name) else {
-                continue;
-            };
-
-            for field in hir_struct.fields.iter().rev() {
-                if self.drop_state.is_field_moved(local.name, field.name) {
-                    continue;
+                DropKind::OwnedPointer(pointee_struct) => {
+                    // TODO:
+                    // 1. If pointee_struct is Some(..), call its drop glue.
+                    // 2. Then call the allocator/deallocator for the owned pointer.
                 }
-                let HirType::Struct(field_struct_name, _) = &field.field_type else {
-                    continue;
-                };
-                let Some(field_glue) = self.glue_registry.glue_name_for(*field_struct_name) else {
-                    continue;
-                };
-                let Some(&offset) = offsets.get(&field.name) else {
-                    continue;
-                };
-
-                let field_ptr = self.current_block_data.fresh_value();
-                self.current_block_data.value_types.insert(
-                    field_ptr,
-                    SsaType::Pointer(Box::new(SsaType::User(*field_struct_name, vec![]))),
-                );
-                self.emit(Instruction::FieldAddr {
-                    dest: field_ptr,
-                    base: Operand::Value(val),
-                    offset,
-                });
-                self.emit(Instruction::Call {
-                    dest: None,
-                    func: Operand::FunctionRef(field_glue),
-                    args: SmallVec::from_slice_copy(&[Operand::Value(field_ptr)]),
-                });
+                DropKind::Undroppable => {}
             }
         }
     }

@@ -153,9 +153,11 @@ where
 
         // build vtables now
         for item in hir_mod.items {
-            if let Hir::Struct(class) = item {
-                self.build_class_vtable(class);
-            }
+            let Hir::Struct(ty_struct) = item else {
+                continue;
+            };
+
+            self.build_class_vtable(ty_struct);
         }
 
         let owned_structs: Vec<StrId> = hir_mod
@@ -196,29 +198,32 @@ where
         self.interface_id_map.insert(hir_iface.name, iface_id);
         let mut methods = Vec::new();
         let mut slot_map = HashMap::with_hasher(FxHashBuilder);
-        for (i, m) in hir_iface.methods.unwrap().iter().enumerate() {
-            let param_types: Vec<SsaType> = m
-                .params
-                .unwrap_or_default()
-                .iter()
-                .map(|p| match p {
-                    HirParam::Normal {
-                        name: _,
-                        param_type,
-                    } => lower_type_hir(&param_type),
-                    HirParam::This { kind } => match kind {
-                        ThisPassingKind::Move | ThisPassingKind::MoveMut => SsaType::Dyn,
-                        _ => SsaType::Pointer(Box::new(SsaType::Dyn)),
-                    },
-                })
-                .collect::<Vec<_>>();
-            let ret = m
-                .return_type
-                .as_ref()
-                .map(|t| lower_type_hir(t))
-                .unwrap_or(SsaType::Void);
-            methods.push((m.name.clone(), param_types, ret));
-            slot_map.insert(m.name.clone(), i);
+        if let Some(hir_methods) = hir_iface.methods {
+            for (i, m) in hir_methods.iter().enumerate() {
+                let param_types: Vec<SsaType> = m
+                    .params
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|p| match p {
+                        HirParam::Normal {
+                            name: _,
+                            param_type,
+                            span: _,
+                        } => lower_type_hir(&param_type),
+                        HirParam::This { kind, span: _ } => match kind {
+                            ThisPassingKind::Move | ThisPassingKind::MoveMut => SsaType::Dyn,
+                            _ => SsaType::Pointer(Box::new(SsaType::Dyn)),
+                        },
+                    })
+                    .collect::<Vec<_>>();
+                let ret = m
+                    .return_type
+                    .as_ref()
+                    .map(|t| lower_type_hir(t))
+                    .unwrap_or(SsaType::Void);
+                methods.push((m.name.clone(), param_types, ret));
+                slot_map.insert(m.name.clone(), i);
+            }
         }
 
         self.interface_methods
@@ -265,12 +270,9 @@ where
             .unwrap_or_else(|| panic!("Missing mangled method map for class {}", hir_class.name));
 
         for iface_name in &interfaces {
-            let iface_methods = self.interface_methods.get(iface_name).unwrap_or_else(|| {
-                panic!(
-                    "Class {} implements unknown interface {}",
-                    hir_class.name, iface_name
-                )
-            });
+            let Some(iface_methods) = self.interface_methods.get(iface_name) else {
+                continue;
+            };
 
             let hir_iface = self.module.interfaces.get(iface_name).unwrap_or_else(|| {
                 panic!(
