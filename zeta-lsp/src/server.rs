@@ -37,7 +37,7 @@ where
             text_document_sync: Some(TextDocumentSyncCapability::Options(
                 TextDocumentSyncOptions {
                     open_close: Some(true),
-                    change: Some(TextDocumentSyncKind::FULL),
+                    change: Some(TextDocumentSyncKind::INCREMENTAL),
                     save: Some(TextDocumentSyncSaveOptions::SaveOptions(SaveOptions {
                         include_text: Some(false),
                     })),

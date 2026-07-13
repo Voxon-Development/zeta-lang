@@ -201,3 +201,23 @@ pub fn span_text(source: &str, span: &SourceSpan) -> Option<String> {
     }
     Some(line[start..end].to_string())
 }
+
+pub fn byte_offset_in_source(source: &str, position: lsp_types::Position) -> usize {
+    let mut offset = 0;
+
+    for (i, line) in source.split_inclusive('\n').enumerate() {
+        if i == position.line as usize {
+            return offset + byte_offset_from_utf16(line, position.character);
+        }
+        offset += line.len();
+    }
+
+    if let Some(last) = source.lines().last() {
+        let line_count = source.lines().count();
+        if position.line as usize == line_count.saturating_sub(1) {
+            return source.len() - last.len() + byte_offset_from_utf16(last, position.character);
+        }
+    }
+
+    source.len()
+}

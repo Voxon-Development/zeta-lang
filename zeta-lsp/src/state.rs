@@ -5,6 +5,7 @@ use zeta_compiler_api::Compiler;
 pub struct Document {
     pub version: i32,
     pub path: PathBuf,
+    pub text: String,
 }
 
 pub struct ServerState<'a, 'bump> {

@@ -18,7 +18,7 @@ use lsp_types::{
     DidSaveTextDocumentParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
     GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams, Location,
     MarkupContent, MarkupKind, Position, PublishDiagnosticsParams, ReferenceParams, RenameParams,
-    SymbolKind, TextEdit, Uri, WorkspaceEdit,
+    SymbolKind, TextDocumentContentChangeEvent, TextEdit, Uri, WorkspaceEdit,
 };
 use sentinel_typechecker::type_checker::SymbolId;
 use std::collections::HashMap;
@@ -28,8 +28,8 @@ use std::str::FromStr;
 use crate::lsp_diagnostics::group_by_file;
 use crate::state::{Document, ServerState};
 use crate::text_utils::{
-    declaration_span, ident_at_column, ident_at_end, line_at, nearest_prior_occurrence,
-    prefix_before, span_to_range, tightest_occurrence, to_span_coords,
+    byte_offset_in_source, declaration_span, ident_at_column, ident_at_end, line_at,
+    nearest_prior_occurrence, prefix_before, span_to_range, tightest_occurrence, to_span_coords,
 };
 use crate::urls::{path_to_uri, uri_to_path};
 
@@ -128,6 +128,7 @@ pub fn notification(
                 uri.clone(),
                 Document {
                     version: params.text_document.version,
+                    text: params.text_document.text.clone(),
                     path: path.clone(),
                 },
             );
@@ -147,10 +148,11 @@ pub fn notification(
             doc.version = params.text_document.version;
             let path = doc.path.clone();
 
-            let Some(change) = params.content_changes.into_iter().next() else {
-                return Ok(());
-            };
-            let reporter = state.compiler.update_module(&path, change.text);
+            for change in params.content_changes {
+                apply_change(&mut doc.text, change);
+            }
+
+            let reporter = state.compiler.update_module(&path, doc.text.clone());
             publish_all(connection, &reporter)?;
         }
 
@@ -700,4 +702,16 @@ fn references_at(state: &ServerState, params: &ReferenceParams) -> Vec<Location>
     }
 
     locations
+}
+
+pub fn apply_change(source: &mut String, change: TextDocumentContentChangeEvent) {
+    if let Some(range) = change.range {
+        let start = byte_offset_in_source(source, range.start);
+        let end = byte_offset_in_source(source, range.end);
+
+        source.replace_range(start..end, &change.text);
+    } else {
+        // Client sent the whole document.
+        *source = change.text;
+    }
 }
