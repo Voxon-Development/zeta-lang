@@ -708,12 +708,12 @@ impl<'a, 'bump> CopyAnalysisCtx<'a, 'bump> {
                 .is_copy
                 .get(name)
                 .copied()
-                .expect("Copy analysis queried for unanalyzed type"),
+                .unwrap_or_else(|| panic!("Copy analysis queried for unanalyzed type {}", name)),
             HirType::Enum(name, _) => self
                 .is_copy
                 .get(name)
                 .copied()
-                .expect("Copy analysis queried for unanalyzed type"),
+                .unwrap_or_else(|| panic!("Copy analysis queried for unanalyzed type {}", name)),
 
             HirType::Dyn { .. } | HirType::DynInterface(..) => false,
 

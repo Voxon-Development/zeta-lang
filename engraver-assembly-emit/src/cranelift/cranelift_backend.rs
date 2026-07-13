@@ -43,6 +43,7 @@ pub struct CraneliftBackend {
     enum_new: FuncId,
     enum_tag: FuncId,
     func_ids: HashMap<StrId, FuncId, FxHashBuilder>,
+    func_param_types: HashMap<StrId, Vec<SsaType>, FxHashBuilder>,
     context: Arc<StringPool>,
     target: TargetInfo,
     emit_asm: bool,
@@ -126,6 +127,7 @@ impl CraneliftBackend {
             enum_new,
             enum_tag,
             func_ids: HashMap::with_hasher(FxHashBuilder),
+            func_param_types: HashMap::with_hasher(FxHashBuilder),
             context,
             target: TargetInfo { ptr_bytes: 8 },
             emit_asm: false,
@@ -442,13 +444,12 @@ impl CraneliftBackend {
                     .unwrap_or_else(|_| panic!("StackAlloc: unknown size for {:?}", ty));
 
                 let size_bytes = match ty {
-                    SsaType::Array(_, _) => elem_size,
-                    _ => elem_size * count,
+                    SsaType::Array(_, _) => elem_size * count,
+                    _ => elem_size,
                 };
 
                 let ptr = cranelift_intrinsics::stack_alloc(builder, &mut self.module, size_bytes);
 
-                // stack_alloc always yields a pointer, regardless of `ty`.
                 let var = builder.declare_var(types::I64);
                 builder.def_var(var, ptr);
 
@@ -565,17 +566,51 @@ impl CraneliftBackend {
                         var_map.insert(*d, var);
                     }
                 } else {
+                    let param_tys = self.func_param_types.get(func_name_id).cloned();
+
+                    let mut arg_vals = Vec::new();
+                    for (i, a) in args.iter().enumerate() {
+                        let raw_val = match a {
+                            Operand::Value(v) => {
+                                let var = var_map
+                                    .get(v)
+                                    .unwrap_or_else(|| panic!("undefined call arg"));
+                                builder.use_var(*var)
+                            }
+                            Operand::ConstInt(i) => builder.ins().iconst(types::I64, *i),
+                            _ => unimplemented!("call arg type not supported"),
+                        };
+
+                        let expected_ty = param_tys
+                            .as_ref()
+                            .and_then(|p| p.get(i))
+                            .map(clif_type)
+                            .unwrap_or(types::I64);
+
+                        let raw_ty = builder.func.dfg.value_type(raw_val);
+                        let coerced = if raw_ty == expected_ty {
+                            raw_val
+                        } else if raw_ty.bits() < expected_ty.bits() {
+                            builder.ins().uextend(expected_ty, raw_val)
+                        } else if raw_ty.bits() > expected_ty.bits() {
+                            builder.ins().ireduce(expected_ty, raw_val)
+                        } else {
+                            raw_val
+                        };
+                        arg_vals.push(coerced);
+                    }
+
                     let func_id = if let Some(fid) = self.func_ids.get(func_name_id) {
                         *fid
                     } else {
                         let mut sig = Signature::new(self.module.isa().default_call_conv());
-                        for _ in &arg_vals {
-                            sig.params.push(AbiParam::new(types::I64));
+                        for v in &arg_vals {
+                            sig.params
+                                .push(AbiParam::new(builder.func.dfg.value_type(*v)));
                         }
                         if dest.is_some() {
                             sig.returns.push(AbiParam::new(types::I64));
                         }
-
                         let fid = ObjectModule::declare_function(
                             &mut self.module,
                             func_name,
@@ -596,21 +631,15 @@ impl CraneliftBackend {
                     if let Some(d) = dest {
                         if results.is_empty() {
                             let var = builder.declare_var(types::I64);
-
                             let dummy_val = builder.ins().iconst(types::I64, 0);
-
                             builder.def_var(var, dummy_val);
                             var_map.insert(*d, var);
                         } else {
                             let res_val = results[0];
-
                             let var = builder.declare_var(builder.func.dfg.value_type(res_val));
                             builder.def_var(var, res_val);
-
                             var_map.insert(*d, var);
                         }
-                    } else {
-                        // drop results
                     }
                 }
             }
@@ -920,8 +949,14 @@ impl Backend for CraneliftBackend {
             let fid = self
                 .module
                 .declare_function(actual_name, linkage, &sig)
-                .unwrap_or_else(|_| panic!("failed to declare function {}", actual_name));
+                .unwrap_or_else(|e| {
+                    panic!("failed to declare function {} due to {}", actual_name, e)
+                });
             self.func_ids.insert(name.clone(), fid);
+            self.func_param_types.insert(
+                name.clone(),
+                func.params.iter().map(|(_, ty)| ty.clone()).collect(),
+            );
         }
 
         for func in module.functions.values() {
