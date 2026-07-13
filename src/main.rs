@@ -136,18 +136,14 @@ where
     let mut compiler = Compiler::new()?;
 
     let stdlib_diags = compiler.load_directory(&stdlib_path, true)?;
-    if !stdlib_diags.is_empty() {
-        for d in &stdlib_diags {
-            eprintln!("[stdlib] {}: {}", d.module, d.message);
-        }
+    if stdlib_diags.has_errors() {
+        stdlib_diags.report_all();
         return Err(CompilerError::ParserError(vec![]));
     }
 
     let user_diags = compiler.load_directory(&source_path, false)?;
-    if !user_diags.is_empty() {
-        for d in &user_diags {
-            eprintln!("{}: {}", d.module, d.message);
-        }
+    if user_diags.has_errors() {
+        user_diags.report_all();
         return Err(CompilerError::TypeCheckError);
     }
 
