@@ -11,8 +11,12 @@ use engraver_assembly_emit::backend::Backend;
 use engraver_assembly_emit::cranelift::cranelift_backend::CraneliftBackend;
 use ir::analysis_context::CopyAnalysisCtx;
 use ir::ast::Stmt;
+use ir::errors::reporter::ErrorReporter;
 use ir::hir::{HirModule, StrId};
 use ir::registry::global_registry::GlobalRegistry;
+use scribe_parser::hir_lowerer::HirLowerer;
+use scribe_parser::hir_lowerer::lambda_hoisting::LambdaHoister;
+use scribe_parser::hir_lowerer::monomorphization::Monomorphizer;
 use sentinel_typechecker::TypeChecker;
 use zetaruntime::bump::GrowableBump;
 use zetaruntime::string_pool::StringPool;
@@ -23,19 +27,15 @@ pub mod link;
 pub mod main_structs;
 
 use crate::compilation_passes::pass_hir_lowering;
-use crate::file_handling::parse_single_file;
-use crate::main_structs::{CompilerError, ModuleWithArena};
-
-pub struct Diagnostic {
-    pub module: StrId,
-    pub message: String,
-}
+use crate::main_structs::{CompilerError as BuildError, ModuleWithArena};
 
 pub struct Compiler<'a, 'bump> {
     pool: Arc<StringPool>,
     registry: GlobalRegistry<'a, 'bump>,
 
     dep_graph: &'a RefCell<DepGraph>,
+    #[allow(unused)] // Avoids a UB
+    dep_graph_storage: Box<RefCell<DepGraph>>,
 
     lowerer_bump: Box<GrowableBump<'bump>>,
 
@@ -47,6 +47,7 @@ pub struct Compiler<'a, 'bump> {
     stdlib_module_ids: HashSet<usize>,
     modules: HashMap<usize, ModuleWithArena<'a, 'bump>>,
     hir_modules: HashMap<usize, HirModule<'a, 'bump>>,
+    module_paths: HashMap<usize, PathBuf>,
 }
 
 impl<'a, 'bump> Compiler<'a, 'bump>
@@ -54,9 +55,8 @@ where
     'bump: 'a,
     'a: 'bump,
 {
-    pub fn new() -> Result<Self, CompilerError<'a>> {
-        let pool =
-            Arc::new(StringPool::new().map_err(|_| CompilerError::FailedToAllocateStringPool)?);
+    pub fn new() -> Result<Self, BuildError<'a>> {
+        let pool = Arc::new(StringPool::new().map_err(|_| BuildError::FailedToAllocateStringPool)?);
         let registry = GlobalRegistry::new();
 
         let dep_graph_storage = Box::new(RefCell::new(DepGraph::new()));
@@ -91,6 +91,7 @@ where
             pool,
             registry,
             dep_graph,
+            dep_graph_storage,
             lowerer_bump,
             type_checker,
             cpy_ctx,
@@ -99,36 +100,70 @@ where
             stdlib_module_ids: HashSet::new(),
             modules: HashMap::new(),
             hir_modules: HashMap::new(),
+            module_paths: HashMap::new(),
         })
+    }
+
+    pub fn dep_graph(&self) -> &'a RefCell<DepGraph> {
+        self.dep_graph
+    }
+
+    pub fn module_idx_for_path(&self, path: &Path) -> Option<usize> {
+        let stem = path.file_stem()?.to_str()?;
+        let name = StrId(self.pool.intern(stem));
+        self.module_ids.get(&name).copied()
+    }
+
+    // zeta_compiler_api::lib.rs: add to impl<'a, 'bump> Compiler<'a, 'bump>
+    pub fn type_checker(&self) -> Rc<RefCell<TypeChecker<'a, 'bump>>> {
+        self.type_checker.clone()
+    }
+
+    pub fn dep_graph_ref(&self) -> &'a RefCell<DepGraph> {
+        self.dep_graph
+    }
+
+    pub fn source_text(&self, module_idx: usize) -> Option<String> {
+        Some(self.modules.get(&module_idx)?.source.to_string())
     }
 
     pub fn load_directory(
         &mut self,
         dir: &Path,
         is_stdlib: bool,
-    ) -> Result<Vec<Diagnostic>, CompilerError<'a>> {
+    ) -> Result<ErrorReporter<'a>, BuildError<'a>> {
         let files = crate::file_handling::collect_zeta_files(dir)?;
-        let mut diagnostics = Vec::new();
+        let mut reporter = ErrorReporter::new();
         for file in files {
-            diagnostics.extend(self.load_module_from_disk(&file, is_stdlib)?);
+            reporter.merge(self.load_module_from_disk(&file, is_stdlib)?);
         }
-        Ok(diagnostics)
+        Ok(reporter)
     }
 
     fn load_module_from_disk(
         &mut self,
         path: &Path,
         is_stdlib: bool,
-    ) -> Result<Vec<Diagnostic>, CompilerError<'a>> {
+    ) -> Result<ErrorReporter<'a>, BuildError<'a>> {
         let file_stem = path
             .file_stem()
             .and_then(|s| s.to_str())
-            .ok_or_else(|| CompilerError::InvalidFileName(Vec::new()))?
+            .ok_or_else(|| BuildError::InvalidFileName(Vec::new()))?
             .to_string();
 
         let parsed =
             crate::file_handling::parse_single_file(self.pool.clone(), path.to_path_buf())?;
-        Ok(self.ingest_parsed_module(&file_stem, parsed, is_stdlib))
+        let reporter = self.ingest_parsed_module(&file_stem, parsed, is_stdlib);
+
+        if let Some(&module_idx) = self.module_ids.get(&StrId(self.pool.intern(&file_stem))) {
+            self.module_paths.insert(module_idx, path.to_path_buf());
+        }
+
+        Ok(reporter)
+    }
+
+    pub fn path_for_module(&self, module_idx: usize) -> Option<&Path> {
+        self.module_paths.get(&module_idx).map(|p| p.as_path())
     }
 
     pub fn emit(
@@ -137,7 +172,7 @@ where
         optimize: bool,
         verbose: bool,
         emit_obj: bool,
-    ) -> Result<PathBuf, CompilerError<'a>> {
+    ) -> Result<PathBuf, BuildError<'a>> {
         let compilation_order = self.dep_graph.borrow().get_module_compilation_order();
 
         let ordered_hir: Vec<HirModule<'a, 'bump>> = (0..self.next_module_idx)
@@ -159,7 +194,7 @@ where
 
         let out_obj = backend
             .finish(&out_dir.to_path_buf())
-            .map_err(|e| CompilerError::FinishError(Box::new(e)))?;
+            .map_err(|e| BuildError::FinishError(Box::new(e)))?;
 
         if emit_obj {
             Ok(out_obj)
@@ -174,6 +209,10 @@ where
         }
     }
 
+    pub fn ast_stmts(&self, module_idx: usize) -> Option<&'bump [Stmt<'a, 'bump>]> {
+        self.modules.get(&module_idx).map(|m| m.stmts)
+    }
+
     fn module_idx_for(&mut self, canonical_name: StrId) -> usize {
         if let Some(&idx) = self.module_ids.get(&canonical_name) {
             return idx;
@@ -184,24 +223,37 @@ where
         idx
     }
 
-    pub fn open_module(&mut self, path: &Path, source: String) -> Vec<Diagnostic> {
+    pub fn open_module(&mut self, path: &Path, source: String) -> ErrorReporter<'a> {
         self.update_module(path, source)
     }
 
-    pub fn update_module(&mut self, path: &Path, _source: String) -> Vec<Diagnostic> {
+    pub fn update_module(&mut self, path: &Path, source: String) -> ErrorReporter<'a> {
         let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
         let canonical_name = StrId(self.pool.intern(file_stem));
         let module_idx = self.module_idx_for(canonical_name);
+        self.module_paths.insert(module_idx, path.to_path_buf());
 
-        let parsed = match parse_single_file(self.pool.clone(), path.to_path_buf()) {
+        let mut reporter = ErrorReporter::new();
+
+        let parsed = match crate::file_handling::parse_single_file_from_source(
+            self.pool.clone(),
+            file_stem,
+            source,
+        ) {
             Ok(m) => m,
             Err(e) => {
-                return vec![Diagnostic {
-                    module: canonical_name,
-                    message: e.to_string(),
-                }];
+                eprintln!("error: {}", e);
+                return reporter;
             }
         };
+
+        for perr in &parsed.parser_diagnostics.errors {
+            reporter.add_parser_error(perr.clone());
+        }
+        reporter.add_source_file(file_stem.to_string(), parsed.source.to_string());
+        if parsed.parser_diagnostics.has_errors() {
+            return reporter;
+        }
 
         let bump = GrowableBump::new(4096, 8);
         let mut stmt_vec: Vec<Stmt<'a, 'bump>, &GrowableBump<'bump>> = Vec::new_in(&bump);
@@ -219,10 +271,8 @@ where
         ) {
             Ok(h) => h,
             Err(e) => {
-                return vec![Diagnostic {
-                    module: canonical_name,
-                    message: e.to_string(),
-                }];
+                eprintln!("error: {}", e);
+                return reporter;
             }
         };
 
@@ -273,7 +323,6 @@ where
             .collect();
         self.cpy_ctx.borrow_mut().recompute(&updated);
 
-        let mut diagnostics = Vec::new();
         {
             let mut checker = self.type_checker.borrow_mut();
             for &m in &invalidation_set {
@@ -282,23 +331,24 @@ where
                 }
             }
             for err in checker.errors() {
-                diagnostics.push(Diagnostic {
-                    module: canonical_name,
-                    message: err.to_string(),
-                });
+                reporter.add_type_error(err.clone());
             }
         }
-        diagnostics
+        reporter
     }
 
-    pub fn bootstrap_stdlib(&mut self, stdlib_path: &Path) -> Result<(), CompilerError<'a>> {
+    pub fn bootstrap_stdlib(
+        &mut self,
+        stdlib_path: &Path,
+    ) -> Result<ErrorReporter<'a>, BuildError<'a>> {
         let stdlib_files = crate::file_handling::collect_zeta_files(stdlib_path)?;
 
+        let mut reporter = ErrorReporter::new();
         for file in stdlib_files {
-            self.load_module_from_disk(&file, true)?;
+            reporter.merge(self.load_module_from_disk(&file, true)?);
         }
 
-        Ok(())
+        Ok(reporter)
     }
 
     fn ingest_parsed_module(
@@ -306,20 +356,17 @@ where
         name: &str,
         parsed: ModuleWithArena<'a, 'bump>,
         is_stdlib: bool,
-    ) -> Vec<Diagnostic> {
+    ) -> ErrorReporter<'a> {
         let canonical_name = StrId(self.pool.intern(name));
         let module_idx = self.module_idx_for(canonical_name);
 
+        let mut reporter = ErrorReporter::new();
+        for perr in &parsed.parser_diagnostics.errors {
+            reporter.add_parser_error(perr.clone());
+        }
+
         if parsed.parser_diagnostics.has_errors() {
-            return parsed
-                .parser_diagnostics
-                .errors
-                .iter()
-                .map(|e| Diagnostic {
-                    module: canonical_name,
-                    message: e.to_string(),
-                })
-                .collect();
+            return reporter;
         }
 
         if is_stdlib {
@@ -331,22 +378,13 @@ where
             stmt_vec.push(*stmt);
         }
 
-        let hir = match crate::compilation_passes::pass_hir_lowering(
-            stmt_vec,
+        let mut lowerer = HirLowerer::new(
             self.pool.clone(),
             parsed.bump.clone(),
             self.dep_graph,
-            module_idx,
             self.registry.clone(),
-        ) {
-            Ok(h) => h,
-            Err(e) => {
-                return vec![Diagnostic {
-                    module: canonical_name,
-                    message: e.to_string(),
-                }];
-            }
-        };
+        );
+        let hir = lowerer.lower_module(stmt_vec, module_idx);
 
         let ast_module = codex_dependency_graph::dep_graph::AstModule {
             name: canonical_name,
@@ -389,9 +427,6 @@ where
             }
         }
 
-        self.modules.insert(module_idx, parsed);
-        self.hir_modules.insert(module_idx, hir);
-
         let invalidation_set = {
             self.dep_graph
                 .borrow()
@@ -414,7 +449,6 @@ where
             .collect();
         self.cpy_ctx.borrow_mut().recompute(&updated);
 
-        let mut diagnostics = Vec::new();
         {
             let mut checker = self.type_checker.borrow_mut();
             for &m in &invalidation_set {
@@ -423,13 +457,24 @@ where
                 }
             }
             for err in checker.errors() {
-                diagnostics.push(Diagnostic {
-                    module: canonical_name,
-                    message: err.to_string(),
-                });
+                reporter.add_type_error(err.clone());
             }
         }
-        diagnostics
+
+        let hoister = LambdaHoister::new(parsed.bump.clone(), self.pool.clone(), hir.name);
+        let hoisted_module = hoister.run(hir);
+
+        let monomorphizer = Monomorphizer::new(
+            self.pool.clone(),
+            parsed.bump.clone(),
+            lowerer.ctx.functions.clone(),
+            &lowerer.ctx,
+        );
+        let monomorphized_module = monomorphizer.run(hoisted_module);
+
+        self.modules.insert(module_idx, parsed);
+        self.hir_modules.insert(module_idx, monomorphized_module);
+        reporter
     }
 
     pub fn close_module(&mut self, name: &str) {
@@ -438,6 +483,7 @@ where
             self.modules.remove(&idx);
             self.hir_modules.remove(&idx);
             self.cpy_ctx.borrow_mut().remove_module(idx);
+            self.module_paths.remove(&idx);
         }
     }
 }

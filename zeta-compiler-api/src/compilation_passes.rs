@@ -5,7 +5,6 @@ use ir::errors::reporter::ErrorReporter;
 use ir::hir::{HirModule, StrId};
 use ir::registry::global_registry::GlobalRegistry;
 use scribe_parser::hir_lowerer::HirLowerer;
-use scribe_parser::hir_lowerer::lambda_hoisting::LambdaHoister;
 use sentinel_typechecker::TypeChecker;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -24,8 +23,7 @@ pub fn pass_hir_lowering<'a, 'bump>(
 ) -> Result<HirModule<'a, 'bump>, CompilerError<'a>> {
     let mut lowerer = HirLowerer::new(context.clone(), bump.clone(), dep_graph, registry);
     let module = lowerer.lower_module(statements, module_idx);
-    let hoister = LambdaHoister::new(bump.clone(), context.clone(), module.name);
-    Ok(hoister.run(module))
+    Ok(module)
 }
 
 pub fn register_all_modules<'a, 'bump>(
