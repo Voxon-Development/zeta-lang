@@ -21,6 +21,30 @@ use ir::span::SourceSpan;
 use zetaruntime::bump::GrowableBump;
 use zetaruntime::string_pool::StringPool;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LocalSymbolId(u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SymbolId {
+    /// let-binding, parameter, or `this`, identified by mint order, since
+    /// name alone isn't unique across scopes.
+    Local(LocalSymbolId),
+    /// struct field, identified directly by (declaring struct, field
+    /// name), already globally unique, no minting needed.
+    Field {
+        struct_name: StrId,
+        field_name: StrId,
+    },
+    /// top-level declaration, same coordinate DepGraph already uses.
+    /// Not populated yet, reserved for when function/struct/enum *name*
+    /// occurrences get recorded (go-to-def on the declaration side).
+    Item {
+        module_idx: usize,
+        item_idx: usize,
+        tag: &'static str,
+    },
+}
+
 pub struct TypeChecker<'a, 'bump> {
     context: TypeContext<'a, 'bump>,
     errors: Vec<TypeError<'a>>,
@@ -31,6 +55,15 @@ pub struct TypeChecker<'a, 'bump> {
     this_id: StrId,
     suppress_errors: bool,
     ref_templates: FxHashMap<StrId, RefTemplate>,
+    next_symbol_id: u32,
+    occurrences: Vec<(
+        SourceSpan<'a>,
+        StrId,
+        HirType<'a, 'bump>,
+        usize,
+        SymbolId,
+        bool,
+    )>,
 }
 
 impl<'a, 'bump> TypeChecker<'a, 'bump> {
@@ -50,7 +83,32 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             borrow_checker: BorrowChecker::new(),
             suppress_errors: false,
             ref_templates: FxHashMap::default(),
+            next_symbol_id: 0,
+            occurrences: Vec::new(),
         }
+    }
+
+    fn mint_symbol_id(&mut self) -> SymbolId {
+        let id = LocalSymbolId(self.next_symbol_id);
+        self.next_symbol_id += 1;
+        SymbolId::Local(id)
+    }
+
+    pub fn occurrences(
+        &self,
+    ) -> &[(
+        SourceSpan<'a>,
+        StrId,
+        HirType<'a, 'bump>,
+        usize,
+        SymbolId,
+        bool,
+    )] {
+        &self.occurrences
+    }
+
+    pub fn context(&self) -> &TypeContext<'a, 'bump> {
+        &self.context
     }
 
     pub fn errors(&self) -> &[TypeError<'a>] {
@@ -210,6 +268,8 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
     }
 
     pub fn check_module_body(&mut self, module: &HirModule<'a, 'bump>, module_idx: usize) {
+        self.occurrences
+            .retain(|(_, _, _, m, _, _)| *m != module_idx);
         self.context.current_module_idx = module_idx;
         for item in module.items {
             if let Hir::Func(func) = item {
@@ -243,10 +303,23 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         if let Some(params) = func.params {
             for param in params {
                 match param {
-                    HirParam::Normal { name, param_type } => {
+                    HirParam::Normal {
+                        name,
+                        param_type,
+                        span,
+                    } => {
                         let param_name = self.str_id_to_string(*name);
-                        func_context.add_variable(param_name, *param_type);
+                        let symbol_id = self.mint_symbol_id();
+                        func_context.add_variable(param_name, *param_type, symbol_id);
                         self.borrow_checker.declare_local(*name);
+                        self.occurrences.push((
+                            *span,
+                            *name,
+                            *param_type,
+                            self.context.current_module_idx,
+                            symbol_id,
+                            true,
+                        ));
                     }
                     HirParam::This { .. } => {
                         self.borrow_checker.declare_local(self.this_id);
@@ -281,7 +354,9 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 value,
                 mutable,
                 else_block,
-                ..
+                span,
+                is_static: _,
+                catch_pattern: _,
             } => {
                 let value_type = self.check_expr(value);
 
@@ -322,9 +397,18 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     self.context.mark_dangling(var_name.clone());
                 }
 
+                let symbol_id = self.mint_symbol_id();
                 self.context
-                    .add_variable_with_mutability(var_name, *ty, *mutable);
+                    .add_variable_with_mutability(var_name, *ty, *mutable, symbol_id);
                 self.borrow_checker.declare_local(*name);
+                self.occurrences.push((
+                    *span,
+                    *name,
+                    *ty,
+                    self.context.current_module_idx,
+                    symbol_id,
+                    true,
+                ));
 
                 if matches!(ty, HirType::SafePointer(_) | HirType::UnsafePointer(_)) {
                     if let Some(place) = self.resolve_place(value) {
@@ -520,7 +604,9 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 let result = self.types_compatible(&const_stmt.ty, &value_type);
                 self.recover(result, ());
                 let var_name = self.str_id_to_string(const_stmt.name);
-                self.context.add_variable(var_name, const_stmt.ty);
+                let symbol_id = self.mint_symbol_id();
+                self.context
+                    .add_variable(var_name, const_stmt.ty, symbol_id);
                 None
             }
             HirStmt::Match { expr, arms } => {
@@ -627,15 +713,24 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     }
                 }
             }
-            HirExpr::Ident(name, _) => {
+            HirExpr::Ident(name, span) => {
                 let var_name = self.str_id_to_string(*name);
-                match self.context.get_variable(&var_name) {
+                let (symbol_id, ty) = match self.context.get_variable(&var_name) {
                     Some(ty) => ty,
                     None => {
                         self.record(TypeErrorKind::UndefinedVariable(var_name));
-                        HirType::Unknown
+                        (SymbolId::Local(LocalSymbolId(u32::MAX)), HirType::Unknown)
                     }
-                }
+                };
+                self.occurrences.push((
+                    *span,
+                    *name,
+                    ty,
+                    self.context.current_module_idx,
+                    symbol_id,
+                    false,
+                ));
+                ty
             }
             HirExpr::Tuple(exprs, _span) => {
                 let mut types = Vec::new();
@@ -656,17 +751,58 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 let result = self.check_binary_op(&left_type, op, &right_type);
                 self.recover(result, HirType::Unknown)
             }
-            HirExpr::Call { callee, args, span } => match &callee {
+            HirExpr::Call {
+                callee,
+                args,
+                span,
+                type_args,
+            } => match &callee {
                 HirExpr::Ident(func_name, _) => {
                     self.set_span(*span);
                     let lookup_name = self.str_id_to_string(*func_name);
                     let func = match self.context.get_function(&lookup_name) {
                         Some(f) => f,
                         None => {
-                            self.record(TypeErrorKind::UndefinedFunction(
-                                self.str_id_to_string(*func_name),
-                            ));
+                            self.record(TypeErrorKind::UndefinedFunction(lookup_name));
                             return HirType::Unknown;
+                        }
+                    };
+
+                    let substitutions: FxHashMap<StrId, HirType<'a, 'bump>> = match func.generics {
+                        Some(tp) if !tp.is_empty() => match type_args {
+                            Some(ta) => {
+                                if ta.len() != tp.len() {
+                                    self.record(TypeErrorKind::Generic(format!(
+                                        "function `{}` expects {} type argument(s), found {}",
+                                        lookup_name,
+                                        tp.len(),
+                                        ta.len()
+                                    )));
+                                }
+                                let mut map = FxHashMap::default();
+                                tp.iter().zip(ta.iter()).map(|(&p, &a)| (p, a)).for_each(
+                                    |(p, a)| {
+                                        map.insert(p.name, a);
+                                    },
+                                );
+                                map
+                            }
+                            None => {
+                                self.record(TypeErrorKind::Generic(format!(
+                                "generic function `{}` requires explicit type arguments, e.g. `{}<Type>(...)`",
+                                lookup_name, lookup_name
+                            )));
+                                FxHashMap::default()
+                            }
+                        },
+                        _ => {
+                            if type_args.is_some() {
+                                self.record(TypeErrorKind::Generic(format!(
+                                    "function `{}` is not generic; no type arguments expected",
+                                    lookup_name
+                                )));
+                            }
+                            FxHashMap::default()
                         }
                     };
 
@@ -678,23 +814,43 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                         });
                     }
 
-                    if let Some(params) = func.params {
-                        if let Some(value) =
-                            self.check_potential_this_param_for_move(args, func, params)
-                        {
-                            return value;
-                        }
-                        let arg_loans = self.check_all_func_args(args, params, None);
-
+                    let Some(params) = func.params else {
                         let ret_ty = func.return_type.unwrap_or(HirType::Void);
-                        if !self.return_type_may_alias(&ret_ty) {
-                            for loan in arg_loans {
-                                self.borrow_checker.end_loan_now(loan);
-                            }
+                        return if substitutions.is_empty() {
+                            ret_ty
+                        } else {
+                            self.substitute_type_local(&ret_ty, &substitutions)
+                        };
+                    };
+
+                    let params = if substitutions.is_empty() {
+                        params
+                    } else {
+                        self.substitute_params_local(params, &substitutions)
+                    };
+
+                    // TODO: generics through the this param and aliasing path
+                    // (check_potential_this_param_for_move) aren't handled yet
+                    if let Some(value) =
+                        self.check_potential_this_param_for_move(args, func, params)
+                    {
+                        return value;
+                    }
+                    let arg_loans = self.check_all_func_args(args, params, None);
+
+                    let ret_ty = func.return_type.unwrap_or(HirType::Void);
+                    let ret_ty = if substitutions.is_empty() {
+                        ret_ty
+                    } else {
+                        self.substitute_type_local(&ret_ty, &substitutions)
+                    };
+                    if !self.return_type_may_alias(&ret_ty) {
+                        for loan in arg_loans {
+                            self.borrow_checker.end_loan_now(loan);
                         }
                     }
 
-                    func.return_type.unwrap_or(HirType::Void)
+                    ret_ty
                 }
 
                 HirExpr::FieldAccess { object, field, .. } => {
@@ -747,7 +903,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                         }
 
                         if let Some(params) = method.params {
-                            if let Some(HirParam::This { kind }) = params.first() {
+                            if let Some(HirParam::This { kind, span: _ }) = params.first() {
                                 if matches!(kind, ThisPassingKind::Move | ThisPassingKind::MoveMut)
                                 {
                                     self.check_and_record_value_use(object, &obj_type);
@@ -799,7 +955,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     }
 
                     if let Some(params) = func.params {
-                        if let Some(HirParam::This { kind }) = params.first() {
+                        if let Some(HirParam::This { kind, span: _ }) = params.first() {
                             let requires_mut = matches!(
                                 kind,
                                 ThisPassingKind::RefMut
@@ -931,36 +1087,81 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 self.set_span(*span);
                 self.check_field_access(object, *field)
             }
-            HirExpr::StructInit { name, args, span } => {
+            HirExpr::StructInit {
+                name,
+                args,
+                span,
+                type_args: _,
+            } => {
                 self.set_span(*span);
                 let HirExpr::Ident(name, _) = name else {
                     return HirType::Void;
                 };
                 let struct_name_str = self.str_id_to_string(*name);
-                let field_slice = if let Some(class) = self.context.get_struct(&struct_name_str) {
-                    let field_types: Vec<HirType<'a, 'bump>> =
-                        class.fields.iter().map(|f| f.field_type).collect();
-
-                    if args.len() != field_types.len() {
-                        self.record(TypeErrorKind::InvalidFunctionCall {
-                            expected_args: field_types.len(),
-                            found_args: args.len(),
-                        });
-                    }
-
-                    for (arg, field_type) in args.iter().zip(field_types.iter()) {
-                        let arg_type = self.check_expr(arg);
-                        self.check_and_record_value_use(arg, &arg_type);
-                        let result = self.types_compatible(field_type, &arg_type);
-                        self.recover(result, ());
-                    }
-
-                    self.context.bump.alloc_slice(&field_types)
-                } else {
+                let Some(class) = self.context.get_struct(&struct_name_str) else {
                     self.record(TypeErrorKind::UndefinedType(struct_name_str));
-                    &[]
+                    return HirType::Struct(*name, &[]);
                 };
-                HirType::Struct(*name, field_slice)
+
+                let mut seen: std::collections::HashSet<StrId> = std::collections::HashSet::new();
+
+                for field_init in *args {
+                    let field_name_str = self.str_id_to_string(field_init.name);
+                    let field_def = class
+                        .fields
+                        .iter()
+                        .find(|f| self.str_id_to_string(f.name) == field_name_str);
+
+                    let Some(field_def) = field_def else {
+                        self.record(TypeErrorKind::FieldNotFound {
+                            struct_name: struct_name_str.clone(),
+                            field: field_name_str,
+                        });
+                        self.check_expr(&field_init.value);
+                        continue;
+                    };
+
+                    if !seen.insert(field_init.name) {
+                        self.record(TypeErrorKind::Generic(format!(
+                            "field `{}` initialized more than once",
+                            field_name_str
+                        )));
+                    }
+
+                    let arg_type = self.check_expr(&field_init.value);
+                    self.check_and_record_value_use(&field_init.value, &arg_type);
+                    let result = self.types_compatible(&field_def.field_type, &arg_type);
+                    self.recover(result, ());
+
+                    self.occurrences.push((
+                        field_init.name_span,
+                        field_init.name,
+                        field_def.field_type,
+                        self.context.current_module_idx,
+                        SymbolId::Field {
+                            struct_name: *name,
+                            field_name: field_init.name,
+                        },
+                        false,
+                    ));
+                }
+
+                let missing: Vec<&str> = class
+                    .fields
+                    .iter()
+                    .filter(|f| !args.iter().any(|a| a.name == f.name))
+                    .map(|f| f.name.as_str())
+                    .collect();
+                if !missing.is_empty() {
+                    self.record(TypeErrorKind::Generic(format!(
+                        "missing field(s) in struct init: {}",
+                        missing.join(", ")
+                    )));
+                }
+
+                let field_types: Vec<HirType<'a, 'bump>> =
+                    class.fields.iter().map(|f| f.field_type).collect();
+                HirType::Struct(*name, self.context.bump.alloc_slice(&field_types))
             }
             HirExpr::InterfaceCall {
                 callee,
@@ -1158,7 +1359,19 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             } => self.check_ref_expr(expr, *mutable, *span, true),
             HirExpr::This { span } => {
                 self.set_span(*span);
-                self.context.get_variable("this").unwrap_or(HirType::This)
+                let (symbol_id, ty) = self
+                    .context
+                    .get_variable("this")
+                    .unwrap_or((SymbolId::Local(LocalSymbolId(u32::MAX)), HirType::This));
+                self.occurrences.push((
+                    *span,
+                    self.this_id,
+                    ty,
+                    self.context.current_module_idx,
+                    symbol_id,
+                    false,
+                ));
+                ty
             }
             HirExpr::ModuleAccess(access) => {
                 self.set_span(access.span);
@@ -1209,7 +1422,8 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 for p in *params {
                     let param_name = self.str_id_to_string(p.name);
                     let param_ty = p.param_type.unwrap_or(HirType::Unknown);
-                    lambda_context.add_variable(param_name, param_ty);
+                    let symbol_id = self.mint_symbol_id();
+                    lambda_context.add_variable(param_name, param_ty, symbol_id);
                 }
 
                 let old_context = std::mem::replace(&mut self.context, lambda_context);
@@ -1271,6 +1485,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
 
                 HirType::Array(self.context.bump.alloc_value(first_ty), elements.len())
             }
+            HirExpr::GenericIdent(str_id, hir_types, source_span) => todo!(),
         }
     }
 
@@ -1509,8 +1724,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         // Root/path of the argument expression itself, e.g. `list` in `&list.head`.
         let mut base_provenance = self.infer_provenance(base_expr)?;
 
-        // Then extend with the template's own projections (skipping Index, same
-        // rationale as infer_provenance_root: no static field/deref to name).
+        // Then extend with the template's own projections.
         let mut path: Vec<ProvenancePathSegment> = base_provenance.path.to_vec();
         for proj in projections {
             match proj {
@@ -1750,7 +1964,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         match expr {
             HirExpr::Ref { expr: inner, .. } => match self.find_root_local_ident(inner) {
                 Some(root_name) => match self.context.get_variable(&root_name) {
-                    Some(root_type) => !root_type.is_pointer_semantics(),
+                    Some((_, root_type)) => !root_type.is_pointer_semantics(),
                     None => false,
                 },
                 None => false,
@@ -1766,7 +1980,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
     fn check_no_dangling_pointer(&self, expr: &HirExpr<'a, 'bump>) -> TypeCheckResult<'a, ()> {
         if let HirExpr::Ref { expr: inner, .. } = expr {
             if let Some(root_name) = self.find_root_local_ident(inner) {
-                if let Some(root_type) = self.context.get_variable(&root_name) {
+                if let Some((_, root_type)) = self.context.get_variable(&root_name) {
                     if !root_type.is_pointer_semantics() {
                         return Err(TypeErrorKind::Generic(format!(
                             "cannot return a pointer to local variable `{}`: its storage does not outlive this function",
@@ -1876,35 +2090,49 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         field: StrId,
     ) -> HirType<'a, 'bump> {
         let obj_type = self.check_expr(object);
-        match obj_type {
-            HirType::Struct(struct_name, _) => {
-                let struct_name_str = self.str_id_to_string(struct_name);
-                let Some(struct_def) = self.context.get_struct(&struct_name_str) else {
-                    self.record(TypeErrorKind::UndefinedType(struct_name_str));
-                    return HirType::Unknown;
-                };
 
-                let field_name = self.str_id_to_string(field);
-                for f in struct_def.fields {
-                    if self.str_id_to_string(f.name) == field_name {
-                        return f.field_type;
-                    }
-                }
+        let HirType::Struct(struct_name, _) = obj_type else {
+            self.record(TypeErrorKind::Generic(format!(
+                "Cannot access field on non-struct type: {}",
+                self.type_to_string(&obj_type)
+            )));
+            return HirType::Unknown;
+        };
 
-                self.record(TypeErrorKind::FieldNotFound {
-                    struct_name: struct_name_str,
-                    field: field_name,
-                });
-                HirType::Unknown
-            }
-            _ => {
-                self.record(TypeErrorKind::Generic(format!(
-                    "Cannot access field on non-struct type: {}",
-                    self.type_to_string(&obj_type)
-                )));
-                HirType::Unknown
-            }
-        }
+        let struct_name_str = self.str_id_to_string(struct_name);
+        let Some(struct_def) = self.context.get_struct(&struct_name_str) else {
+            self.record(TypeErrorKind::UndefinedType(struct_name_str));
+            return HirType::Unknown;
+        };
+
+        let field_name = self.str_id_to_string(field);
+        let found = struct_def
+            .fields
+            .iter()
+            .find(|f| self.str_id_to_string(f.name) == field_name)
+            .map(|f| f.field_type);
+
+        let Some(ty) = found else {
+            self.record(TypeErrorKind::FieldNotFound {
+                struct_name: struct_name_str,
+                field: field_name,
+            });
+            return HirType::Unknown;
+        };
+
+        self.occurrences.push((
+            self.current_span,
+            field,
+            ty,
+            self.context.current_module_idx,
+            SymbolId::Field {
+                struct_name,
+                field_name: field,
+            },
+            false,
+        ));
+
+        ty
     }
 
     fn record_move(
@@ -2002,7 +2230,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     let root_name = self.str_id_to_string(*root);
                     let container_ty = self.context.get_variable(&root_name);
                     self.check_use(*root, Some(*field), ty);
-                    self.record_move(*root, Some(*field), ty, container_ty.as_ref());
+                    self.record_move(*root, Some(*field), ty, container_ty.map(|f| f.1).as_ref());
                 }
             }
             _ => {}
@@ -2069,6 +2297,94 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             }
             _ => a == b,
         }
+    }
+
+    fn substitute_type_local(
+        &self,
+        ty: &HirType<'a, 'bump>,
+        subs: &FxHashMap<StrId, HirType<'a, 'bump>>,
+    ) -> HirType<'a, 'bump> {
+        match ty {
+            HirType::Generic(name) => subs.get(name).copied().unwrap_or(*ty),
+            HirType::Nullable(inner) => HirType::Nullable(
+                self.context
+                    .bump
+                    .alloc_value(self.substitute_type_local(inner, subs)),
+            ),
+            HirType::Array(inner, len) => HirType::Array(
+                self.context
+                    .bump
+                    .alloc_value(self.substitute_type_local(inner, subs)),
+                *len,
+            ),
+            HirType::Slice(inner) => HirType::Slice(
+                self.context
+                    .bump
+                    .alloc_value(self.substitute_type_local(inner, subs)),
+            ),
+            HirType::SafePointer(inner) => HirType::SafePointer(
+                self.context
+                    .bump
+                    .alloc_value(self.substitute_type_local(inner, subs)),
+            ),
+            HirType::UnsafePointer(inner) => HirType::UnsafePointer(
+                self.context
+                    .bump
+                    .alloc_value(self.substitute_type_local(inner, subs)),
+            ),
+            HirType::OwnedPointer(inner) => HirType::OwnedPointer(
+                self.context
+                    .bump
+                    .alloc_value(self.substitute_type_local(inner, subs)),
+            ),
+            HirType::Ref {
+                inner,
+                mutability_state,
+                provenance,
+            } => HirType::Ref {
+                inner: self
+                    .context
+                    .bump
+                    .alloc_value(self.substitute_type_local(inner, subs)),
+                mutability_state: *mutability_state,
+                provenance: *provenance,
+            },
+            HirType::Tuple(elems) => {
+                let new_elems: Vec<_> = elems
+                    .iter()
+                    .map(|e| self.substitute_type_local(e, subs))
+                    .collect();
+                HirType::Tuple(self.context.bump.alloc_slice_copy(&new_elems))
+            }
+            // TODO: check structs, enums, dyn and lambdas
+            _ => *ty,
+        }
+    }
+
+    fn substitute_params_local(
+        &self,
+        params: &[HirParam<'a, 'bump>],
+        subs: &FxHashMap<StrId, HirType<'a, 'bump>>,
+    ) -> &'bump [HirParam<'a, 'bump>] {
+        let new_params: Vec<HirParam> = params
+            .iter()
+            .map(|p| match p {
+                HirParam::Normal {
+                    name,
+                    param_type,
+                    span,
+                } => HirParam::Normal {
+                    name: *name,
+                    param_type: self.substitute_type_local(param_type, subs),
+                    span: *span,
+                },
+                HirParam::This { kind, span } => HirParam::This {
+                    kind: *kind,
+                    span: *span,
+                },
+            })
+            .collect();
+        self.context.bump.alloc_slice(&new_params)
     }
 
     fn types_compatible(
@@ -2319,9 +2635,15 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 let var_name = self.str_id_to_string(*name);
                 self.context
                     .get_variable(&var_name)
-                    .unwrap_or(HirType::Unknown)
+                    .unwrap_or((SymbolId::Local(LocalSymbolId(u32::MAX)), HirType::Unknown))
+                    .1
             }
-            HirExpr::This { .. } => self.context.get_variable("this").unwrap_or(HirType::This),
+            HirExpr::This { .. } => {
+                self.context
+                    .get_variable("this")
+                    .unwrap_or((SymbolId::Local(LocalSymbolId(u32::MAX)), HirType::This))
+                    .1
+            }
             HirExpr::FieldAccess { object, field, .. } | HirExpr::Get { object, field, .. } => {
                 match self.peek_type(object) {
                     HirType::Struct(struct_name, _) => {
