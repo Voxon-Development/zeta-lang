@@ -1,4 +1,3 @@
-use crate::hir_lowerer::monomorphization::Monomorphizer;
 use codex_dependency_graph::dep_graph::DepGraph;
 use ir::errors::reporter::ErrorReporter;
 use ir::hir::HirFuncProto;
@@ -35,7 +34,6 @@ pub struct LoweringCtx<'a, 'bump> {
 pub struct HirLowerer<'a, 'bump> {
     pub ctx: LoweringCtx<'a, 'bump>,
     pub error_reporter: ErrorReporter<'a>,
-    pub(crate) mono: Monomorphizer<'a, 'bump>,
     _phantom: PhantomData<&'bump ()>,
 }
 
@@ -64,13 +62,8 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 struct_methods: registry.struct_methods,
             },
             error_reporter: ErrorReporter::new(),
-            mono: Monomorphizer::new(context, bump, registry.functions),
             _phantom: PhantomData,
         }
-    }
-
-    pub fn monomorphizer(&self) -> &Monomorphizer<'a, 'bump> {
-        &self.mono
     }
 
     pub fn is_generic_param(&self, name: StrId) -> bool {

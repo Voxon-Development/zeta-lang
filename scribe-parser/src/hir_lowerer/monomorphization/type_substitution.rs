@@ -3,9 +3,9 @@ use ir::ir_hasher::HashMap;
 use std::sync::Arc;
 use zetaruntime::arena::GrowableAtomicBump;
 
-pub fn substitute_type<'a, 'bump>(
+pub fn substitute_type<'a, 'subs, 'bump>(
     ty: &HirType<'a, 'bump>,
-    subs: &HashMap<StrId, HirType<'a, 'bump>>,
+    subs: &'subs HashMap<StrId, HirType<'a, 'bump>>,
     bump: Arc<GrowableAtomicBump<'bump>>,
 ) -> HirType<'a, 'bump> {
     match ty {

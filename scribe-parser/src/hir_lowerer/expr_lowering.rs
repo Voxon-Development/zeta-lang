@@ -1,11 +1,13 @@
 use super::context::HirLowerer;
 use super::utils::lower_cmp_operator;
-use ir::ast::{self, Expr, InlineModifier, Op, Pattern, ProvenanceAnnotation, Type, TypeKind};
-use ir::hir::{
-    self, AssignmentOperator, HirExpr, HirFunc, HirLambdaParam, HirModuleAccess, HirPattern,
-    HirStmt, HirType, Operator, StrId,
+use ir::ast::{
+    self, Expr, FieldInit, InlineModifier, Op, Pattern, ProvenanceAnnotation, Type, TypeKind,
 };
-use ir::ir_hasher::{FxHashBuilder, FxHashMap};
+use ir::hir::{
+    self, AssignmentOperator, HirExpr, HirFieldInit, HirFunc, HirLambdaParam, HirModuleAccess,
+    HirPattern, HirStmt, HirType, Operator, StrId,
+};
+use ir::ir_hasher::FxHashBuilder;
 use ir::span::SourceSpan;
 use std::collections::HashMap;
 
@@ -43,45 +45,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 generic_args,
                 arguments,
                 span,
-            } => {
-                if !generic_args.is_empty() {
-                    if let Expr::Ident { name, .. } = callee {
-                        let hir_types: Vec<HirType> =
-                            generic_args.iter().map(|t| self.lower_type(t)).collect();
-
-                        let func_opt = self.ctx.functions.borrow().get(&name).cloned();
-                        if let Some(func) = func_opt {
-                            let mut substitutions = FxHashMap::default();
-                            if let Some(params) = func.generics {
-                                for (i, param) in params.iter().enumerate() {
-                                    if let Some(hir_ty) = hir_types.get(i) {
-                                        substitutions.insert(param.name, *hir_ty);
-                                    }
-                                }
-                            }
-
-                            if let Some(mono_name) =
-                                self.mono.monomorphize_function(&func, &substitutions)
-                            {
-                                let args_vec: Vec<HirExpr> =
-                                    arguments.iter().map(|a| self.lower_expr(a)).collect();
-                                let args = self.ctx.bump.alloc_slice(&args_vec);
-
-                                return HirExpr::Call {
-                                    callee: self
-                                        .ctx
-                                        .bump
-                                        .alloc_value(HirExpr::Ident(mono_name, *span)),
-                                    args,
-                                    span: *span,
-                                };
-                            }
-                        }
-                    }
-                }
-
-                self.lower_expr_call(callee, arguments, *span)
-            }
+            } => self.lower_expr_call(callee, arguments, *span, generic_args),
 
             Expr::Number { value, span } => HirExpr::Number(*value, *span),
             Expr::String { value, span } => HirExpr::String(*value, *span),
@@ -142,32 +106,17 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 name,
                 generic_args,
                 span,
-            } => {
-                let hir_types: Vec<HirType> =
-                    generic_args.iter().map(|t| self.lower_type(t)).collect();
-
-                let func_opt = self.ctx.functions.borrow().get(name).cloned();
-                if let Some(func) = func_opt {
-                    // Build substitutions from generic params to concrete types
-                    let mut substitutions = FxHashMap::default();
-                    if let Some(params) = func.generics {
-                        for (i, param) in params.iter().enumerate() {
-                            if let Some(hir_ty) = hir_types.get(i) {
-                                substitutions.insert(param.name, *hir_ty);
-                            }
-                        }
-                    }
-
-                    // Monomorphize and return the new function name
-                    if let Some(mono_name) = self.mono.monomorphize_function(&func, &substitutions)
-                    {
-                        return HirExpr::Ident(mono_name, *span);
-                    }
-                }
-
-                // Fallback: return original name (will fail later if not found)
-                HirExpr::Ident(*name, *span)
-            }
+            } => HirExpr::GenericIdent(
+                *name,
+                self.ctx.bump.alloc_slice_immutable(
+                    generic_args
+                        .iter()
+                        .map(|a| self.lower_type(a))
+                        .collect::<Vec<_>>()
+                        .as_slice(),
+                ),
+                *span,
+            ),
 
             Expr::Decimal { value, span } => HirExpr::Decimal(*value, *span),
 
@@ -186,15 +135,26 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 callee,
                 arguments,
                 span,
+                type_args,
             } => {
                 let name = self.lower_expr(callee);
-                let args_vec: Vec<HirExpr<'a, 'bump>> =
-                    arguments.iter().map(|a| self.lower_expr(a)).collect();
+                let args_vec: Vec<HirFieldInit<'a, 'bump>> = arguments
+                    .iter()
+                    .map(|a| self.lower_field_init(*a))
+                    .collect();
                 let args = self.ctx.bump.alloc_slice(&args_vec);
+                let type_args_vec: Vec<HirType<'a, 'bump>> =
+                    type_args.iter().map(|a| self.lower_type(a)).collect();
+                let type_args = if type_args_vec.is_empty() {
+                    None
+                } else {
+                    Some(self.ctx.bump.alloc_slice_immutable(&type_args_vec))
+                };
                 HirExpr::StructInit {
                     name: self.ctx.bump.alloc_value(name),
                     args,
                     span: *span,
+                    type_args,
                 }
             }
 
@@ -355,6 +315,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                     .map(|p| HirLambdaParam {
                         name: p.name,
                         param_type: p.type_annotation.as_ref().map(|t| self.lower_type(t)),
+                        span: p.span,
                     })
                     .collect();
                 let params_slice = self.ctx.bump.alloc_slice_immutable(&lowered_params);
@@ -419,6 +380,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         callee: &Expr<'a, 'bump>,
         arguments: &'bump [Expr<'a, 'bump>],
         span: SourceSpan<'a>,
+        generic_args: &'bump [Type<'a, 'bump>],
     ) -> HirExpr<'a, 'bump> {
         let mut lowered_callee = self.lower_expr(&*callee);
         if let Some(value) = self.detect_interface_call(arguments, &lowered_callee) {
@@ -452,6 +414,19 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             callee: self.ctx.bump.alloc_value(lowered_callee),
             args,
             span,
+            type_args: if generic_args.is_empty() {
+                None
+            } else {
+                Some(
+                    self.ctx.bump.alloc_slice_immutable(
+                        generic_args
+                            .iter()
+                            .map(|a| self.lower_type(a))
+                            .collect::<Vec<_>>()
+                            .as_slice(),
+                    ),
+                )
+            },
         }
     }
 
@@ -793,6 +768,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             BuildCall {
                 callee: HirExpr<'a, 'bump>,
                 args: &'bump [HirExpr<'a, 'bump>],
+                type_args: Option<&'bump [HirType<'a, 'bump>]>,
                 arg_idx: usize,
                 span: SourceSpan<'a>,
             },
@@ -841,12 +817,18 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                         });
                         work_stack.push(WorkItem::Process(left));
                     }
-                    HirExpr::Call { callee, args, span } => {
+                    HirExpr::Call {
+                        callee,
+                        args,
+                        span,
+                        type_args,
+                    } => {
                         work_stack.push(WorkItem::BuildCall {
                             callee: HirExpr::Number(0, *span),
                             args,
                             arg_idx: 0,
                             span: *span,
+                            type_args: *type_args,
                         });
                         work_stack.push(WorkItem::Process(callee));
                     }
@@ -915,6 +897,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                     args,
                     arg_idx: _arg_idx,
                     span,
+                    type_args,
                 } => {
                     let callee_result = result_stack.pop().unwrap();
                     let new_args_vec: Vec<HirExpr<'a, 'bump>> = args
@@ -926,6 +909,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                         callee: self.ctx.bump.alloc_value(callee_result),
                         args: new_args,
                         span,
+                        type_args,
                     });
                 }
             }
@@ -1129,5 +1113,13 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 path: self.ctx.bump.alloc_slice(&path),
             }
         })
+    }
+
+    pub(crate) fn lower_field_init(&self, a: FieldInit<'a, 'bump>) -> HirFieldInit<'a, 'bump> {
+        HirFieldInit {
+            name: a.name,
+            name_span: a.name_span,
+            value: self.lower_expr(&a.value),
+        }
     }
 }

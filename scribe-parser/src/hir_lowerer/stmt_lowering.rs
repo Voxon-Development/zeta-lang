@@ -354,6 +354,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             is_static: l.is_static,
             catch_pattern,
             else_block,
+            span: l.span,
         }
     }
 }

@@ -85,6 +85,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 Param::Normal(p) => HirParam::Normal {
                     name: p.name,
                     param_type: self.lower_type(&p.type_annotation),
+                    span: p.span,
                 },
                 Param::This(tp) => HirParam::This {
                     kind: match tp.passing_kind {
@@ -97,6 +98,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                         ParamPassingKind::Move => ThisPassingKind::Move,
                         ParamPassingKind::MoveMut => ThisPassingKind::MoveMut,
                     },
+                    span: tp.span,
                 },
             })
             .collect()

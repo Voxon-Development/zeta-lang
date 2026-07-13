@@ -7,9 +7,9 @@ use ir::ir_hasher::FxHashMap;
 use std::sync::Arc;
 use zetaruntime::arena::GrowableAtomicBump;
 
-pub fn instantiate_class_for_types<'a, 'bump>(
+pub fn instantiate_class_for_types<'a, 'bump, 'ctx>(
     ctx: &LoweringCtx<'a, 'bump>,
-    monomorphizer: &Monomorphizer<'a, 'bump>,
+    monomorphizer: &Monomorphizer<'a, 'bump, 'ctx>,
     base_id: StrId,
     concrete_args: &[HirType<'a, 'bump>],
     bump: Arc<GrowableAtomicBump<'bump>>,
@@ -60,28 +60,28 @@ pub fn instantiate_class_for_types<'a, 'bump>(
             type_map.insert(param.name, arg.clone());
         }
 
-        let new_fields: Vec<_> = new_class
-            .fields
-            .iter()
-            .map(|field| {
-                let field_generics = field.generics.map(|generics| {
+        let mut new_fields = Vec::new();
+        for field in new_class.fields {
+            let field_generics = match field.generics {
+                Some(generics) => {
                     let mut new_generics = Vec::with_capacity(generics.len());
                     for ty in generics.iter() {
                         new_generics.push(substitute_type(ty, &type_map, bump.clone()));
                     }
-                    bump.alloc_slice_immutable(&new_generics)
-                });
-
-                let new_field_type = substitute_type(&field.field_type, &type_map, bump.clone());
-
-                HirField {
-                    name: field.name,
-                    visibility: field.visibility,
-                    field_type: new_field_type,
-                    generics: field_generics,
+                    Some(bump.alloc_slice_immutable(&new_generics))
                 }
-            })
-            .collect();
+                None => None,
+            };
+
+            let new_field_type = substitute_type(&field.field_type, &type_map, bump.clone());
+
+            new_fields.push(HirField {
+                name: field.name,
+                visibility: field.visibility,
+                field_type: new_field_type,
+                generics: field_generics,
+            });
+        }
 
         new_class.fields = bump.alloc_slice(&new_fields);
         new_class.generics = None;
@@ -102,9 +102,9 @@ pub fn instantiate_class_for_types<'a, 'bump>(
     Some(new_class_ptr)
 }
 
-pub fn direct_method_lookup<'a, 'bump>(
+pub fn direct_method_lookup<'a, 'bump, 'ctx>(
     ctx: &LoweringCtx<'a, 'bump>,
-    monomorphizer: &Monomorphizer<'a, 'bump>,
+    monomorphizer: &Monomorphizer<'a, 'bump, 'ctx>,
     class_name: &StrId,
     class_args: &[HirType<'a, 'bump>],
     method_name: &StrId,

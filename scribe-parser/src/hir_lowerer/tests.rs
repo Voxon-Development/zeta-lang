@@ -258,9 +258,12 @@ mod hir_lowerer_tests {
         let atomic_bump = Arc::new(GrowableAtomicBump::new());
         let registry = GlobalRegistry::new();
         let lowerer = HirLowerer::new(context.clone(), atomic_bump.clone(), dep_graph, registry);
-        let _ = Monomorphizer::new(context.clone(), atomic_bump.clone(), unsafe {
-            transmute(&lowerer.ctx)
-        });
+        let _ = Monomorphizer::new(
+            context.clone(),
+            atomic_bump.clone(),
+            unsafe { transmute(&lowerer.ctx) },
+            &lowerer.ctx,
+        );
 
         let mut substitutions = HashMap::default();
         let t_name = context.intern("T");

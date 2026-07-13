@@ -1,5 +1,7 @@
 use ir::ast::{ExternModifier, FuncSafety, InlineModifier, Visibility};
-use ir::hir::{FuncModifiers, Hir, HirExpr, HirFunc, HirModule, HirParam, HirStmt, StrId};
+use ir::hir::{
+    FuncModifiers, Hir, HirExpr, HirFieldInit, HirFunc, HirModule, HirParam, HirStmt, StrId,
+};
 use std::sync::Arc;
 use zetaruntime::arena::GrowableAtomicBump;
 use zetaruntime::string_pool::StringPool;
@@ -87,6 +89,7 @@ impl<'a, 'bump> LambdaHoister<'a, 'bump> {
                 mutable,
                 catch_pattern,
                 else_block,
+                span,
             } => HirStmt::Let {
                 name,
                 ty,
@@ -95,6 +98,7 @@ impl<'a, 'bump> LambdaHoister<'a, 'bump> {
                 is_static,
                 catch_pattern,
                 else_block,
+                span,
             },
             HirStmt::Return(Some(expr)) => {
                 let new_expr = self.rewrite_expr(*expr);
@@ -228,6 +232,7 @@ impl<'a, 'bump> LambdaHoister<'a, 'bump> {
                                 p.name
                             )
                         }),
+                        span: p.span,
                     })
                     .collect();
                 let params_slice = self.bump.alloc_slice_immutable(&hir_params);
@@ -283,7 +288,12 @@ impl<'a, 'bump> LambdaHoister<'a, 'bump> {
                     span,
                 }
             }
-            HirExpr::Call { callee, args, span } => {
+            HirExpr::Call {
+                callee,
+                args,
+                span,
+                type_args,
+            } => {
                 let new_callee = self.rewrite_expr(*callee);
                 let new_args: Vec<HirExpr<'a, 'bump>> =
                     args.iter().map(|a| self.rewrite_expr(*a)).collect();
@@ -291,6 +301,7 @@ impl<'a, 'bump> LambdaHoister<'a, 'bump> {
                     callee: self.bump.alloc_value(new_callee),
                     args: self.bump.alloc_slice(&new_args),
                     span,
+                    type_args,
                 }
             }
             HirExpr::InterfaceCall {
@@ -348,14 +359,26 @@ impl<'a, 'bump> LambdaHoister<'a, 'bump> {
                     span,
                 }
             }
-            HirExpr::StructInit { name, args, span } => {
+            HirExpr::StructInit {
+                name,
+                args,
+                span,
+                type_args,
+            } => {
                 let new_name = self.rewrite_expr(*name);
-                let new_args: Vec<HirExpr<'a, 'bump>> =
-                    args.iter().map(|a| self.rewrite_expr(*a)).collect();
+                let new_args: Vec<HirFieldInit<'a, 'bump>> = args
+                    .iter()
+                    .map(|a| HirFieldInit {
+                        name: a.name,
+                        name_span: a.name_span,
+                        value: self.rewrite_expr(*&a.value),
+                    })
+                    .collect();
                 HirExpr::StructInit {
                     name: self.bump.alloc_value(new_name),
                     args: self.bump.alloc_slice(&new_args),
                     span,
+                    type_args,
                 }
             }
             HirExpr::ExprList { list, span } => {
