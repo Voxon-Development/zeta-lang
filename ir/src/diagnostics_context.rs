@@ -91,7 +91,7 @@ impl<'a> ParserDiagnosticsContext<'a> {
             kind,
             TokenKind::Semicolon
                 | TokenKind::RBrace
-                | TokenKind::Fn
+                | TokenKind::Func
                 | TokenKind::Struct
                 | TokenKind::Impl
                 | TokenKind::Enum
