@@ -6,6 +6,8 @@ use ir::{
 use std::{cell::RefCell, collections::HashMap, sync::Arc};
 use zetaruntime::{bump::GrowableBump, string_pool::StringPool};
 
+use crate::type_checker::SymbolId;
+
 #[derive(Debug, Clone, Default)]
 pub struct TypeMethodTable<'a, 'bump> {
     pub methods: HashMap<String, HirFunc<'a, 'bump>>,
@@ -23,7 +25,7 @@ impl<'a, 'bump> TypeMethodTable<'a, 'bump> {
 
 #[derive(Debug, Clone)]
 pub struct TypeContext<'a, 'bump> {
-    pub variables: HashMap<String, HirType<'a, 'bump>>,
+    pub variables: HashMap<String, (SymbolId, HirType<'a, 'bump>)>,
     pub structs: HashMap<String, HirStruct<'a, 'bump>>,
     pub enums: HashMap<String, HirEnum<'a, 'bump>>,
     pub interfaces: HashMap<String, HirInterface<'a, 'bump>>,
@@ -142,8 +144,8 @@ impl<'a, 'bump> TypeContext<'a, 'bump> {
             .and_then(|t| t.get(method_name))
     }
 
-    pub fn add_variable(&mut self, name: String, ty: HirType<'a, 'bump>) {
-        self.variables.insert(name, ty);
+    pub fn add_variable(&mut self, name: String, ty: HirType<'a, 'bump>, symbol_id: SymbolId) {
+        self.variables.insert(name, (symbol_id, ty));
     }
 
     pub fn add_variable_with_mutability(
@@ -151,20 +153,21 @@ impl<'a, 'bump> TypeContext<'a, 'bump> {
         name: String,
         ty: HirType<'a, 'bump>,
         mutable: bool,
+        symbol_id: SymbolId,
     ) {
         if mutable {
             self.mutable_variables.insert(name.clone());
         } else {
             self.mutable_variables.remove(&name);
         }
-        self.variables.insert(name, ty);
+        self.variables.insert(name, (symbol_id, ty));
     }
 
     pub fn is_mutable(&self, name: &str) -> bool {
         self.mutable_variables.contains(name)
     }
 
-    pub fn get_variable(&self, name: &str) -> Option<HirType<'a, 'bump>> {
+    pub fn get_variable(&self, name: &str) -> Option<(SymbolId, HirType<'a, 'bump>)> {
         self.variables.get(name).copied()
     }
 
