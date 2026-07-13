@@ -1,17 +1,40 @@
-extern(C) fn get_index() -> i64;
-extern(C) fn println_long(num: i64);
+package zeta::input;
 
-fn main() {
-    let mut arr: [4]i64 = [1, 2, 3, 4];
+public extern(C) func println_int(num: i32): void;
 
-    let index: i64 = get_index();
-    if (index == 2) {
-        let a: &mut i64 = &mut arr[index];
-        let b: &mut i64 = &mut arr[1];
+public struct Inner {
+    tag: i64
+}
 
-        *a = 10;
-        *b = 20;
-        println_long(*a);
-        println_long(*b);
+impl Inner by Drop {
+    func drop(mut this): void {
+        zeta::repro.println_int(33333);
     }
+}
+
+public struct Outer {
+    inner: Inner,
+    count: i64
+}
+
+public struct OuterDrop {
+    inner: Inner,
+    count: i64
+}
+
+impl OuterDrop by Drop {
+    func drop(mut this): void {
+        zeta::repro.println_int(22222);
+    }
+}
+
+func take_inner(i: Inner): void {
+    zeta::repro.println_int(111111);
+}
+
+func main() {
+    let o: Outer = Outer { inner: Inner { tag: 1 }, count: 5 };
+    take_inner(o.inner);
+    let od: OuterDrop = OuterDrop { inner: Inner { tag: 2 }, count: 6 };
+    zeta::repro.println_int(od.inner.tag);
 }
