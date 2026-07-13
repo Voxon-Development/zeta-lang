@@ -5,6 +5,6 @@
 
 extern crate core;
 
-pub mod string_pool;
-pub mod bump;
 pub mod arena;
+pub mod bump;
+pub mod string_pool;
