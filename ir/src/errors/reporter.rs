@@ -1,5 +1,5 @@
+use crate::errors::error::DiagnosticError;
 use crate::errors::type_error::{TypeError, TypeErrorKind};
-use crate::hir::StrId;
 use crate::span::SourceSpan;
 use is_terminal::IsTerminal;
 use owo_colors::OwoColorize;
@@ -25,10 +25,7 @@ pub struct Diagnostic<'a> {
 #[derive(Debug, Clone)]
 pub enum CompilerError<'a> {
     TypeError(TypeError<'a>),
-    ParserError {
-        message: StrId,
-        span: Option<SourceSpan<'a>>,
-    },
+    ParserError(DiagnosticError<'a>),
 }
 
 pub struct ErrorReporter<'a> {
@@ -59,9 +56,15 @@ impl<'a> ErrorReporter<'a> {
         self.errors.push(CompilerError::TypeError(error));
     }
 
-    pub fn add_parser_error(&mut self, message: StrId, span: Option<SourceSpan<'a>>) {
-        self.errors
-            .push(CompilerError::ParserError { message, span });
+    pub fn add_parser_error(&mut self, error: DiagnosticError<'a>) {
+        self.errors.push(CompilerError::ParserError(error));
+    }
+
+    /// Fold another reporter's errors and source files into this one.
+    /// Used when a call spans multiple files (load_directory, bootstrap_stdlib).
+    pub fn merge(&mut self, mut other: Self) {
+        self.errors.append(&mut other.errors);
+        self.source_files.extend(other.source_files);
     }
 
     pub fn has_errors(&self) -> bool {
@@ -101,14 +104,19 @@ impl<'a> ErrorReporter<'a> {
                 let diagnostic = self.type_error_to_diagnostic(te);
                 self.print_diagnostic(&diagnostic);
             }
-            CompilerError::ParserError { message, span } => {
-                self.print_diagnostic(&Diagnostic {
-                    level: DiagnosticLevel::Error,
-                    message: format!("Parse error: {}", message.as_str()),
-                    span: span.clone(),
-                    notes: vec![],
-                    suggestions: vec![],
-                });
+            CompilerError::ParserError(pe) => {
+                // DiagnosticError already renders its own context chain and
+                // notes via pretty(); reuse it rather than re-deriving a
+                // Diagnostic from a message string we don't have.
+                if self.use_colors {
+                    eprintln!("{}", pe.pretty());
+                } else {
+                    eprintln!("{}", pe.pretty());
+                }
+                if let Some(source) = self.source_files.get(pe.span.file_name) {
+                    self.print_source_snippet_raw(&pe.span, source);
+                }
+                eprintln!();
             }
         }
     }
@@ -274,7 +282,9 @@ impl<'a> ErrorReporter<'a> {
         eprintln!("{}: {}", prefix, diagnostic.message);
 
         if let Some(span) = &diagnostic.span {
-            self.print_source_snippet(span);
+            if let Some(source) = self.source_files.get(span.file_name) {
+                self.print_source_snippet_raw(span, source);
+            }
         }
         for note in &diagnostic.notes {
             eprintln!("  note: {}", note);
@@ -285,11 +295,7 @@ impl<'a> ErrorReporter<'a> {
         eprintln!();
     }
 
-    fn print_source_snippet(&self, span: &SourceSpan<'a>) {
-        let Some(source) = self.source_files.get(span.file_name) else {
-            return;
-        };
-
+    fn print_source_snippet_raw(&self, span: &SourceSpan<'a>, source: &str) {
         let lines: Vec<&str> = source.lines().collect();
 
         let start = span.line.saturating_sub(3).max(1);
