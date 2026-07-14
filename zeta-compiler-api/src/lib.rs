@@ -116,7 +116,6 @@ where
         self.module_ids.get(&name).copied()
     }
 
-    // zeta_compiler_api::lib.rs: add to impl<'a, 'bump> Compiler<'a, 'bump>
     pub fn type_checker(&self) -> Rc<RefCell<TypeChecker<'a, 'bump>>> {
         self.type_checker.clone()
     }

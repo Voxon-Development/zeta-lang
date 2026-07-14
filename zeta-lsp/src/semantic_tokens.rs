@@ -31,7 +31,7 @@ pub fn build_semantic_tokens(
         let token_type = match symbol_id {
             SymbolId::Local(_) => 0u32,
             SymbolId::Field { .. } => 1u32,
-            SymbolId::Item { .. } => continue, // usage sites not tracked; skip
+            SymbolId::Item { .. } => continue, // TODO: usage sites not tracked
         };
 
         let expected = name.to_string();
