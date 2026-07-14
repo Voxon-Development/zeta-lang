@@ -27,3 +27,5 @@ zeta-compiler-api = { path = "./zeta-compiler-api"}
 walkdir = "2.5.0"
 thiserror = "2.0.17"
 clap = { version = "4.5.53", features = ["derive"] }
+ureq = { version = "3", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
