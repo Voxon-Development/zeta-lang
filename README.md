@@ -40,16 +40,13 @@ mkdir -p ~/.local/bin
 cp target/release/zeta-compiler ~/.local/bin/
 cp target/release/zeta-lsp ~/.local/bin/
 
-# only needed if ~/.local/bin isn't already on your PATH —
-# add this line to your ~/.bashrc / ~/.zshrc if `zeta-compiler --version`
-# doesn't work after this step:
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
 Verify:
 
 ```bash
-zeta-compiler --version
+zetac --version
 zeta-lsp --version
 ```
 
