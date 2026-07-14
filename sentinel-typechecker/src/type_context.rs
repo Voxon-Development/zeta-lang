@@ -27,8 +27,11 @@ impl<'a, 'bump> TypeMethodTable<'a, 'bump> {
 pub struct TypeContext<'a, 'bump> {
     pub variables: HashMap<String, (SymbolId, HirType<'a, 'bump>)>,
     pub structs: HashMap<String, HirStruct<'a, 'bump>>,
+    pub struct_owner_module: HashMap<String, usize>,
     pub enums: HashMap<String, HirEnum<'a, 'bump>>,
+    pub enum_owner_module: HashMap<String, usize>,
     pub interfaces: HashMap<String, HirInterface<'a, 'bump>>,
+    pub interface_owner_module: HashMap<String, usize>,
     pub module_functions: HashMap<usize, HashMap<String, HirFunc<'a, 'bump>>>,
     pub type_methods: HashMap<String, TypeMethodTable<'a, 'bump>>,
     pub current_return_type: Option<HirType<'a, 'bump>>,
@@ -40,6 +43,18 @@ pub struct TypeContext<'a, 'bump> {
     pub struct_interfaces: HashMap<String, HashSet<String>>,
     pub mutable_variables: HashSet<String>,
     pub string_pool: Arc<StringPool>,
+    pub generic_struct_instantiations: RefCell<
+        Vec<(
+            (StrId, Vec<HirType<'a, 'bump>>),
+            &'bump [HirType<'a, 'bump>],
+        )>,
+    >,
+    pub generic_enum_instantiations: RefCell<
+        Vec<(
+            (StrId, Vec<HirType<'a, 'bump>>),
+            &'bump [(StrId, &'bump [HirType<'a, 'bump>])],
+        )>,
+    >,
 }
 
 impl<'a, 'bump> TypeContext<'a, 'bump> {
@@ -64,6 +79,11 @@ impl<'a, 'bump> TypeContext<'a, 'bump> {
             struct_interfaces: HashMap::default(),
             mutable_variables: HashSet::default(),
             string_pool,
+            struct_owner_module: HashMap::default(),
+            enum_owner_module: HashMap::default(),
+            interface_owner_module: HashMap::default(),
+            generic_struct_instantiations: RefCell::new(Vec::new()),
+            generic_enum_instantiations: RefCell::new(Vec::new()),
         }
     }
 
@@ -72,6 +92,29 @@ impl<'a, 'bump> TypeContext<'a, 'bump> {
             .entry(struct_name.to_string())
             .or_default()
             .insert(interface_name);
+    }
+
+    pub fn get_enum_instantiation(
+        &self,
+        name: StrId,
+        args: &[HirType<'a, 'bump>],
+    ) -> Option<&'bump [(StrId, &'bump [HirType<'a, 'bump>])]> {
+        self.generic_enum_instantiations
+            .borrow()
+            .iter()
+            .find(|((n, a), _)| *n == name && a.as_slice() == args)
+            .map(|(_, variants)| *variants)
+    }
+
+    pub fn cache_enum_instantiation(
+        &self,
+        name: StrId,
+        args: Vec<HirType<'a, 'bump>>,
+        variants: &'bump [(StrId, &'bump [HirType<'a, 'bump>])],
+    ) {
+        self.generic_enum_instantiations
+            .borrow_mut()
+            .push(((name, args), variants));
     }
 
     pub fn struct_implements(&self, struct_name: &str, interface_name: &str) -> bool {
@@ -92,6 +135,29 @@ impl<'a, 'bump> TypeContext<'a, 'bump> {
         self.dangling_locals.contains(name)
     }
 
+    pub fn get_struct_instantiation(
+        &self,
+        name: StrId,
+        args: &[HirType<'a, 'bump>],
+    ) -> Option<&'bump [HirType<'a, 'bump>]> {
+        self.generic_struct_instantiations
+            .borrow()
+            .iter()
+            .find(|((n, a), _)| *n == name && a.as_slice() == args)
+            .map(|(_, fields)| *fields)
+    }
+
+    pub fn cache_struct_instantiation(
+        &self,
+        name: StrId,
+        args: Vec<HirType<'a, 'bump>>,
+        fields: &'bump [HirType<'a, 'bump>],
+    ) {
+        self.generic_struct_instantiations
+            .borrow_mut()
+            .push(((name, args), fields));
+    }
+
     pub fn add_function(&mut self, module_idx: usize, name: String, func: HirFunc<'a, 'bump>) {
         self.module_functions
             .entry(module_idx)
@@ -107,16 +173,8 @@ impl<'a, 'bump> TypeContext<'a, 'bump> {
         self.get_module_function(self.current_module_idx, name)
     }
 
-    pub fn add_struct(&mut self, name: String, struct_def: HirStruct<'a, 'bump>) {
-        self.structs.insert(name.clone(), struct_def);
-    }
-
     pub fn get_struct(&self, name: &str) -> Option<HirStruct<'a, 'bump>> {
         self.structs.get(name).copied()
-    }
-
-    pub fn add_enum(&mut self, name: String, enum_def: HirEnum<'a, 'bump>) {
-        self.enums.insert(name, enum_def);
     }
 
     pub fn get_enum(&self, name: &str) -> Option<HirEnum<'a, 'bump>> {
@@ -130,8 +188,38 @@ impl<'a, 'bump> TypeContext<'a, 'bump> {
         }
     }
 
-    pub fn add_interface(&mut self, name: String, iface: HirInterface<'a, 'bump>) {
+    pub fn add_struct(
+        &mut self,
+        module_idx: usize,
+        name: String,
+        struct_def: HirStruct<'a, 'bump>,
+    ) {
+        self.struct_owner_module.insert(name.clone(), module_idx);
+        self.structs.insert(name, struct_def);
+    }
+    pub fn struct_owner(&self, name: &str) -> Option<usize> {
+        self.struct_owner_module.get(name).copied()
+    }
+
+    pub fn add_enum(&mut self, module_idx: usize, name: String, enum_def: HirEnum<'a, 'bump>) {
+        self.enum_owner_module.insert(name.clone(), module_idx);
+        self.enums.insert(name, enum_def);
+    }
+    pub fn enum_owner(&self, name: &str) -> Option<usize> {
+        self.enum_owner_module.get(name).copied()
+    }
+
+    pub fn add_interface(
+        &mut self,
+        module_idx: usize,
+        name: String,
+        iface: HirInterface<'a, 'bump>,
+    ) {
+        self.interface_owner_module.insert(name.clone(), module_idx);
         self.interfaces.insert(name, iface);
+    }
+    pub fn interface_owner(&self, name: &str) -> Option<usize> {
+        self.interface_owner_module.get(name).copied()
     }
 
     pub fn get_interface(&self, name: &str) -> Option<HirInterface<'a, 'bump>> {
@@ -224,6 +312,11 @@ impl<'a, 'bump> TypeContext<'a, 'bump> {
             struct_interfaces: self.struct_interfaces.clone(),
             mutable_variables: self.mutable_variables.clone(),
             string_pool: self.string_pool.clone(),
+            struct_owner_module: self.struct_owner_module.clone(),
+            enum_owner_module: self.enum_owner_module.clone(),
+            interface_owner_module: self.interface_owner_module.clone(),
+            generic_struct_instantiations: self.generic_struct_instantiations.clone(),
+            generic_enum_instantiations: self.generic_enum_instantiations.clone(),
         }
     }
 }

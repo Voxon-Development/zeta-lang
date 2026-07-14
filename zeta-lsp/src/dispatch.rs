@@ -242,8 +242,8 @@ fn rename_at(state: &ServerState, params: &RenameParams) -> Result<WorkspaceEdit
 
     if matches!(symbol_id, SymbolId::Item { .. }) {
         return Err(
-            "renaming functions, structs, enums, and interfaces isn't supported yet \
-                     — usage sites for those aren't tracked, only declarations, so renaming \
+            "renaming functions, structs, enums, and interfaces isn't supported yet, \
+                    usage sites for those aren't tracked, only declarations, so renaming \
                      would break every call site silently"
                 .to_string(),
         );

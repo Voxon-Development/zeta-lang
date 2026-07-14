@@ -1,10 +1,8 @@
 use lsp_types::{SemanticToken, SemanticTokenType, SemanticTokensLegend};
 use sentinel_typechecker::type_checker::{SymbolId, TypeChecker};
 
-pub const TOKEN_TYPES: &[SemanticTokenType] = &[
-    SemanticTokenType::VARIABLE, // 0 — covers both locals and parameters; not distinguished yet
-    SemanticTokenType::PROPERTY, // 1 — struct fields
-];
+pub const TOKEN_TYPES: &[SemanticTokenType] =
+    &[SemanticTokenType::VARIABLE, SemanticTokenType::PROPERTY];
 
 pub fn legend() -> SemanticTokensLegend {
     SemanticTokensLegend {
