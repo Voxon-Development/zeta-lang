@@ -16,11 +16,13 @@ integrations like the Zed extension).
 ### 1. Clone and build
 
 ```bash
-git clone https://github.com/OWNER/REPO.git
-cd REPO
+git clone https://github.com/Voxon-Development/zeta-lang.git
+cd zeta-laang
 cargo build --release --bin zeta-compiler
 cargo build --release --bin zeta-lsp
 ```
+
+(Or go to our releases for precompiled binaries!)
 
 This produces:
 
