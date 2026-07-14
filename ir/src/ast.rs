@@ -371,6 +371,11 @@ where
     Null {
         span: SourceSpan<'a>,
     },
+    Cast {
+        expr: &'bump Expr<'a, 'bump>,
+        target_type: Type<'a, 'bump>,
+        span: SourceSpan<'a>,
+    },
     Number {
         value: i64,
         span: SourceSpan<'a>,
@@ -468,11 +473,6 @@ where
     ArrayIndex {
         expr: &'bump Expr<'a, 'bump>,
         index: &'bump Expr<'a, 'bump>,
-        span: SourceSpan<'a>,
-    },
-    ElseExpr {
-        expr: &'bump Expr<'a, 'bump>,
-        pattern: ErrorHandlerPattern<'a, 'bump>,
         span: SourceSpan<'a>,
     },
     Deref {

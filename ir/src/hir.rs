@@ -516,8 +516,14 @@ pub enum HirExpr<'a, 'bump>
 where
     'bump: 'a,
 {
+    Cast {
+        expr: &'bump HirExpr<'a, 'bump>,
+        target_type: HirType<'a, 'bump>,
+        span: SourceSpan<'a>,
+    },
     Null(SourceSpan<'a>),
     Number(i64, SourceSpan<'a>),
+    Char(char, SourceSpan<'a>),
     String(StrId, SourceSpan<'a>),
     Boolean(bool, SourceSpan<'a>),
     Ident(StrId, SourceSpan<'a>),
@@ -557,6 +563,7 @@ where
         enum_name: StrId,
         variant: StrId,
         args: &'bump [HirExpr<'a, 'bump>],
+        type_args: Option<&'bump [HirType<'a, 'bump>]>,
         span: SourceSpan<'a>,
     },
     ExprList {

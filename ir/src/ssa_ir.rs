@@ -40,6 +40,56 @@ impl SsaType {
     pub fn is_tagged_nullable(&self) -> bool {
         matches!(self, SsaType::Nullable(inner) if !inner.is_pointer())
     }
+
+    pub fn is_integer(&self) -> bool {
+        matches!(
+            self,
+            SsaType::I8
+                | SsaType::U8
+                | SsaType::I16
+                | SsaType::U16
+                | SsaType::I32
+                | SsaType::U32
+                | SsaType::I64
+                | SsaType::U64
+                | SsaType::I128
+                | SsaType::U128
+                | SsaType::ISize
+                | SsaType::USize
+        )
+    }
+
+    pub fn is_signed_integer(&self) -> bool {
+        matches!(
+            self,
+            SsaType::I8
+                | SsaType::I16
+                | SsaType::I32
+                | SsaType::I64
+                | SsaType::I128
+                | SsaType::ISize
+        )
+    }
+
+    pub fn is_float(&self) -> bool {
+        matches!(self, SsaType::F32 | SsaType::F64)
+    }
+
+    pub fn bit_width(&self) -> Option<u16> {
+        Some(match self {
+            SsaType::Bool => 1,
+
+            SsaType::I8 | SsaType::U8 => 8,
+            SsaType::I16 | SsaType::U16 => 16,
+            SsaType::I32 | SsaType::U32 | SsaType::F32 => 32,
+            SsaType::I64 | SsaType::U64 | SsaType::F64 => 64,
+            SsaType::I128 | SsaType::U128 => 128,
+
+            SsaType::ISize | SsaType::USize => 64, // target for now
+
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -100,6 +150,31 @@ pub enum SsaType {
 use crate::ast::FuncModifiers;
 use smallvec::SmallVec;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CastKind {
+    // integer
+    Truncate,
+    SignExtend,
+    ZeroExtend,
+
+    // integer <-> float
+    SignedIntToFloat,
+    UnsignedIntToFloat,
+    FloatToSignedInt,
+    FloatToUnsignedInt,
+
+    // float
+    FloatExtend,
+    FloatTruncate,
+
+    // bit reinterpretation
+    Bitcast,
+
+    // pointers
+    PtrToInt,
+    IntToPtr,
+}
+
 #[derive(Debug, Clone)]
 pub enum Instruction {
     /// Binary operation: dest = left OP right
@@ -108,6 +183,12 @@ pub enum Instruction {
         op: BinOp,
         left: Operand,
         right: Operand,
+    },
+
+    Cast {
+        dest: Value,
+        value: Operand,
+        kind: CastKind,
     },
 
     Undef {
@@ -342,4 +423,64 @@ pub struct VTable {
 pub struct VTableInfo {
     pub interface: StrId,
     pub methods: Vec<StrId>,
+}
+
+pub fn cast_kind(src: &SsaType, dst: &SsaType) -> CastKind {
+    use CastKind::*;
+
+    if src == dst {
+        return Bitcast;
+    }
+
+    if src.is_integer() && dst.is_integer() {
+        let sb = src.bit_width().unwrap();
+        let db = dst.bit_width().unwrap();
+
+        return if db > sb {
+            if src.is_signed_integer() {
+                SignExtend
+            } else {
+                ZeroExtend
+            }
+        } else {
+            Truncate
+        };
+    }
+
+    if src.is_integer() && dst.is_float() {
+        return if src.is_signed_integer() {
+            SignedIntToFloat
+        } else {
+            UnsignedIntToFloat
+        };
+    }
+
+    if src.is_float() && dst.is_integer() {
+        return if dst.is_signed_integer() {
+            FloatToSignedInt
+        } else {
+            FloatToUnsignedInt
+        };
+    }
+
+    if src.is_float() && dst.is_float() {
+        let sb = src.bit_width().unwrap();
+        let db = dst.bit_width().unwrap();
+
+        return if db > sb { FloatExtend } else { FloatTruncate };
+    }
+
+    if src.is_pointer() && dst.is_pointer() {
+        return Bitcast;
+    }
+
+    if src.is_pointer() && dst.is_integer() {
+        return PtrToInt;
+    }
+
+    if src.is_integer() && dst.is_pointer() {
+        return IntToPtr;
+    }
+
+    panic!("unsupported cast {:?} -> {:?}", src, dst);
 }

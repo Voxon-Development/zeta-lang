@@ -1220,7 +1220,7 @@ where
                     }
                 }
 
-                DropKind::OwnedPointer(pointee_struct) => {
+                DropKind::OwnedPointer(_) => {
                     // TODO:
                     // 1. If pointee_struct is Some(..), call its drop glue.
                     // 2. Then call the allocator/deallocator for the owned pointer.

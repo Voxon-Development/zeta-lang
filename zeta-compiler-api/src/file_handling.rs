@@ -82,17 +82,12 @@ where
     let contents = std::fs::read_to_string(&path)
         .map_err(|e| CompilerError::FailedToReadFile(path.clone(), e))?;
 
-    let file_name_str = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| CompilerError::InvalidFileName(Vec::new()))?;
-
-    parse_single_module(pool, file_name_str, contents)
+    parse_single_module(pool, path, contents)
 }
 
 pub fn parse_single_file_from_source<'a, 'bump>(
     pool: Arc<StringPool>,
-    name: &str,
+    name: PathBuf,
     source: String,
 ) -> Result<ModuleWithArena<'a, 'bump>, CompilerError<'a>>
 where
@@ -104,22 +99,28 @@ where
 
 fn parse_single_module<'a, 'bump>(
     pool: Arc<StringPool>,
-    file_name_str: &str,
+    path: PathBuf,
     contents: String,
 ) -> Result<ModuleWithArena<'a, 'bump>, CompilerError<'a>>
 where
     'a: 'bump,
     'bump: 'a,
 {
+    let file_name_str = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| CompilerError::InvalidFileName(Vec::new()))?;
+
     let name = StrId(pool.intern(file_name_str));
 
     if contents.is_empty() {
         return Ok(ModuleWithArena {
             bump: Arc::new(GrowableAtomicBump::new()),
             name,
+            path,
             stmts: &[],
             parser_diagnostics: scribe_parser::parser::ParserDiagnostics::new(),
-            source: StrId(pool.intern(contents.as_str())),
+            source: StrId(pool.intern("")),
         });
     }
 
@@ -152,6 +153,7 @@ where
     Ok(ModuleWithArena {
         bump,
         name,
+        path,
         stmts,
         parser_diagnostics: parse_result.diagnostics,
         source,

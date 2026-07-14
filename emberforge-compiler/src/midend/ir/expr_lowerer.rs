@@ -7,7 +7,7 @@ use ir::hir::{AssignmentOperator, HirExpr, HirFieldInit, HirStruct, HirType, Ope
 use ir::ir_conversion::{assign_op_to_bin_op, lower_operator_bin, lower_type_hir};
 use ir::ir_hasher::{FxHashBuilder, HashSet};
 use ir::layout::TargetInfo;
-use ir::ssa_ir::{BinOp, Function, Instruction, Operand, SsaType, Value};
+use ir::ssa_ir::{BinOp, Function, Instruction, Operand, SsaType, Value, cast_kind};
 use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -256,6 +256,7 @@ where
                 variant: _,
                 args,
                 span: _,
+                type_args: _,
             } => {
                 let v = self.current_block_data.fresh_value();
 
@@ -367,7 +368,42 @@ where
                 span: _,
             } => self.lower_index(object, index),
             HirExpr::ArrayLiteral { elements, span: _ } => self.lower_array_literal(elements),
-            HirExpr::GenericIdent(str_id, hir_types, source_span) => unreachable!(),
+            HirExpr::GenericIdent(..) => unreachable!(),
+            HirExpr::Cast {
+                expr, target_type, ..
+            } => {
+                let src = self.lower_expr(expr);
+
+                let src_ty = self.current_block_data.value_types[&src].clone();
+                let dst_ty = lower_type_hir(target_type);
+
+                let kind = cast_kind(&src_ty, &dst_ty);
+
+                let dest = self.current_block_data.fresh_value();
+
+                self.emit(Instruction::Cast {
+                    dest,
+                    value: Operand::Value(src),
+                    kind,
+                });
+
+                self.current_block_data.value_types.insert(dest, dst_ty);
+
+                dest
+            }
+            HirExpr::Char(c, _) => {
+                let v = self.current_block_data.fresh_value();
+
+                self.emit(Instruction::Const {
+                    dest: v,
+                    ty: SsaType::Char,
+                    value: Operand::ConstInt(*c as u32 as i64),
+                });
+
+                self.current_block_data.value_types.insert(v, SsaType::Char);
+
+                v
+            }
         }
     }
 

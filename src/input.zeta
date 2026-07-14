@@ -1,14 +1,12 @@
 package zeta::input;
 
-public extern(C) func println_int(num: i32): void;
-
 public struct Inner {
     tag: i64
 }
 
 impl Inner by Drop {
     func drop(mut this): void {
-        zeta::repro.println_int(33333);
+        //zeta::repro.println_int(33333);
     }
 }
 
@@ -24,17 +22,17 @@ public struct OuterDrop {
 
 impl OuterDrop by Drop {
     func drop(mut this): void {
-        zeta::repro.println_int(22222);
+        //zeta::repro.println_int(22222);
     }
 }
 
 func take_inner(i: Inner): void {
-    zeta::repro.println_int(111111);
+    //zeta::repro.println_int(111111);
 }
 
 func main() {
     let o: Outer = Outer { inner: Inner { tag: 1 }, count: 5 };
     take_inner(o.inner);
     let od: OuterDrop = OuterDrop { inner: Inner { tag: 2 }, count: 6 };
-    zeta::repro.println_int(od.inner.tag);
+    //zeta::repro.println_int(od.inner.tag);
 }

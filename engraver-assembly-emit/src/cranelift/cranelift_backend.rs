@@ -22,8 +22,8 @@ use ir::ir_hasher::FxHashBuilder;
 use ir::layout::TargetInfo;
 use ir::layout::sizeof_ssa;
 use ir::ssa_ir::{
-    BasicBlock, BinOp, BlockId, Function, Instruction, InterpolationOperand, Module, Operand,
-    SsaType, UnOp, Value, inst_is_terminator,
+    BasicBlock, BinOp, BlockId, CastKind, Function, Instruction, InterpolationOperand, Module,
+    Operand, SsaType, UnOp, Value, inst_is_terminator,
 };
 use smallvec::SmallVec;
 use std::collections::HashMap;
@@ -644,6 +644,48 @@ impl CraneliftBackend {
                 }
             }
 
+            Instruction::Cast { dest, value, kind } => {
+                let src = match value {
+                    Operand::Value(v) => {
+                        let var = var_map[v];
+                        builder.use_var(var)
+                    }
+                    _ => unreachable!(),
+                };
+
+                let dst_ty = clif_type(func.value_types.get(dest).unwrap());
+
+                let result = match kind {
+                    CastKind::Truncate => builder.ins().ireduce(dst_ty, src),
+
+                    CastKind::SignExtend => builder.ins().sextend(dst_ty, src),
+
+                    CastKind::ZeroExtend => builder.ins().uextend(dst_ty, src),
+
+                    CastKind::SignedIntToFloat => builder.ins().fcvt_from_sint(dst_ty, src),
+
+                    CastKind::UnsignedIntToFloat => builder.ins().fcvt_from_uint(dst_ty, src),
+
+                    CastKind::FloatToSignedInt => builder.ins().fcvt_to_sint(dst_ty, src),
+
+                    CastKind::FloatToUnsignedInt => builder.ins().fcvt_to_uint(dst_ty, src),
+
+                    CastKind::FloatExtend => builder.ins().fpromote(dst_ty, src),
+
+                    CastKind::FloatTruncate => builder.ins().fdemote(dst_ty, src),
+
+                    CastKind::Bitcast => builder.ins().bitcast(dst_ty, MemFlags::new(), src),
+
+                    CastKind::PtrToInt => builder.ins().bitcast(dst_ty, MemFlags::new(), src),
+
+                    CastKind::IntToPtr => builder.ins().bitcast(dst_ty, MemFlags::new(), src),
+                };
+
+                let var = builder.declare_var(dst_ty);
+                builder.def_var(var, result);
+                var_map.insert(*dest, var);
+            }
+
             Instruction::Unary { dest, op, operand } => {
                 let val = match operand {
                     Operand::Value(v) => {
@@ -857,7 +899,21 @@ impl CraneliftBackend {
             .unwrap();
 
         let mut data_ctx = DataDescription::new();
-        data_ctx.define(self.context.resolve_bytes(s).to_vec().into_boxed_slice());
+
+        let bytes = self.context.resolve_bytes(s);
+
+        let mut blob = Vec::new();
+
+        match self.target.ptr_bytes {
+            4 => blob.extend_from_slice(&(bytes.len() as u32).to_le_bytes()),
+            8 => blob.extend_from_slice(&(bytes.len() as u64).to_le_bytes()),
+            n => panic!("unsupported pointer size: {n}"),
+        }
+
+        blob.extend_from_slice(bytes);
+
+        data_ctx.define(blob.into_boxed_slice());
+        data_ctx.set_align(self.target.ptr_bytes);
         self.module.define_data(id, &data_ctx).unwrap();
 
         self.string_data.insert(vm_str, ZetaDataId(id));

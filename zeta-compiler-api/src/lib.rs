@@ -47,7 +47,6 @@ pub struct Compiler<'a, 'bump> {
     stdlib_module_ids: HashSet<usize>,
     modules: HashMap<usize, ModuleWithArena<'a, 'bump>>,
     hir_modules: HashMap<usize, HirModule<'a, 'bump>>,
-    module_paths: HashMap<usize, PathBuf>,
 }
 
 impl<'a, 'bump> Compiler<'a, 'bump>
@@ -100,12 +99,15 @@ where
             stdlib_module_ids: HashSet::new(),
             modules: HashMap::new(),
             hir_modules: HashMap::new(),
-            module_paths: HashMap::new(),
         })
     }
 
     pub fn dep_graph(&self) -> &'a RefCell<DepGraph> {
         self.dep_graph
+    }
+
+    pub fn path_for_module(&self, module_idx: usize) -> Option<&Path> {
+        self.modules.get(&module_idx).map(|m| m.path.as_path())
     }
 
     pub fn module_idx_for_path(&self, path: &Path) -> Option<usize> {
@@ -155,15 +157,7 @@ where
             crate::file_handling::parse_single_file(self.pool.clone(), path.to_path_buf())?;
         let reporter = self.ingest_parsed_module(&file_stem, parsed, is_stdlib);
 
-        if let Some(&module_idx) = self.module_ids.get(&StrId(self.pool.intern(&file_stem))) {
-            self.module_paths.insert(module_idx, path.to_path_buf());
-        }
-
         Ok(reporter)
-    }
-
-    pub fn path_for_module(&self, module_idx: usize) -> Option<&Path> {
-        self.module_paths.get(&module_idx).map(|p| p.as_path())
     }
 
     pub fn emit(
@@ -231,13 +225,12 @@ where
         let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
         let canonical_name = StrId(self.pool.intern(file_stem));
         let module_idx = self.module_idx_for(canonical_name);
-        self.module_paths.insert(module_idx, path.to_path_buf());
 
         let mut reporter = ErrorReporter::new();
 
         let parsed = match crate::file_handling::parse_single_file_from_source(
             self.pool.clone(),
-            file_stem,
+            PathBuf::from(file_stem),
             source,
         ) {
             Ok(m) => m,
@@ -278,6 +271,7 @@ where
 
         let ast_module = AstModule {
             name: canonical_name,
+            path: parsed.path.clone(),
             stmts: parsed.stmts,
         };
 
@@ -291,6 +285,7 @@ where
             if let Some(imp_module) = self.modules.get(&imp_idx) {
                 let imp_ast = codex_dependency_graph::dep_graph::AstModule {
                     name: imp_module.name,
+                    path: parsed.path.clone(),
                     stmts: imp_module.stmts,
                 };
                 self.dep_graph
@@ -388,6 +383,7 @@ where
 
         let ast_module = codex_dependency_graph::dep_graph::AstModule {
             name: canonical_name,
+            path: parsed.path.clone(),
             stmts: parsed.stmts,
         };
 
@@ -403,6 +399,7 @@ where
             if let Some(imp_module) = self.modules.get(&imp_idx) {
                 let imp_ast = codex_dependency_graph::dep_graph::AstModule {
                     name: imp_module.name,
+                    path: parsed.path.clone(),
                     stmts: imp_module.stmts,
                 };
                 self.dep_graph
@@ -483,7 +480,6 @@ where
             self.modules.remove(&idx);
             self.hir_modules.remove(&idx);
             self.cpy_ctx.borrow_mut().remove_module(idx);
-            self.module_paths.remove(&idx);
         }
     }
 }

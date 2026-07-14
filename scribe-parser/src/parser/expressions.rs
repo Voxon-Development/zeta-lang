@@ -218,6 +218,22 @@ where
                 }
             }
 
+            if self.cursor.peek() == TokenKind::As {
+                const CAST_BP: u8 = 75;
+                if CAST_BP >= min_bp {
+                    let span = self.cursor.peek_token().span;
+                    self.cursor.advance(); // consume 'as'
+                    let target_type = self.parse_type()?;
+
+                    lhs = Expr::Cast {
+                        expr: self.bump.alloc_value_immutable(lhs),
+                        target_type,
+                        span,
+                    };
+                    continue;
+                }
+            }
+
             let op: Op = match self.cursor.peek() {
                 TokenKind::Add => Op::Add,
                 TokenKind::Sub => Op::Sub,
@@ -523,16 +539,6 @@ where
             }
         }
         self.cursor.expect(TokenKind::RParen)?;
-
-        if self.cursor.peek() == TokenKind::Throws {
-            return Err(DiagnosticError::new(
-                ParseErrorKind::UnexpectedToken {
-                    expected: TokenKind::Arrow,
-                    found: TokenKind::Throws,
-                },
-                self.cursor.peek_token().span,
-            ));
-        }
 
         let return_type = if self.cursor.consume(TokenKind::Arrow) {
             Some(self.parse_type()?)

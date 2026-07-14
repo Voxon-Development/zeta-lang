@@ -102,6 +102,21 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 }
             }
 
+            Expr::Cast {
+                expr,
+                target_type,
+                span,
+            } => {
+                let hir_expr = self.lower_expr(expr);
+                let hir_target_type = self.lower_type(target_type);
+
+                HirExpr::Cast {
+                    expr: self.ctx.bump.alloc_value_immutable(hir_expr),
+                    target_type: hir_target_type,
+                    span: *span,
+                }
+            }
+
             Expr::GenericIdent {
                 name,
                 generic_args,
@@ -226,11 +241,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 HirExpr::ExprList { list, span: *span }
             }
 
-            Expr::Char { value, span } => {
-                // TODO
-                // Convert char to its numeric value
-                HirExpr::Number(*value as i64, *span)
-            }
+            Expr::Char { value, span } => HirExpr::Char(*value, *span),
 
             Expr::FieldInit {
                 ident: _,
@@ -293,15 +304,6 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 }
             }
 
-            Expr::ElseExpr {
-                expr,
-                pattern: _,
-                span: _,
-            } => {
-                // TODO: Implement error/nullable pattern matching lowering
-                // For now, just lower the expression and ignore the pattern
-                self.lower_expr(expr)
-            }
             Expr::This { span } => HirExpr::This { span: *span },
             Expr::Lambda {
                 modifiers,

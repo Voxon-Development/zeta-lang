@@ -1,7 +1,6 @@
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{
-    Function as ClFunction, InstBuilder, MemFlags, Signature, StackSlotData, StackSlotKind, Type,
-    Value, types,
+    InstBuilder, MemFlags, StackSlotData, StackSlotKind, Type, Value, types,
 };
 use cranelift_frontend::FunctionBuilder;
 use ir::hir::HirType;
@@ -101,8 +100,7 @@ fn ensure_value_is_ptr_width(
         val
     }
 }
-use cranelift_module::{Linkage, Module};
-use ir::ssa_ir::Function;
+use cranelift_module::Module;
 
 pub fn stack_alloc(builder: &mut FunctionBuilder, module: &dyn Module, size_bytes: usize) -> Value {
     assert!(size_bytes > 0, "stack_alloc: size must be > 0");
@@ -161,40 +159,6 @@ pub(super) fn clif_type_of(ty: &HirType) -> SsaType {
         HirType::Void => SsaType::Void,
         _ => unimplemented!("Unsupported type {:?}", ty),
     }
-}
-
-#[allow(dead_code)] // TODO: implement properly as Linux uses real syscalls, unlike systems like Windows which need to call into their OS API
-fn lower_syscall(
-    builder: &mut FunctionBuilder,
-    call: &mut ClFunction,
-    ssa_call: &mut Function,
-    module: &mut impl Module,
-) -> Value {
-    let (num_val, arg_vals) = extract_args(ssa_call);
-    let sig = runtime_syscall_signature(arg_vals.len());
-    let name = &format!("syscall{}", arg_vals.len());
-
-    let callee = module
-        .declare_function(name, Linkage::Import, &sig)
-        .map(|id| module.declare_func_in_func(id, call))
-        .unwrap();
-
-    let mut operands = Vec::new();
-    operands.push(num_val);
-    operands.extend(arg_vals);
-
-    let call_inst = builder.ins().call(callee, &operands);
-
-    let results = builder.inst_results(call_inst);
-    results[0]
-}
-
-fn runtime_syscall_signature(_args_len: usize) -> Signature {
-    todo!()
-}
-
-fn extract_args(_function: &Function) -> (Value, Vec<Value>) {
-    todo!()
 }
 
 pub fn codegen_intrinsic(
