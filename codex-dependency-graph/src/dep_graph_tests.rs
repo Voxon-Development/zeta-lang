@@ -9,6 +9,7 @@ mod tests {
     use ir::hir::StrId;
     use ir::ir_hasher::HashMap;
     use ir::span::SourceSpan;
+    use std::path::PathBuf;
     use std::sync::Arc;
     use zetaruntime::string_pool::StringPool;
 
@@ -30,7 +31,11 @@ mod tests {
         name: StrId,
         stmts: &'bump [Stmt<'a, 'bump>],
     ) -> AstModule<'a, 'bump> {
-        AstModule { name, stmts }
+        AstModule {
+            name,
+            path: PathBuf::from("test"),
+            stmts,
+        }
     }
 
     #[test]
@@ -278,10 +283,12 @@ mod tests {
         let modules = [
             AstModule {
                 name: io_name,
+                path: PathBuf::from("test"),
                 stmts: io_stmts,
             },
             AstModule {
                 name: main_name,
+                path: PathBuf::from("test"),
                 stmts: main_stmts,
             },
         ];
@@ -320,6 +327,7 @@ mod tests {
         let main_stmts: &[Stmt] = &[Stmt::Import(import_stmt_inner)];
         let modules = [AstModule {
             name: main_name,
+            path: PathBuf::from("test"),
             stmts: main_stmts,
         }];
 
@@ -651,6 +659,7 @@ mod tests {
         let stmts: &[Stmt] = &[Stmt::FuncDecl(func_decl), Stmt::StructDecl(struct_decl)];
         let modules = [AstModule {
             name: sid("mymod", &p),
+            path: PathBuf::from("test"),
             stmts,
         }];
 
@@ -698,6 +707,7 @@ mod tests {
         let stmts: &[Stmt] = &[Stmt::InterfaceDecl(iface_decl), Stmt::EnumDecl(enum_decl)];
         let modules = [AstModule {
             name: sid("shapes", &p),
+            path: PathBuf::from("test"),
             stmts,
         }];
 
@@ -749,6 +759,7 @@ mod tests {
         let stmts: &[Stmt] = &[Stmt::Const(const_stmt), Stmt::ImplDecl(impl_decl)];
         let modules = [AstModule {
             name: sid("mymod", &p),
+            path: PathBuf::from("test"),
             stmts,
         }];
 
@@ -789,6 +800,7 @@ mod tests {
         let stmts: &[Stmt] = &[Stmt::Let(let_stmt)];
         let modules = [AstModule {
             name: sid("anon_mod", &p),
+            path: PathBuf::from("test"),
             stmts,
         }];
 
