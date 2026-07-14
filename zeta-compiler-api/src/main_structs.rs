@@ -1,6 +1,7 @@
 use ir::ast::Stmt;
 use ir::hir::StrId;
 use scribe_parser::parser::ParserDiagnostics;
+use std::error::Error;
 use std::fmt;
 use std::io;
 use std::path::PathBuf;
@@ -57,3 +58,5 @@ impl<'a> fmt::Display for CompilerError<'a> {
         }
     }
 }
+
+impl<'a> Error for CompilerError<'a> {}
