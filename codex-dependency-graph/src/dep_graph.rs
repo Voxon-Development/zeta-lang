@@ -1,17 +1,19 @@
 use ir::ast::{
-    Block, ConstStmt, DeferAction, ElseBranch, EnumDecl, ErrorHandlerPattern, Expr, Field, ForKind,
-    FuncDecl, ImplDecl, InterfaceDecl, Param, Path, Stmt, StructDecl, Type, TypeKind,
+    Block, ConstStmt, DeferAction, ElseBranch, EnumDecl, Expr, Field, ForKind, FuncDecl, ImplDecl,
+    InterfaceDecl, Param, Path, Stmt, StructDecl, Type, TypeKind,
 };
 use ir::hir::StrId;
 use ir::ir_hasher::{HashMap, HashSet};
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use zetaruntime::string_pool::StringPool;
 
 pub type NodeIdx = usize;
 
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub struct AstModule<'a, 'bump> {
     pub name: StrId,
+    pub path: PathBuf,
     pub stmts: &'bump [Stmt<'a, 'bump>],
 }
 
@@ -125,6 +127,8 @@ pub struct DepGraph {
     /// Fast path-segment lookup built from package declarations.
     path_index: PathIndex,
 
+    module_paths: HashMap<usize, PathBuf>,
+
     /// Imports that could not be resolved during graph construction.
     pub unresolved_imports: Vec<UnresolvedImport>,
 }
@@ -137,6 +141,7 @@ impl DepGraph {
             symbol_table: HashMap::default(),
             package_hierarchy: HashMap::default(),
             path_index: PathIndex::new(),
+            module_paths: HashMap::default(),
             unresolved_imports: Vec::new(),
         }
     }
@@ -271,6 +276,12 @@ impl DepGraph {
         self.create_nodes_for_module(module_idx, module, pool);
         self.populate_symbol_table_for_module(module_idx);
         self.extract_edges_for_module(module_idx, module, pool);
+
+        self.module_paths.insert(module_idx, module.path.clone());
+    }
+
+    pub fn module_path(&self, module_idx: usize) -> Option<&std::path::Path> {
+        self.module_paths.get(&module_idx).map(PathBuf::as_path)
     }
 
     pub fn reverse_deps_transitive_modules(&self, module_idx: usize) -> HashSet<usize> {
@@ -995,19 +1006,6 @@ impl DepGraph {
                     self.walk_block(arm.block, from_node, module_idx, pool);
                 }
             }
-            Expr::ElseExpr { expr, pattern, .. } => {
-                self.walk_expr(expr, from_node, module_idx, pool);
-                match pattern {
-                    ErrorHandlerPattern::Single { body, .. } => {
-                        self.walk_block(body, from_node, module_idx, pool);
-                    }
-                    ErrorHandlerPattern::Multiple { branches } => {
-                        for branch in *branches {
-                            self.walk_block(branch.body, from_node, module_idx, pool);
-                        }
-                    }
-                }
-            }
             Expr::Deref { expr, .. } | Expr::Ref { expr, .. } => {
                 self.walk_expr(expr, from_node, module_idx, pool);
             }
@@ -1053,6 +1051,13 @@ impl DepGraph {
             }
             Expr::Undefined { .. } => {
                 // Nothing to do.
+            }
+            Expr::Cast {
+                expr,
+                target_type: _,
+                span: _,
+            } => {
+                self.walk_expr(expr, from_node, module_idx, pool);
             }
         }
     }
