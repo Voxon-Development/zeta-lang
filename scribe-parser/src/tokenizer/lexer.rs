@@ -43,6 +43,7 @@ enum ByteClass {
     RBrace,     // }
     Comma,      // ,
     Question,   // ?
+    Dollar,     // $
     Unknown,
 }
 
@@ -97,6 +98,7 @@ const JUMP: [ByteClass; 128] = {
     t[b'}' as usize] = ByteClass::RBrace;
     t[b',' as usize] = ByteClass::Comma;
     t[b'?' as usize] = ByteClass::Question;
+    t[b'$' as usize] = ByteClass::Dollar;
     t
 };
 
@@ -492,7 +494,11 @@ impl Lexer {
                     column += 1;
                     push!(TokenKind::Question, start_line, start_col);
                 }
-
+                ByteClass::Dollar => {
+                    pos += 1;
+                    column += 1;
+                    push!(TokenKind::Dollar, start_line, start_col);
+                }
                 ByteClass::Colon => {
                     pos += 1;
                     column += 1;
@@ -525,7 +531,13 @@ impl Lexer {
                 ByteClass::Bang => {
                     pos += 1;
                     column += 1;
-                    push!(TokenKind::LogicalNot, start_line, start_col);
+                    if peek!(0) == b'=' {
+                        pos += 1;
+                        column += 1;
+                        push!(TokenKind::Ne, start_line, start_col);
+                    } else {
+                        push!(TokenKind::LogicalNot, start_line, start_col);
+                    }
                 }
 
                 ByteClass::Eq => {
@@ -594,8 +606,6 @@ fn retry_on_interrupt<T, F: FnMut() -> io::Result<T>>(mut f: F) -> io::Result<T>
             Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {
                 // Interrupt means that some sort of signal interrupted the syscall.
                 // it may be retried for zeta compiler stability reasons
-                // Can this just be replaced by using async I/O?
-                // TODO: evaluate if async I/O will actually benefit the zeta compiler long term.
                 continue;
             }
             other => return other,
@@ -641,6 +651,7 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "dyn" => TokenKind::Dyn,
         "sealed" => TokenKind::Sealed,
         "private" => TokenKind::Private,
+        "public" => TokenKind::Public,
         "module" => TokenKind::Module,
         "internal" => TokenKind::Internal,
         "comptime" => TokenKind::Comptime,
@@ -680,6 +691,7 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "char" => TokenKind::Char,
         "str" => TokenKind::Str,
         "boolean" => TokenKind::Boolean,
+        "panic" => TokenKind::Panic,
         _ => TokenKind::Ident,
     }
 }
