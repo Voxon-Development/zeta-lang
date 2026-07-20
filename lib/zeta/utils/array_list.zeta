@@ -1,0 +1,82 @@
+package zeta::utils::array_list;
+
+import zeta::libc;
+
+extern(C) func println_int(num: i32);
+
+struct ArrayList<T> {
+    ptr: [*]mut T,
+    len: usize,
+    cap: usize,
+}
+
+impl<T> ArrayList<T> {
+    func new(): ArrayList<T> {
+        return ArrayList<T> {
+            ptr: null,
+            len: 0,
+            cap: 0
+        };
+    }
+
+    func len(&this): usize {
+        return this.len;
+    }
+
+    func push(&mut this, value: T) {
+        println_int(1);
+        if (this.ptr == null) {
+            println_int(1293);
+            this.grow();
+        }
+        if (this.len == this.cap) {
+            println_int(2);
+            this.grow();
+        }
+
+        println_int($sizeof<T>() as i32);
+
+        this.ptr[this.len] = value;
+        println_int(67);
+        this.len += 1;
+    }
+
+    func get(&this, index: usize): &T {
+        return &this.ptr[index];
+    }
+
+    func get_mut(&mut this, index: usize): &mut T {
+        return &mut this.ptr[index];
+    }
+
+    func grow(&mut this) {
+        println_int(3);
+        let new_cap: usize =
+            if (this.cap == 0) {
+                4
+            } else {
+                this.cap * 2
+            };
+
+        let new_ptr: [*]mut T = libc.malloc(new_cap * $sizeof<T>()) as [*]mut T;
+
+        for (let mut i: usize = 0; i < this.len; i += 1) {
+            new_ptr[i] = this.ptr[i];
+        }
+
+        if (this.ptr != null) {
+            free(this.ptr as [*]mut void);
+        }
+
+        this.ptr = new_ptr;
+        this.cap = new_cap;
+    }
+}
+
+impl<T> ArrayList<T> by Drop {
+    func drop(mut this) {
+        if (this.ptr != null) {
+            libc.free(this.ptr as [*]mut void);
+        }
+    }
+}

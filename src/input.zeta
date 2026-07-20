@@ -1,13 +1,9 @@
 package zeta::input;
 
+import zeta::utils::array_list.ArrayList;
+
 public struct Inner {
     tag: i64
-}
-
-impl Inner by Drop {
-    func drop(mut this): void {
-        //zeta::repro.println_int(33333);
-    }
 }
 
 public struct Outer {
@@ -15,24 +11,30 @@ public struct Outer {
     count: i64
 }
 
-public struct OuterDrop {
-    inner: Inner,
-    count: i64
-}
+func main(): i64 {
+    let mut list: ArrayList<Outer> = ArrayList.new();
 
-impl OuterDrop by Drop {
-    func drop(mut this): void {
-        //zeta::repro.println_int(22222);
-    }
-}
+    list.push(Outer {
+        inner: Inner { tag: 10 },
+        count: 100,
+    });
 
-func take_inner(i: Inner): void {
-    //zeta::repro.println_int(111111);
-}
+    list.push(Outer {
+        inner: Inner { tag: 20 },
+        count: 200,
+    });
 
-func main() {
-    let o: Outer = Outer { inner: Inner { tag: 1 }, count: 5 };
-    take_inner(o.inner);
-    let od: OuterDrop = OuterDrop { inner: Inner { tag: 2 }, count: 6 };
-    //zeta::repro.println_int(od.inner.tag);
+    list.push(Outer {
+        inner: Inner { tag: 30 },
+        count: 300,
+    });
+
+    let i: usize = 1;
+    let second: &mut Outer = list.get_mut(i);
+    let third: &mut Outer = list.get_mut(i + 1);
+    second.inner.tag = 123;
+    second.count = 456;
+    third.inner.tag = 789;
+    third.count = 999;
+    return 0;
 }

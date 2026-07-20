@@ -1,0 +1,4 @@
+package zeta::libc;
+
+extern(C) func malloc(size: usize): [*]mut void;
+extern(C) func free(ptr: [*]mut void);
