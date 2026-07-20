@@ -519,7 +519,11 @@ impl IrPrettyPrinter {
             HirType::Boolean => write!(output, "bool"),
             HirType::String => write!(output, "String"),
             HirType::Void => write!(output, "void"),
-            HirType::Struct(name, generics) => {
+            HirType::Struct {
+                name,
+                field_types: _,
+                type_args: generics,
+            } => {
                 write!(output, "{}", self.resolve_str(*name))?;
                 if !generics.is_empty() {
                     write!(output, "<")?;

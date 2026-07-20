@@ -36,7 +36,11 @@ pub fn lower_type_hir(ty: &HirType) -> SsaType {
         HirType::F64 => SsaType::F64,
         HirType::Boolean => SsaType::Bool,
         HirType::String => SsaType::String,
-        HirType::Struct(name, args)
+        HirType::Struct {
+            name,
+            field_types: args,
+            ..
+        }
         | HirType::DynInterface(name, args)
         | HirType::Enum(name, args) => {
             SsaType::User(*name, args.iter().map(lower_type_hir).collect())
@@ -45,16 +49,8 @@ pub fn lower_type_hir(ty: &HirType) -> SsaType {
         HirType::SafePointer(inner) | HirType::UnsafePointer(inner) => {
             SsaType::Pointer(Box::new(lower_type_hir(inner)))
         }
-        HirType::Lambda {
-            params,
-            return_type,
-            ..
-        } => {
-            let _param_types: Vec<SsaType> = params.iter().map(lower_type_hir).collect();
-            let _ret_type = lower_type_hir(return_type);
-            // TODO: Improve
-            // Represent lambda as a function pointer type (Dyn for now, could be improved)
-            SsaType::Dyn
+        HirType::Lambda { .. } => {
+            unreachable!()
         }
         HirType::Generic(name) => {
             // Generics are typically resolved at monomorphization time
@@ -82,6 +78,8 @@ pub fn lower_type_hir(ty: &HirType) -> SsaType {
         }
         HirType::Slice(hir_type) => SsaType::Slice(Box::new(lower_type_hir(hir_type))),
         HirType::OwnedPointer(_hir_type) => todo!(),
+        HirType::Usize => SsaType::Usize,
+        HirType::Isize => SsaType::Isize,
     }
 }
 

@@ -108,8 +108,8 @@ pub fn layout_of_ssa(ty: &SsaType, target: TargetInfo) -> Result<Layout, LayoutE
             size: 16,
             align: 16,
         }),
-        SsaType::ISize => Ok(Layout { size: 8, align: 8 }),
-        SsaType::USize => Ok(Layout { size: 8, align: 8 }),
+        SsaType::Isize => Ok(Layout { size: 8, align: 8 }),
+        SsaType::Usize => Ok(Layout { size: 8, align: 8 }),
         SsaType::String => Ok(Layout {
             size: 16,
             align: 16,
@@ -183,7 +183,8 @@ pub fn layout_of_hir(ty: &HirType, target: TargetInfo) -> Result<Layout, LayoutE
             align: target.ptr_bytes as usize,
         }),
 
-        HirType::Struct(_, _) | HirType::DynInterface(_, _) | HirType::Enum(_, _) => Ok(Layout {
+        HirType::Struct { .. } | HirType::DynInterface(_, _) | HirType::Enum(_, _) => Ok(Layout {
+            // TODO: fix to be based on the real size
             size: target.ptr_bytes as usize,
             align: target.ptr_bytes as usize,
         }),
@@ -238,6 +239,14 @@ pub fn layout_of_hir(ty: &HirType, target: TargetInfo) -> Result<Layout, LayoutE
             align: target.ptr_bytes as usize,
         }),
         HirType::OwnedPointer(_) => Ok(Layout {
+            size: target.ptr_bytes as usize,
+            align: target.ptr_bytes as usize,
+        }),
+        HirType::Usize => Ok(Layout {
+            size: target.ptr_bytes as usize,
+            align: target.ptr_bytes as usize,
+        }),
+        HirType::Isize => Ok(Layout {
             size: target.ptr_bytes as usize,
             align: target.ptr_bytes as usize,
         }),
