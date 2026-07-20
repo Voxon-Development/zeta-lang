@@ -125,7 +125,8 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             | Stmt::InterfaceDecl(_)
             | Stmt::ImplDecl(_)
             | Stmt::EnumDecl(_)
-            | Stmt::StateMachineDecl(_) => {
+            | Stmt::StateMachineDecl(_)
+            | Stmt::TypeAliasDecl(_) => {
                 panic!("Declaration statements should not appear in function bodies");
             }
 
@@ -182,10 +183,17 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 let body = self.ctx.bump.alloc_slice(&body_vec);
                 HirStmt::Block { body }
             }
+            Stmt::Panic { message, span } => {
+                let hir_msg = self.lower_expr(&message);
+                HirStmt::Panic {
+                    message: self.ctx.bump.alloc_value_immutable(hir_msg),
+                    span,
+                }
+            }
         }
     }
 
-    fn lower_if_stmt(&self, i: ast::IfStmt<'a, 'bump>) -> HirStmt<'a, 'bump> {
+    pub(super) fn lower_if_stmt(&self, i: ast::IfStmt<'a, 'bump>) -> HirStmt<'a, 'bump> {
         let cond = self.lower_expr(&i.condition);
         let then_vec: Vec<HirStmt<'a, 'bump>> = i
             .then_branch
