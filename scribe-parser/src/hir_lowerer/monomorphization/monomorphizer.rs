@@ -145,8 +145,7 @@ impl<'a, 'bump, 'ctx> Monomorphizer<'a, 'bump, 'ctx> {
         match expr {
             HirExpr::This { .. } => *self.current_this.borrow(),
             HirExpr::Ident(name, _) => self.ctx.variable_types.borrow().get(name).copied(),
-            _ => None, // anything else falls through unspecialized
-                       // rather than risk misresolving. We should extend this as real cases surface.
+            _ => None, // anything else falls through unspecialized rather than risk misresolving. We should extend this as real cases surface.
         }
     }
 
@@ -163,11 +162,6 @@ impl<'a, 'bump, 'ctx> Monomorphizer<'a, 'bump, 'ctx> {
         };
 
         if type_args.is_empty() {
-            // `name` might already be a concrete/instantiated class (e.g. ArrayList_Outer)
-            // rather than a true non-generic struct. struct_methods is keyed by the
-            // generic template name (ArrayList), so a direct lookup under the concrete
-            // name silently misses. Recover the template name + type_args and retry
-            // through the generic path below instead of returning None here.
             if let Some((origin_name, origin_targs)) =
                 self.instantiated_struct_origins.borrow().get(name).cloned()
             {
@@ -406,16 +400,10 @@ impl<'a, 'bump, 'ctx> Monomorphizer<'a, 'bump, 'ctx> {
             } => {
                 let new_ty = substitute_type(ty, substitutions, self.bump.clone());
 
-                // If this is `let x: Base<Concrete> = module::path::Base.assoc_fn(...)`,
-                // resolve the associated function using the binding's declared type args,
-                // since there's no receiver expr to read a concrete type from.
                 let new_value = self
                     .try_monomorphize_assoc_call(value, &new_ty, substitutions)
                     .unwrap_or_else(|| self.monomorphize_expr(value, substitutions));
 
-                // If new_ty names a still-generic base struct with concrete type_args,
-                // make sure the concrete struct itself gets instantiated too (mirrors
-                // what StructInit already does) so MIR sees ArrayList_Outer, not ArrayList.
                 let new_ty = self.instantiate_struct_ty_if_needed(new_ty);
 
                 HirStmt::Let {
