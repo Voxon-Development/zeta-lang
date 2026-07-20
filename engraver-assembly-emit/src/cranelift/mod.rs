@@ -17,13 +17,13 @@ fn clif_type(ty: &SsaType) -> Type {
         SsaType::U64 => types::I64,
         SsaType::I128 => types::I128,
         SsaType::U128 => types::I128,
-        SsaType::ISize => types::I64, // Assuming 64-bit
-        SsaType::USize => types::I64, // Assuming 64-bit
+        SsaType::Isize => types::I64, // Assuming 64-bit
+        SsaType::Usize => types::I64, // Assuming 64-bit
         SsaType::F32 => types::F32,
         SsaType::F64 => types::F64,
         SsaType::Bool => types::I8, // Using i8 for bool
         SsaType::String => clif_type(&SsaType::Pointer(Box::new(SsaType::I8))),
-        SsaType::Void => unimplemented!(), // Using i8 as placeholder for void
+        SsaType::Void => unimplemented!(),
         SsaType::User(_, _) => types::I64, // User types passed by reference
         SsaType::Enum(_) => types::I64,    // Tagged union, passed by reference
         SsaType::Tuple(_) => types::I64,   // Tuples passed by reference
