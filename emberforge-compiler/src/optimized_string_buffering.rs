@@ -1,4 +1,3 @@
-use arrayvec::ArrayVec;
 use codex_dependency_graph::DepGraph;
 use ir::hir::StrId;
 use smallvec::SmallVec;
@@ -44,28 +43,6 @@ pub fn make_vtable_name(name: StrId, string_pool: Arc<StringPool>) -> StrId {
     }
 
     StrId(string_pool.intern_bytes(string.as_slice()))
-}
-
-pub fn get_type(name: StrId, string_pool: Arc<StringPool>) -> StrId {
-    let mut parts: ArrayVec<&str, 2> = ArrayVec::<&str, 2>::new();
-    for part in string_pool.resolve_string(&*name).split('_') {
-        if parts.try_push(part).is_err() {
-            panic!(
-                "Unexpected type name with too many parts: {}",
-                string_pool.resolve_string(&*name)
-            );
-        }
-    }
-
-    if parts.len() == 1 {
-        return StrId(string_pool.intern(parts.first().unwrap()));
-    }
-
-    if let Some(inner_value) = parts.last().copied() {
-        StrId(string_pool.intern(inner_value))
-    } else {
-        panic!("FieldAccess on non-user pointer type")
-    }
 }
 
 pub fn build_module_scoped_name(
