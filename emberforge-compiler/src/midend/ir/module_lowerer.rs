@@ -67,9 +67,6 @@ where
         nullable_tags.insert(StrId(context.intern("some")), 1usize);
         enum_variant_tags.insert(nullable_enum_name, nullable_tags);
 
-        // Tag 0 reserved for "success" (no throw); every distinct thrown error
-        // type gets a stable index starting at 1, shared across the whole
-        // module so catch-site and call-site tags always agree.
         let throws_enum_name = StrId(context.intern("__throws"));
         let mut throws_tags = HashMap::with_hasher(FxHashBuilder);
         throws_tags.insert(StrId(context.intern("__success")), 0usize);
