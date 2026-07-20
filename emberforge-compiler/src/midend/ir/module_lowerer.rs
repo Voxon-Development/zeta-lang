@@ -38,7 +38,6 @@ where
     struct_interfaces: HashMap<StrId, Vec<StrId>, FxHashBuilder>,
     pub dep_graph: &'a RefCell<DepGraph>,
     pub module_idx: usize,
-    global_funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
     g_phantom_data: PhantomData<&'g ()>,
     glue_registry: &'a DropGlueRegistry,
 }
@@ -54,7 +53,6 @@ where
         extern_c_names: Rc<HashSet<StrId>>,
         dep_graph: &'a RefCell<DepGraph>,
         module_idx: usize,
-        global_funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
         glue_registry: &'a DropGlueRegistry,
     ) -> Self {
         let mut enum_variant_tags: HashMap<
@@ -94,7 +92,6 @@ where
 
             dep_graph,
             module_idx,
-            global_funcs,
             g_phantom_data: PhantomData,
             glue_registry,
         }
@@ -108,64 +105,101 @@ where
         self.enum_variant_tags.insert(hir_enum.name, tags);
     }
 
-    /// Lowers all contents of the module in a very specific order, first enums, interfaces and interface implementations,
-    /// then structs and free functions/impl methods, then vtables generation.
-    ///
-    /// This is done in three passes so that you can safely reference anything from anything else.
-    pub fn lower_module(mut self, hir_mod: HirModule<'a, 'bump>) -> Module<'a, 'bump> {
-        // enum tags, interfaces, and struct_interfaces
-        for item in hir_mod.items {
-            match item {
-                Hir::Enum(hir_enum) => self.register_enum(*hir_enum),
-                Hir::Interface(iface) => self.lower_interface(*iface),
-                Hir::Impl(impl_block) => {
-                    if let Some(iface) = impl_block.interface {
-                        self.struct_interfaces
-                            .entry(impl_block.target)
-                            .or_insert_with(Vec::new)
-                            .push(iface);
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        for item in hir_mod.items {
-            match item {
-                Hir::Struct(class) => self.register_class(*class),
-                Hir::Func(func) => self.lower_function(*func),
-                Hir::Impl(impl_block) => {
-                    if let Some(methods) = impl_block.methods {
-                        for method in methods {
-                            self.class_mangled_map
+    pub fn lower_all_modules(
+        mut self,
+        hir_modules: &[HirModule<'a, 'bump>],
+        compilation_order: &[usize],
+    ) -> Module<'a, 'bump> {
+        for &idx in compilation_order {
+            for item in hir_modules[idx].items {
+                match item {
+                    Hir::Enum(hir_enum) => self.register_enum(*hir_enum),
+                    Hir::Interface(iface) => self.lower_interface(*iface),
+                    Hir::Impl(impl_block) => {
+                        if let Some(iface) = impl_block.interface {
+                            self.struct_interfaces
                                 .entry(impl_block.target)
-                                .or_insert_with(|| HashMap::with_hasher(FxHashBuilder))
-                                .insert(method.unmangled_name, method.name);
-                        }
-                        for method in methods {
-                            self.lower_class_method(method, impl_block.target);
+                                .or_insert_with(Vec::new)
+                                .push(iface);
                         }
                     }
+                    _ => {}
                 }
-                _ => {}
             }
         }
 
-        // build vtables now
-        for item in hir_mod.items {
-            let Hir::Struct(ty_struct) = item else {
-                continue;
-            };
-
-            self.build_class_vtable(ty_struct);
+        for &idx in compilation_order {
+            for item in hir_modules[idx].items {
+                if let Hir::Struct(class) = item {
+                    self.register_class(*class);
+                }
+            }
         }
 
-        let owned_structs: Vec<StrId> = hir_mod
-            .items
+        for &idx in compilation_order {
+            for item in hir_modules[idx].items {
+                match item {
+                    Hir::Func(func) => match func.impl_target {
+                        Some(class_name) => {
+                            self.class_mangled_map
+                                .entry(class_name)
+                                .or_insert_with(|| HashMap::with_hasher(FxHashBuilder))
+                                .insert(func.unmangled_name, func.name);
+                            self.register_method_signature(func, class_name);
+                        }
+                        None => {
+                            let f = Function::from_signature(func);
+                            self.module.functions.insert(f.name, f);
+                        }
+                    },
+                    Hir::Impl(impl_block) => {
+                        if let Some(methods) = impl_block.methods {
+                            for method in methods {
+                                self.class_mangled_map
+                                    .entry(impl_block.target)
+                                    .or_insert_with(|| HashMap::with_hasher(FxHashBuilder))
+                                    .insert(method.unmangled_name, method.name);
+                                self.register_method_signature(method, impl_block.target);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        for &idx in compilation_order {
+            self.module_idx = idx;
+            for item in hir_modules[idx].items {
+                match item {
+                    Hir::Func(func) => self.lower_function_body(func),
+                    Hir::Impl(impl_block) => {
+                        if let Some(methods) = impl_block.methods {
+                            for method in methods {
+                                self.lower_function_body(method);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        for &idx in compilation_order {
+            for item in hir_modules[idx].items {
+                if let Hir::Struct(ty_struct) = item {
+                    self.build_class_vtable(ty_struct);
+                }
+            }
+        }
+
+        let owned_structs: Vec<StrId> = compilation_order
             .iter()
-            .filter_map(|item| match item {
-                Hir::Struct(s) => Some(s.name),
-                _ => None,
+            .flat_map(|&idx| {
+                hir_modules[idx].items.iter().filter_map(|item| match item {
+                    Hir::Struct(s) => Some(s.name),
+                    _ => None,
+                })
             })
             .collect();
         for (name, func) in DropGlueBuilder::build_all(
@@ -179,6 +213,21 @@ where
         }
 
         self.module
+    }
+
+    fn register_method_signature(&mut self, hir_method: &HirFunc<'a, 'bump>, class_name: StrId) {
+        if !self.class_field_offsets.contains_key(&class_name) {
+            eprintln!(
+                "[register_method_signature] WARNING: method {} has impl_target={} but class_field_offsets has no entry. known classes: {:?}",
+                hir_method.name,
+                class_name,
+                self.class_field_offsets.keys().collect::<Vec<_>>()
+            );
+        }
+
+        let func = Function::from_signature(hir_method);
+
+        self.module.functions.insert(func.name, func);
     }
 
     fn register_class(&mut self, hir_class: &HirStruct<'a, 'bump>) {
@@ -320,19 +369,18 @@ where
         }
     }
 
-    fn lower_function(&mut self, hir_fn: &HirFunc<'a, 'bump>) {
-        let func = self.lower_function_inner(hir_fn);
-        self.module.functions.insert(func.name.clone(), func);
-    }
+    fn lower_function_body(&mut self, hir_fn: &HirFunc<'a, 'bump>) {
+        let mut function = self
+            .module
+            .functions
+            .remove(&hir_fn.name)
+            .expect("function signature should already be registered");
 
-    fn lower_function_inner<'s>(&'s self, hir_fn: &HirFunc<'a, 'bump>) -> Function
-    where
-        's: 'cx,
-    {
-        let mut fl: FunctionLowerer<'s, 'bump> = FunctionLowerer::new(
+        let mut fl = FunctionLowerer::new(
+            &mut function,
             hir_fn,
             &self.module.functions,
-            self.global_funcs,
+            &self.module.functions,
             &self.class_field_offsets,
             &self.class_method_slots,
             &self.class_mangled_map,
@@ -350,44 +398,8 @@ where
         )
         .unwrap();
         fl.lower_body(hir_fn.body);
-        FunctionLowerer::finish(fl)
-    }
+        fl.finish();
 
-    fn lower_class_method(&mut self, hir_method: &HirFunc<'a, 'bump>, class_name: StrId) {
-        let func = self.lower_class_method_inner(hir_method, class_name);
-        self.module.functions.insert(func.name, func);
-    }
-
-    fn lower_class_method_inner<'s>(
-        &'s self,
-        hir_fn: &HirFunc<'a, 'bump>,
-        class_name: StrId,
-    ) -> Function
-    where
-        's: 'cx,
-    {
-        let mut fl: FunctionLowerer<'s, 'bump> = FunctionLowerer::new_with_class(
-            hir_fn,
-            class_name,
-            &self.module.functions,
-            self.global_funcs,
-            &self.class_field_offsets,
-            &self.class_method_slots,
-            &self.class_mangled_map,
-            &self.class_vtable_slots,
-            &self.interface_id_map,
-            &self.interface_method_slots,
-            &self.module.classes,
-            &self.enum_variant_tags,
-            Arc::clone(&self.context),
-            &self.extern_c_names,
-            self.dep_graph,
-            self.module_idx,
-            self.glue_registry,
-            &self.interface_methods,
-        )
-        .unwrap();
-        fl.lower_body(hir_fn.body);
-        FunctionLowerer::finish(fl)
+        self.module.functions.insert(hir_fn.name, function);
     }
 }
