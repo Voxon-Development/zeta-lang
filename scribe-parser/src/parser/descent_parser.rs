@@ -66,6 +66,15 @@ where
     ) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         let kind = self.cursor.peek();
         match kind {
+            TokenKind::Panic => {
+                let tok = self.cursor.expect(TokenKind::Panic)?;
+                let message = self.parse_expr(0)?;
+                self.cursor.expect(TokenKind::Semicolon)?;
+                Ok(Stmt::Panic {
+                    message,
+                    span: tok.span,
+                })
+            }
             TokenKind::Let => self.parse_let_stmt(),
             TokenKind::Import => self.parse_import(),
             TokenKind::Package => self.parse_package(),
@@ -82,6 +91,11 @@ where
             TokenKind::Return => self.parse_return_stmt(),
             TokenKind::Break => self.parse_break_stmt(),
             TokenKind::Continue => self.parse_continue_stmt(),
+
+            TokenKind::Public => {
+                self.cursor.advance();
+                self.parse_stmt(Visibility::Private)
+            }
 
             TokenKind::Private => {
                 self.cursor.advance();
