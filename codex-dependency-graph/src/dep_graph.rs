@@ -52,7 +52,6 @@ impl NodeKind {
 pub struct DepNode {
     pub idx: NodeIdx,
     pub kind: NodeKind,
-    /// Human-readable name hint (the declared identifier), used for debugging.
     pub hint: Option<StrId>,
     /// Outgoing edges: this node depends on these.
     pub deps: Vec<NodeIdx>,
@@ -478,7 +477,7 @@ impl DepGraph {
                         module_idx,
                         item_idx,
                     },
-                    Some(i.target),
+                    i.target.struct_name(),
                 );
                 self.register_item_node(module_idx, item_idx, "impl", td);
             }
@@ -718,10 +717,10 @@ impl DepGraph {
         pool: &StringPool,
     ) {
         // The type being implemented
-        self.resolve_name_to_edge(i.target, from_node, module_idx);
+        self.add_ast_type_dep(from_node, &i.target, module_idx, pool);
         // The interface being implemented, if any
-        if let Some(iface) = i.interface {
-            self.resolve_name_to_edge(iface, from_node, module_idx);
+        if let Some(iface) = &i.interface {
+            self.add_ast_type_dep(from_node, iface, module_idx, pool);
         }
         if let Some(generics) = i.generics {
             for g in generics {
@@ -1059,6 +1058,28 @@ impl DepGraph {
             } => {
                 self.walk_expr(expr, from_node, module_idx, pool);
             }
+            Expr::Intrinsic {
+                name,
+                generic_args,
+                arguments,
+                span,
+            } => {
+                self.walk_expr(
+                    &Expr::Ident {
+                        name: *name,
+                        span: *span,
+                    },
+                    from_node,
+                    module_idx,
+                    pool,
+                );
+                for ty in *generic_args {
+                    self.add_ast_type_dep(from_node, ty, module_idx, pool);
+                }
+                for arg in *arguments {
+                    self.walk_expr(arg, from_node, module_idx, pool);
+                }
+            }
         }
     }
 
@@ -1085,7 +1106,11 @@ impl DepGraph {
         pool: &StringPool,
     ) {
         match ty.kind {
-            TypeKind::Struct { name, generics } => {
+            TypeKind::Struct {
+                name,
+                path: _,
+                generics,
+            } => {
                 self.resolve_name_to_edge(name, from_node, module_idx);
                 for g in generics {
                     self.add_ast_type_dep(from_node, g, module_idx, pool);

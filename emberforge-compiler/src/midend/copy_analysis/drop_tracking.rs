@@ -1,4 +1,7 @@
-use ir::hir::{DropKind, HirExpr, StrId};
+use ir::{
+    hir::{DropKind, HirExpr, StrId},
+    ir_hasher::{HashMap, HashSet},
+};
 
 #[derive(Clone, Debug)]
 pub struct DropLocal {
@@ -14,12 +17,12 @@ pub struct DropScope {
 #[derive(Default, Clone)]
 pub struct DropLocalState {
     pub moved_whole: bool,
-    pub moved_fields: std::collections::HashSet<StrId>,
+    pub moved_fields: HashSet<StrId>,
 }
 
 #[derive(Default, Clone)]
 pub struct DropMoveState {
-    pub locals: std::collections::HashMap<StrId, DropLocalState>,
+    pub locals: HashMap<StrId, DropLocalState>,
 }
 
 impl DropMoveState {

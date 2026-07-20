@@ -750,7 +750,14 @@ mod tests {
         let impl_decl = Box::leak(Box::new(ImplDecl {
             generics: None,
             interface: None,
-            target: impl_target,
+            target: Type {
+                kind: TypeKind::Struct {
+                    name: impl_target,
+                    path: &[],
+                    generics: &[],
+                },
+                nullable: false,
+            },
             methods: None,
             constants: None,
             span: dummy_span(),

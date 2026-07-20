@@ -4,17 +4,17 @@ use ir::{
 };
 use std::collections::HashMap;
 
-pub struct CurrentBlockData {
-    pub func: Function,
+pub struct CurrentBlockData<'f> {
+    pub func: &'f mut Function,
     pub current_block: BlockId,
     pub next_value: usize,
     pub next_block: usize,
     pub value_types: HashMap<Value, SsaType, FxHashBuilder>,
 }
 
-impl CurrentBlockData {
+impl<'f> CurrentBlockData<'f> {
     pub fn new(
-        func: Function,
+        func: &'f mut Function,
         current_block: BlockId,
         next_value: usize,
         next_block: usize,
@@ -67,8 +67,7 @@ impl CurrentBlockData {
             .unwrap()
     }
 
-    pub fn finish(mut self) -> Function {
-        self.func.value_types = self.value_types.clone();
-        self.func
+    pub fn finish(self) {
+        self.func.value_types.extend(self.value_types);
     }
 }

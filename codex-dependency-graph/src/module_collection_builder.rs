@@ -38,14 +38,18 @@ impl<'bump> ModuleBuilder<'bump> {
 
 fn extract_symbol_info(stmt: &Stmt<'_, '_>, pool: &StringPool) -> (StrId, StrId) {
     let kind = |s: &str| StrId(pool.intern(s));
-
     match stmt {
         Stmt::FuncDecl(f) => (f.name, kind("function")),
         Stmt::StructDecl(s) => (s.name, kind("struct")),
         Stmt::Const(c) => (c.ident, kind("const")),
         Stmt::InterfaceDecl(i) => (i.name, kind("interface")),
         Stmt::EnumDecl(e) => (e.name, kind("enum")),
-        Stmt::ImplDecl(i) => (i.target, kind("impl")),
+        Stmt::ImplDecl(i) => (
+            i.target
+                .struct_name()
+                .unwrap_or_else(|| StrId(pool.intern("<anon>"))),
+            kind("impl"),
+        ),
         _ => (StrId(pool.intern("<anon>")), kind("unknown")),
     }
 }

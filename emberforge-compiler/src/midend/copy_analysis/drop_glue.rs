@@ -93,7 +93,7 @@ impl DropGlueRegistry {
         is_droppable: &FxHashMap<StrId, bool>,
     ) -> bool {
         match ty {
-            HirType::Struct(name, _) => is_droppable.get(name).copied().unwrap_or(false),
+            HirType::Struct { name, .. } => is_droppable.get(name).copied().unwrap_or(false),
             HirType::Nullable(inner) => Self::type_is_droppable(inner, is_droppable),
             HirType::OwnedPointer(_) => true,
             _ => false,
@@ -179,7 +179,7 @@ impl DropGlueBuilder {
             instructions: Vec::new(),
         });
 
-        let mut cbd = CurrentBlockData::new(func, entry_bb, 1usize, 1usize, value_types);
+        let mut cbd = CurrentBlockData::new(&mut func, entry_bb, 1usize, 1usize, value_types);
 
         let drop_method_name = StrId(context.intern("drop"));
         if let Some(mangled_drop) = class_mangled_map
@@ -196,7 +196,11 @@ impl DropGlueBuilder {
         let mut droppable_fields: Vec<(usize, SsaType, StrId)> = Vec::new();
 
         for (field_index, field) in hir_struct.fields.iter().enumerate() {
-            let HirType::Struct(field_struct_name, _) = &field.field_type else {
+            let HirType::Struct {
+                name: field_struct_name,
+                ..
+            } = &field.field_type
+            else {
                 continue;
             };
             let Some(field_glue) = glue_registry.glue_name_for(*field_struct_name) else {
@@ -225,7 +229,8 @@ impl DropGlueBuilder {
         }
 
         cbd.bb().instructions.push(Instruction::Ret { value: None });
+        cbd.finish();
 
-        Some((glue_name, cbd.finish()))
+        Some((glue_name, func))
     }
 }
