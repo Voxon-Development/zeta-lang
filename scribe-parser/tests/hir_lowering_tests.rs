@@ -459,7 +459,8 @@ mod hir_tests {
             other => panic!("Expected ImplDecl, got {other:?}"),
         };
 
-        assert_eq!(context.resolve_string(&impl_decl.target), "Vec3");
+        let struct_name = impl_decl.target.struct_name();
+        assert!(struct_name.is_some() && context.resolve_string(&*struct_name.unwrap()) == "Vec3");
         let methods = impl_decl.methods.expect("Expected methods");
         assert_eq!(methods.len(), 2);
 

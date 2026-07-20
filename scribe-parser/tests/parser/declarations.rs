@@ -146,7 +146,10 @@ mod tests {
 
         match iter.next().expect("no impl") {
             Stmt::ImplDecl(i) => {
-                assert_eq!(i.target.as_str(), "Point");
+                assert!(
+                    i.target.struct_name().is_some()
+                        && i.target.struct_name().unwrap().as_str() == "Point"
+                );
                 assert!(i.interface.is_none());
                 assert!(i.methods.is_some());
                 assert_eq!(i.methods.unwrap().len(), 2); // new and distance
