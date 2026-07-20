@@ -1419,9 +1419,9 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                                     self.check_borrow_use(expr, place, borrow_kind);
                                 }
                             }
-                            // else: defer entirely to finalize_call_loans below, which checks
-                            // the precise resolved place (list.ptr[Const(1)] vs
-                            // list.ptr[Const(2)]) and can prove index-disjointness that the
+                            // defer entirely to finalize_call_loans below, which checks
+                            // the precise resolved place (such as ptr[Const(1)] vs
+                            // ptr[Const(2)]) and can prove index-disjointness that the
                             // whole-receiver check can't.
                         }
 
@@ -1751,7 +1751,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 let target_type = self.check_expr(target);
 
                 // Borrow-check the write target uniformly: *p = .., obj.field = ..,
-                // arr[i] = .. all need the same overlap check. Special-casing only
+                // arr[i] = .. all need the same overlap check, Special-casing only
                 // Deref here
                 if let Some(place) = self.resolve_place(target) {
                     self.check_borrow_use(target, place, BorrowKind::Mutable);
@@ -1990,7 +1990,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             HirExpr::ModuleAccess(access) => {
                 let member_name = access.member.to_string();
 
-                // First: is access.path a single-segment local alias registered via
+                // is access.path a single-segment local alias registered via
                 // `import foo::bar.Alias;`? Check that before treating path as a
                 // literal package path.
                 let alias_module_idx: Option<usize> = if access.path.len() == 1 {
@@ -2004,9 +2004,6 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
 
                 let (resolved_module_idx, assoc_type_name): (Option<usize>, Option<StrId>) =
                     if let Some(midx) = alias_module_idx {
-                        // Alias resolved to a module; the alias name itself is the
-                        // referenced symbol (type or free function) inside that module,
-                        // not a module-path segment to strip.
                         (Some(midx), Some(access.path[0]))
                     } else {
                         match self
@@ -2277,8 +2274,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             // Indexing loses static field-path precision (the index is runtime
             // data), but the borrowed region is still rooted in `object`, keep
             // the root so diagnostics can still say "derived from `x`" instead
-            // of dropping to nothing. This intentionally does NOT push a path
-            // segment, since there's no StrId/Deref to represent "at index i".
+            // of dropping to nothing
             HirExpr::Index { object, .. } => self.infer_provenance_root(object, segments),
 
             _ => None,
@@ -2456,7 +2452,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
     /// True if a value of this type could itself hold or be a borrowed
     /// reference, i.e. calling a function returning this type might hand
     /// back something that aliases one of its ref-typed arguments.
-    /// Conservative: struct/enum/tuple types that might *contain* a
+    /// struct/enum/tuple types that might *contain* a
     /// reference field also count, since e.g. `struct Pair { r: &mut i64 }`
     /// returned by value still carries the alias forward.
     fn return_type_may_alias(&self, ty: &HirType<'a, 'bump>) -> bool {
@@ -2555,7 +2551,6 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             return t.clone();
         }
 
-        // Cycle guard, mirrors IndexDisjointCtx::MethodAnalysisState::InProgress.
         self.ref_templates.insert(func.name, RefTemplate::Opaque);
 
         let template = Self::build_ref_template(func);
