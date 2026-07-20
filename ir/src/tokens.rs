@@ -12,6 +12,7 @@ pub struct Token<'a> {
     pub span: SourceSpan<'a>,
 }
 
+#[derive(Clone, Copy)]
 pub struct Tokens<'a> {
     pub slice: &'a [Token<'a>],
 }
@@ -42,6 +43,7 @@ impl<'a> Tokens<'a> {
     }
 }
 
+#[derive(Clone)]
 pub struct Cursor<'a> {
     tokens: &'a Tokens<'a>,
     index: usize,
@@ -293,6 +295,7 @@ pub enum TokenKind {
     Else,
     While,
     For,
+    Public,
     By,
     In,
     Return,
@@ -339,6 +342,7 @@ pub enum TokenKind {
     Reified,
     Undefined,
     As,
+    Panic,
 
     // ===== Types =====
     U8,
@@ -377,6 +381,7 @@ pub enum TokenKind {
     DotDot,     // ..
     DotDotLt,   // ..<
     ColonColon, // ::
+    Dollar,
 
     // ===== Operators =====
     Assign,            // =
@@ -507,7 +512,7 @@ impl fmt::Display for TokenKind {
             Ensures => "ensures",
             Let => "let",
             Void => "void",
-            Func => "fn",
+            Func => "func",
             Dyn => "dyn",
 
             U8 => "u8",
@@ -602,6 +607,9 @@ impl fmt::Display for TokenKind {
             By => "by",
             Catch => "catch",
             Undefined => "undefined",
+            Public => "public",
+            Dollar => "$",
+            Panic => "panic",
         };
         f.write_str(s)
     }
