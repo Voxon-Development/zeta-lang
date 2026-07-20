@@ -110,6 +110,14 @@ impl<'a, 'bump> Hir<'a, 'bump> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IntrinsicKind {
+    SizeOf,
+    AlignOf,
+    AssertAlign,
+    TypeName,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ProvenanceRoot {
     Var(StrId),
@@ -187,6 +195,8 @@ where
     pub return_type: Option<HirType<'a, 'bump>>,
     pub body: Option<HirStmt<'a, 'bump>>,
     pub unmangled_name: StrId,
+    pub declaring_module_idx: usize,
+    pub impl_target: Option<StrId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -207,7 +217,9 @@ where
 {
     pub generics: Option<&'bump [HirGeneric<'a, 'bump>]>,
     pub interface: Option<StrId>,
+    pub interface_generics: Option<&'bump [HirType<'a, 'bump>]>,
     pub target: StrId,
+    pub target_generics: Option<&'bump [HirType<'a, 'bump>]>,
     pub methods: Option<&'bump [HirFunc<'a, 'bump>]>,
 }
 
@@ -349,7 +361,11 @@ where
     U128,
     Boolean,
     String,
-    Struct(StrId, &'bump [HirType<'a, 'bump>]),
+    Struct {
+        name: StrId,
+        field_types: &'bump [HirType<'a, 'bump>],
+        type_args: &'bump [HirType<'a, 'bump>],
+    },
     DynInterface(StrId, &'bump [HirType<'a, 'bump>]),
     Enum(StrId, &'bump [HirType<'a, 'bump>]),
     SafePointer(&'a HirType<'a, 'bump>),
@@ -380,6 +396,8 @@ where
     Tuple(&'bump [HirType<'a, 'bump>]),
     Array(&'a HirType<'a, 'bump>, usize),
     Slice(&'a HirType<'a, 'bump>),
+    Usize,
+    Isize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -397,6 +415,10 @@ pub enum HirStmt<'a, 'bump>
 where
     'bump: 'a,
 {
+    Panic {
+        message: &'bump HirExpr<'a, 'bump>,
+        span: SourceSpan<'a>,
+    },
     Let {
         name: StrId,
         ty: HirType<'a, 'bump>,
@@ -516,6 +538,12 @@ pub enum HirExpr<'a, 'bump>
 where
     'bump: 'a,
 {
+    Intrinsic {
+        kind: IntrinsicKind,
+        type_args: &'bump [HirType<'a, 'bump>], // the <T> part
+        args: &'bump [HirExpr<'a, 'bump>],      // runtime args, e.g. $assert_align(ptr, 8)
+        span: SourceSpan<'a>,
+    },
     Cast {
         expr: &'bump HirExpr<'a, 'bump>,
         target_type: HirType<'a, 'bump>,
@@ -620,7 +648,15 @@ where
         span: SourceSpan<'a>,
         ty: HirType<'a, 'bump>,
     },
+    UnknownIntrinsic {
+        span: SourceSpan<'a>,
+        name: StrId,
+    },
     GenericIdent(StrId, &'bump [HirType<'a, 'bump>], SourceSpan<'a>),
+    If {
+        if_stmt: &'bump HirStmt<'a, 'bump>,
+        span: SourceSpan<'a>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -702,11 +738,17 @@ where
             HirType::U64 => write!(f, "u64"),
             HirType::I128 => write!(f, "i128"),
             HirType::U128 => write!(f, "u128"),
+            HirType::Usize => write!(f, "usize"),
+            HirType::Isize => write!(f, "isize"),
             HirType::F32 => write!(f, "f32"),
             HirType::F64 => write!(f, "f64"),
             HirType::Boolean => write!(f, "bool"),
             HirType::String => write!(f, "string"),
-            HirType::Struct(name, args) => Self::write_args(f, name, args),
+            HirType::Struct {
+                name,
+                field_types: args,
+                ..
+            } => Self::write_args(f, name, args),
             HirType::DynInterface(name, args) => Self::write_args(f, name, args),
             HirType::Enum(name, args) => Self::write_args(f, name, args),
             HirType::Lambda {
@@ -837,9 +879,9 @@ where
 
     pub fn drop_kind(&self) -> DropKind {
         match self {
-            HirType::Struct(name, _) | HirType::Enum(name, _) | HirType::DynInterface(name, _) => {
-                DropKind::Type(*name)
-            }
+            HirType::Struct { name, .. }
+            | HirType::Enum(name, _)
+            | HirType::DynInterface(name, _) => DropKind::Type(*name),
 
             HirType::OwnedPointer(inner) => DropKind::OwnedPointer(Box::new(inner.drop_kind())),
 
@@ -849,9 +891,9 @@ where
 
     pub fn nominal_type_name(&self) -> Option<StrId> {
         match self {
-            HirType::Struct(name, _) | HirType::Enum(name, _) | HirType::DynInterface(name, _) => {
-                Some(*name)
-            }
+            HirType::Struct { name, .. }
+            | HirType::Enum(name, _)
+            | HirType::DynInterface(name, _) => Some(*name),
 
             HirType::Ref { inner, .. }
             | HirType::SafePointer(inner)

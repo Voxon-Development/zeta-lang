@@ -29,7 +29,21 @@ where
     Module(&'bump ModuleDecl<'a, 'bump>),
     ExprStmt(&'bump InternalExprStmt<'a, 'bump>),
     Break(Option<&'bump Expr<'a, 'bump>>, SourceSpan<'a>),
+    TypeAliasDecl(&'bump TypeAliasDecl<'a, 'bump>),
     Continue(SourceSpan<'a>),
+    Panic {
+        message: Expr<'a, 'bump>,
+        span: SourceSpan<'a>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TypeAliasDecl<'a, 'bump> {
+    pub visibility: Visibility,
+    pub name: StrId,
+    pub generics: Option<&'bump [Generic<'a, 'bump>]>,
+    pub ty: Type<'a, 'bump>,
+    pub span: SourceSpan<'a>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -96,8 +110,8 @@ where
     'bump: 'a,
 {
     pub generics: Option<&'bump [Generic<'a, 'bump>]>,
-    pub interface: Option<StrId>,
-    pub target: StrId,
+    pub target: Type<'a, 'bump>,
+    pub interface: Option<Type<'a, 'bump>>,
     pub methods: Option<&'bump [FuncDecl<'a, 'bump>]>,
     pub span: SourceSpan<'a>,
     pub constants: Option<&'bump [ConstStmt<'a, 'bump>]>,
@@ -368,6 +382,12 @@ pub enum Expr<'a, 'bump>
 where
     'bump: 'a,
 {
+    Intrinsic {
+        name: StrId,
+        generic_args: &'bump [Type<'a, 'bump>],
+        arguments: &'bump [Expr<'a, 'bump>],
+        span: SourceSpan<'a>,
+    },
     Null {
         span: SourceSpan<'a>,
     },
@@ -565,6 +585,24 @@ where
     pub nullable: bool,
 }
 
+impl<'a, 'bump> Type<'a, 'bump> {
+    pub fn struct_name(&self) -> Option<StrId> {
+        match self.kind {
+            TypeKind::Struct { name, .. } => Some(name),
+            _ => None,
+        }
+    }
+
+    /// Name plus qualifying path segments, for callers that need to resolve
+    /// across modules (e.g. HIR lowering's mangling).
+    pub fn struct_name_path(&self) -> Option<(StrId, &'bump [StrId])> {
+        match self.kind {
+            TypeKind::Struct { name, path, .. } => Some((name, path)),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProvenanceRoot {
     Var(StrId),
@@ -664,6 +702,7 @@ where
     },
     Struct {
         name: StrId,
+        path: &'bump [StrId],
         generics: &'bump [Type<'a, 'bump>],
     },
     This,
@@ -679,6 +718,8 @@ where
     OwnedPointer {
         inner: &'bump Type<'a, 'bump>,
     },
+    Usize,
+    Isize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -990,6 +1031,8 @@ impl<'a, 'bump> Type<'a, 'bump> {
                 | TypeKind::F64
                 | TypeKind::UF32
                 | TypeKind::UF64
+                | TypeKind::Usize
+                | TypeKind::Isize
         )
     }
 
@@ -1059,6 +1102,20 @@ impl<'a, 'bump> Type<'a, 'bump> {
     pub fn u128() -> Self {
         Type {
             kind: TypeKind::U128,
+            nullable: false,
+        }
+    }
+
+    pub fn usize() -> Self {
+        Type {
+            kind: TypeKind::Usize,
+            nullable: false,
+        }
+    }
+
+    pub fn isize() -> Self {
+        Type {
+            kind: TypeKind::Isize,
             nullable: false,
         }
     }
@@ -1143,6 +1200,8 @@ impl<'a, 'bump> Display for Type<'a, 'bump> {
             TypeKind::U64 => f.write_str("u64"),
             TypeKind::I128 => f.write_str("i128"),
             TypeKind::U128 => f.write_str("u128"),
+            TypeKind::Usize => f.write_str("usize"),
+            TypeKind::Isize => f.write_str("isize"),
             TypeKind::UF64 => f.write_str("uf64"),
             TypeKind::Void => f.write_str("void"),
             TypeKind::Lambda {
@@ -1159,7 +1218,11 @@ impl<'a, 'bump> Display for Type<'a, 'bump> {
                 write!(f, ")")?;
                 write!(f, " -> {}", return_type)
             }
-            TypeKind::Struct { name, generics } => {
+            TypeKind::Struct {
+                name,
+                path: _,
+                generics,
+            } => {
                 write!(f, "{}", name)?;
                 if !generics.is_empty() {
                     write!(f, "<")?;
