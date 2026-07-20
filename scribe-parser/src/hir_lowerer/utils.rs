@@ -25,6 +25,7 @@ pub const fn lower_cmp_operator(op: ast::Op) -> Operator {
     }
 }
 
+#[allow(unused)] // TODO: probably finish, lol
 pub fn type_suffix_with_pool(pool: Arc<StringPool>, ty: &HirType) -> StrId {
     StrId(match ty {
         HirType::I32 => pool.intern("i32"),
@@ -33,31 +34,62 @@ pub fn type_suffix_with_pool(pool: Arc<StringPool>, ty: &HirType) -> StrId {
         HirType::U64 => pool.intern("u64"),
         HirType::F32 => pool.intern("f32"),
         HirType::F64 => pool.intern("f64"),
-        HirType::String => pool.intern("String"),
+        HirType::String => pool.intern("str"),
         HirType::Boolean => pool.intern("boolean"),
 
-        HirType::Struct(name, args) => {
-            if args.is_empty() {
+        HirType::Struct {
+            name, type_args, ..
+        } => {
+            if type_args.is_empty() {
+                // name is already the fully-resolved/mangled identity of this struct
                 **name
             } else {
-                let mut buf: SmallVec<u8, 128> = SmallVec::new();
+                // only real generic params recurse
+                let mut buf: SmallVec<u8, 64> = SmallVec::new();
                 buf.extend_from_slice(pool.resolve_bytes(&*name));
-                for arg in *args {
+                for arg in type_args.iter() {
                     buf.push(b'_');
-                    let suffix = type_suffix_with_pool(pool.clone(), arg);
-                    let part = pool.resolve_bytes(&*suffix);
-
-                    buf.extend_from_slice(part);
+                    let suf = type_suffix_with_pool(pool.clone(), arg);
+                    buf.extend_from_slice(pool.resolve_bytes(&*suf));
                 }
-                let s = std::str::from_utf8(&buf).expect("Generated string should be valid UTF-8");
+                let s = std::str::from_utf8(&buf).expect("valid utf8");
                 pool.intern(s)
             }
         }
 
-        HirType::Generic(name) => **name,
+        HirType::Generic(name) => unreachable!(),
 
         HirType::Void => pool.intern("void"),
-
-        _ => pool.intern("T"),
+        HirType::I8 => pool.intern("i8"),
+        HirType::I16 => pool.intern("i16"),
+        HirType::U8 => pool.intern("u8"),
+        HirType::U16 => pool.intern("u16"),
+        HirType::I128 => pool.intern("i128"),
+        HirType::U128 => pool.intern("u128"),
+        HirType::SafePointer(hir_type) => todo!(),
+        HirType::Ref {
+            inner,
+            mutability_state,
+            provenance,
+        } => todo!(),
+        HirType::UnsafePointer(hir_type) => todo!(),
+        HirType::OwnedPointer(hir_type) => todo!(),
+        HirType::Lambda {
+            params,
+            return_type,
+        } => todo!(),
+        HirType::This => todo!(),
+        HirType::Null => todo!(),
+        HirType::Char => pool.intern("char"),
+        HirType::Unknown => todo!(),
+        HirType::Nullable(hir_type) => todo!(),
+        HirType::Dyn { bounds } => todo!(),
+        HirType::Tuple(hir_types) => todo!(),
+        HirType::Array(hir_type, _) => todo!(),
+        HirType::Slice(hir_type) => todo!(),
+        HirType::Usize => pool.intern("usize"),
+        HirType::Isize => pool.intern("isize"),
+        HirType::DynInterface(str_id, hir_types) => todo!(),
+        HirType::Enum(str_id, hir_types) => todo!(),
     })
 }

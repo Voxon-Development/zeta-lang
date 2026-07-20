@@ -6,10 +6,11 @@ mod hir_lowerer_tests {
     use crate::tokenizer::lexer::Lexer;
     use codex_dependency_graph::DepGraph;
     use ir::hir::{Hir, HirExpr, HirFunc, HirModule, HirStmt, HirType, StrId};
-    use ir::ir_hasher::HashMap;
+    use ir::ir_hasher::{FxHashMap, HashMap};
     use ir::registry::global_registry::GlobalRegistry;
     use std::cell::RefCell;
     use std::mem::transmute;
+    use std::rc::Rc;
     use std::sync::Arc;
     use zetaruntime::arena::GrowableAtomicBump;
     use zetaruntime::bump::GrowableBump;
@@ -153,8 +154,7 @@ mod hir_lowerer_tests {
                             panic!("Expected string literal for y");
                         }
                     }
-                    HirType::Struct(_, _) => {
-                        // Alternative case - class type for String
+                    HirType::Struct { .. } => {
                         if let HirExpr::String(s, _) = value {
                             assert_eq!(
                                 context.resolve_string(s),
@@ -263,6 +263,9 @@ mod hir_lowerer_tests {
             atomic_bump.clone(),
             unsafe { transmute(&lowerer.ctx) },
             &lowerer.ctx,
+            Rc::new(RefCell::new(FxHashMap::default())),
+            Rc::new(RefCell::new(FxHashMap::default())),
+            Rc::new(RefCell::new(FxHashMap::default())),
         );
 
         let mut substitutions = HashMap::default();
