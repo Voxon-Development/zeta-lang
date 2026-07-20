@@ -64,7 +64,7 @@ pub enum Projection {
 /// allowed to trust "different index => disjoint memory".
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IndexContainer {
-    /// `[N]T` / `[]T`
+    /// `[N]T` / `[]T` / pointer arithmetic
     Primitive,
 
     /// A user struct's `get`/`get_mut`. Distinct indices are
@@ -188,13 +188,22 @@ pub struct BorrowChecker {
     pub pointee_origin: FxHashMap<PlaceId, (PlaceId, Interval)>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemplateBase {
+    /// Rooted in the method's `this` receiver.
+    This,
+    /// Rooted in the `usize`-th `Normal` parameter (0-indexed over just the
+    /// Normal params, `this`, if present, is not counted).
+    Param(usize),
+}
+
 #[derive(Debug, Clone)]
 pub enum RefTemplate {
     /// The returned reference is a projection chain starting from one
     /// specific parameter, e.g. `&mut arr[index]` -> Path { base_param: 0,
     /// mutable: true, projections: [Index(Param(1))] }.
     Path {
-        base_param: usize,
+        base: TemplateBase,
         mutable: bool,
         projections: Vec<TemplateProjection>,
     },
@@ -224,6 +233,7 @@ pub struct AliasReasoner {
     pub(crate) ranges: FxHashMap<Bound, Interval>,
     pub(crate) disjoint_intervals: Vec<(Interval, Interval)>,
     pub(crate) disjoint_indexable: FxHashMap<StrId, bool>,
+    pub(crate) place_not_equal: FxHashMap<PlaceId, FxHashSet<PlaceId>>,
 }
 
 #[derive(Clone)]
@@ -231,6 +241,7 @@ pub struct Scope {
     pub loans: Vec<LoanId>,
     pub places: Vec<PlaceId>,
     pub assumed_facts: Vec<(Bound, Bound, bool)>,
+    pub assumed_place_facts: Vec<(PlaceId, PlaceId)>,
 }
 
 #[derive(Clone, Debug)]
@@ -335,8 +346,11 @@ pub enum Bound {
     /// Doesn't compare by value, compares by call-site identity instead.
     FreshPerCall,
 
-    /// Analysis gave up on this subexpression.
-    Opaque,
+    /// Analysis gave up on this subexpression. Carries a per-occurrence id
+    /// so two different opaque expressions (e.g. two different hash calls)
+    /// don't get spuriously deduped into the same place, each is
+    /// "unknown, and unknown whether equal to any other unknown."
+    Opaque(u32),
 
     Sum(Box<Bound>, Box<Bound>),
 }

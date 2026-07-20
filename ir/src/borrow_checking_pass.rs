@@ -126,6 +126,11 @@ impl BorrowChecker {
 
         for loan_id in loans {
             let loan = &self.active_loans[loan_id];
+            // Only a PROVEN overlap blocks creation. An Unknown relation is not
+            // rejected here, the program may go on to establish disjointness
+            // (e.g. via a runtime pointer-identity check) before either
+            // reference is actually used. That obligation is enforced at
+            // check_use, not here.
             if let MemoryRelation::Overlap = self.overlaps(place, loan.place)? {
                 if kind == BorrowKind::Mutable || loan.kind == BorrowKind::Mutable {
                     return Err(match loan.kind {
@@ -148,9 +153,21 @@ impl BorrowChecker {
 
         for loan_id in loans {
             let loan = &self.active_loans[loan_id];
-            if loan.place == place {
-                continue; // a loan doesn't conflict with reading/writing through itself
+
+            // A loan never conflicts with a use that passes THROUGH it: if
+            // loan.place is `place` itself, or an ancestor of it (i.e. `place`
+            // is a field/index/deref projection reached via the very
+            // reference this loan backs), this IS the loan enabling the
+            // access, not a competing borrow. Safe to skip unconditionally:
+            // check_definite_conflict already forbids two active loans from
+            // ever being in an ancestor/descendant relationship on the same
+            // lineage, so at most one active loan can ever be an
+            // ancestor-or-equal of `place`, it can't be masking a different,
+            // genuinely conflicting loan.
+            if loan.place == place || self.place_is_ancestor(loan.place, place) {
+                continue;
             }
+
             match self.overlaps(place, loan.place)? {
                 MemoryRelation::Disjoint => {}
                 MemoryRelation::Overlap | MemoryRelation::Unknown
@@ -165,6 +182,19 @@ impl BorrowChecker {
             }
         }
         Ok(())
+    }
+
+    fn place_is_ancestor(&self, ancestor: PlaceId, mut current: PlaceId) -> bool {
+        while let Some(place) = self.places.get(&current) {
+            if place.id == ancestor {
+                return true;
+            }
+            match place.parent {
+                Some(parent) => current = parent,
+                None => return false,
+            }
+        }
+        false
     }
 
     fn create_loan(&mut self, place: PlaceId, kind: BorrowKind) -> BorrowResult<LoanId> {
@@ -252,19 +282,15 @@ impl BorrowChecker {
         id
     }
 
-    /// Enter a lexical scope.
     pub fn begin_scope(&mut self) {
         self.scopes.push(Scope {
             loans: Vec::new(),
             places: Vec::new(),
             assumed_facts: Vec::new(),
+            assumed_place_facts: Vec::new(),
         });
     }
 
-    /// Leave the current lexical scope.
-    ///
-    /// Ends every loan declared in this scope and destroys
-    /// places declared here.
     pub fn end_scope(&mut self) {
         let Some(scope) = self.scopes.pop() else {
             return;
@@ -277,11 +303,13 @@ impl BorrowChecker {
                 self.reasoning.retract_not_equal(lhs, rhs);
             }
         }
+        for (lhs, rhs) in &scope.assumed_place_facts {
+            self.reasoning.retract_place_not_equal(lhs, rhs);
+        }
 
         for loan in scope.loans {
             self.end_loan(loan);
         }
-
         for place in scope.places {
             self.places.remove(&place);
             self.place_roots.remove(&place);
@@ -295,6 +323,22 @@ impl BorrowChecker {
             if let Some(local) = self.place_to_local.remove(&place) {
                 self.local_places.remove(&local);
             }
+        }
+    }
+
+    pub fn assume_places_not_equal_scoped(&mut self, lhs: PlaceId, rhs: PlaceId) {
+        self.reasoning
+            .place_not_equal
+            .entry(lhs)
+            .or_default()
+            .insert(rhs);
+        self.reasoning
+            .place_not_equal
+            .entry(rhs)
+            .or_default()
+            .insert(lhs);
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.assumed_place_facts.push((lhs, rhs));
         }
     }
 

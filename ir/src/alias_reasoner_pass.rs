@@ -16,7 +16,23 @@ impl AliasReasoner {
             less_than: HashMap::default(),
             ranges: HashMap::default(),
             disjoint_intervals: Vec::default(),
+            place_not_equal: HashMap::default(),
         }
+    }
+
+    fn ancestor_chain(&self, places: &FxHashMap<PlaceId, Place>, start: PlaceId) -> Vec<PlaceId> {
+        let mut chain = vec![start];
+        let mut current = start;
+        while let Some(place) = places.get(&current) {
+            match place.parent {
+                Some(parent) => {
+                    chain.push(parent);
+                    current = parent;
+                }
+                None => break,
+            }
+        }
+        chain
     }
 
     pub fn relation(
@@ -26,54 +42,74 @@ impl AliasReasoner {
         lhs: PlaceId,
         rhs: PlaceId,
     ) -> MemoryRelation {
+        let lhs_chain = self.ancestor_chain(places, lhs);
+        let rhs_chain = self.ancestor_chain(places, rhs);
+
+        for &l in &lhs_chain {
+            for &r in &rhs_chain {
+                if self.place_not_equal.get(&l).is_some_and(|s| s.contains(&r)) {
+                    return MemoryRelation::Disjoint;
+                }
+            }
+        }
+
         if lhs == rhs {
             return MemoryRelation::Overlap;
         }
 
-        let lhs = match places.get(&lhs) {
+        let lhs_place = match places.get(&lhs) {
             Some(place) => place,
             None => return MemoryRelation::Unknown,
         };
-
-        let rhs = match places.get(&rhs) {
+        let rhs_place = match places.get(&rhs) {
             Some(place) => place,
             None => return MemoryRelation::Unknown,
         };
 
         // Completely different locals.
-        if lhs.parent.is_none() && rhs.parent.is_none() {
+        if lhs_place.parent.is_none() && rhs_place.parent.is_none() {
             return MemoryRelation::Disjoint;
         }
 
         // Parent/child always overlap.
-        if self.is_ancestor(places, lhs.id, rhs.id) || self.is_ancestor(places, rhs.id, lhs.id) {
+        if self.is_ancestor(places, lhs_place.id, rhs_place.id)
+            || self.is_ancestor(places, rhs_place.id, lhs_place.id)
+        {
             return MemoryRelation::Overlap;
         }
 
-        // Same parent?
-        if lhs.parent == rhs.parent {
-            match (&lhs.projection, &rhs.projection) {
-                (Some(Projection::Field(a)), Some(Projection::Field(b))) => {
-                    return if a == b {
-                        MemoryRelation::Overlap
-                    } else {
-                        MemoryRelation::Disjoint
-                    };
+        // General field/index disjointness: find where the two ancestor
+        // chains diverge (their lowest common ancestor's two children) and
+        // compare THOSE, rather than requiring lhs/rhs to be direct siblings.
+        // This is what makes `second.inner.tag` correctly compare against
+        // `third`'s loan through several layers of field projection, not
+        // just when the compared places are themselves the immediate
+        // Index/Field nodes.
+        if let Some((ldiv, rdiv)) = self.find_divergence(&lhs_chain, &rhs_chain) {
+            if let (Some(ld), Some(rd)) = (places.get(&ldiv), places.get(&rdiv)) {
+                match (&ld.projection, &rd.projection) {
+                    (Some(Projection::Field(a)), Some(Projection::Field(b))) => {
+                        return if a == b {
+                            MemoryRelation::Overlap
+                        } else {
+                            MemoryRelation::Disjoint
+                        };
+                    }
+                    (
+                        Some(Projection::Index {
+                            index: li,
+                            container,
+                        }),
+                        Some(Projection::Index { index: ri, .. }),
+                    ) => {
+                        return self.reason_about_indices(li, ri, *container);
+                    }
+                    _ => {}
                 }
-                (
-                    Some(Projection::Index {
-                        index: lhs,
-                        container,
-                    }),
-                    Some(Projection::Index { index: rhs, .. }),
-                ) => {
-                    return self.reason_about_indices(lhs, rhs, *container);
-                }
-                _ => {}
             }
         }
 
-        if let (Some(l), Some(r)) = (places.get(&lhs.id), places.get(&rhs.id)) {
+        if let (Some(l), Some(r)) = (places.get(&lhs), places.get(&rhs)) {
             if let (Some(Projection::Deref), Some(Projection::Deref)) =
                 (&l.projection, &r.projection)
             {
@@ -98,6 +134,42 @@ impl AliasReasoner {
         }
 
         MemoryRelation::Unknown
+    }
+
+    /// Given two ancestor chains (each ordered [place, parent, grandparent,
+    /// ..., root]), find their lowest common ancestor and return the pair of
+    /// children -- one from each chain -- that sit immediately below it. These
+    /// are the two projections that actually need comparing (both Field or
+    /// both Index) to determine disjointness. Returns None if the chains
+    /// share no common ancestor, or if one chain is a prefix of the other
+    /// (already handled by the ancestor/descendant check before this runs).
+    fn find_divergence(
+        &self,
+        lhs_chain: &[PlaceId],
+        rhs_chain: &[PlaceId],
+    ) -> Option<(PlaceId, PlaceId)> {
+        let lhs_rev: Vec<PlaceId> = lhs_chain.iter().rev().copied().collect();
+        let rhs_rev: Vec<PlaceId> = rhs_chain.iter().rev().copied().collect();
+
+        let mut i = 0;
+        while i < lhs_rev.len() && i < rhs_rev.len() && lhs_rev[i] == rhs_rev[i] {
+            i += 1;
+        }
+
+        if i == 0 || i >= lhs_rev.len() || i >= rhs_rev.len() {
+            return None;
+        }
+
+        Some((lhs_rev[i], rhs_rev[i]))
+    }
+
+    pub fn retract_place_not_equal(&mut self, lhs: &PlaceId, rhs: &PlaceId) {
+        if let Some(set) = self.place_not_equal.get_mut(lhs) {
+            set.remove(rhs);
+        }
+        if let Some(set) = self.place_not_equal.get_mut(rhs) {
+            set.remove(lhs);
+        }
     }
 
     fn resolve_const(&self, bound: &Bound) -> Option<i64> {
@@ -206,61 +278,38 @@ impl AliasReasoner {
     fn compare_linear(&self, lhs: &Bound, rhs: &Bound) -> Option<bool> {
         use Bound::*;
 
-        // Resolve known equality-to-constant facts first, so an assumed
-        // `index == 4` lets `index` compare correctly against a literal `3`
-        // even though they're structurally different Bound shapes.
         if let (Some(a), Some(b)) = (self.resolve_const(lhs), self.resolve_const(rhs)) {
             return Some(a == b);
         }
 
         match (lhs, rhs) {
             (Const(a), Const(b)) => Some(a == b),
-
             (Symbol(a), Symbol(b)) if a == b => Some(true),
-
             (SelfField(a), SelfField(b)) => Some(a == b),
 
             (
-                Offset {
-                    base: lhs_base,
-                    offset: lhs_offset,
-                },
-                Offset {
-                    base: rhs_base,
-                    offset: rhs_offset,
-                },
-            ) => {
-                if lhs_offset != rhs_offset {
-                    return None;
-                }
-
-                self.compare_linear(lhs_base, rhs_base)
-            }
-
-            (
                 Scale {
-                    base: lhs_base,
-                    factor: lhs_factor,
+                    base: lb,
+                    factor: lf,
                 },
                 Scale {
-                    base: rhs_base,
-                    factor: rhs_factor,
+                    base: rb,
+                    factor: rf,
                 },
             ) => {
-                if lhs_factor != rhs_factor {
+                if lf != rf {
                     return None;
                 }
-
-                if *lhs_factor == 0 {
+                if *lf == 0 {
                     return Some(true);
                 }
-
-                self.compare_linear(lhs_base, rhs_base)
+                self.compare_linear(lb, rb)
             }
 
             (FreshPerCall, FreshPerCall) => Some(false),
 
-            (Opaque, _) | (_, Opaque) => None,
+            // Different Opaque ids are unknown whether equal
+            (Opaque(_), _) | (_, Opaque(_)) => None,
 
             (Sum(a1, b1), Sum(a2, b2)) => {
                 match (self.compare_linear(a1, a2), self.compare_linear(b1, b2)) {
@@ -269,7 +318,23 @@ impl AliasReasoner {
                 }
             }
 
+            (Offset { .. }, _) | (_, Offset { .. }) => {
+                let (lhs_base, lhs_off) = Self::decompose_offset(lhs);
+                let (rhs_base, rhs_off) = Self::decompose_offset(rhs);
+                match self.compare_linear(lhs_base, rhs_base) {
+                    Some(true) => Some(lhs_off == rhs_off),
+                    Some(false) | None => None,
+                }
+            }
+
             _ => self.constraint_verdict(lhs, rhs),
+        }
+    }
+
+    fn decompose_offset(bound: &Bound) -> (&Bound, i64) {
+        match bound {
+            Bound::Offset { base, offset } => (base.as_ref(), *offset),
+            other => (other, 0),
         }
     }
 

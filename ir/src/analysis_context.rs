@@ -79,8 +79,8 @@ impl<'a, 'bump> IndexDisjointCtx<'a, 'bump> {
 
                 MethodAnalysisState::InProgress => MethodSummary {
                     returned_region: Interval {
-                        lower: Bound::Opaque,
-                        upper: Bound::Opaque,
+                        lower: Bound::Opaque(0),
+                        upper: Bound::Opaque(0),
                     },
                     fresh_per_call: false,
                 },
@@ -118,8 +118,8 @@ impl<'a, 'bump> IndexDisjointCtx<'a, 'bump> {
         let Some(HirStmt::Block { body }) = method.body else {
             return MethodSummary {
                 returned_region: Interval {
-                    lower: Bound::Opaque,
-                    upper: Bound::Opaque,
+                    lower: Bound::Opaque(0),
+                    upper: Bound::Opaque(0),
                 },
                 fresh_per_call: false,
             };
@@ -133,8 +133,8 @@ impl<'a, 'bump> IndexDisjointCtx<'a, 'bump> {
     fn opaque_summary() -> MethodSummary {
         MethodSummary {
             returned_region: Interval {
-                lower: Bound::Opaque,
-                upper: Bound::Opaque,
+                lower: Bound::Opaque(0),
+                upper: Bound::Opaque(0),
             },
             fresh_per_call: false,
         }
@@ -280,8 +280,8 @@ impl<'a, 'bump> IndexDisjointCtx<'a, 'bump> {
                     }
                 } else {
                     Interval {
-                        lower: Bound::Opaque,
-                        upper: Bound::Opaque,
+                        lower: Bound::Opaque(0),
+                        upper: Bound::Opaque(0),
                     }
                 }
             }
@@ -327,8 +327,8 @@ impl<'a, 'bump> IndexDisjointCtx<'a, 'bump> {
                     },
 
                     _ => Interval {
-                        lower: Bound::Opaque,
-                        upper: Bound::Opaque,
+                        lower: Bound::Opaque(0),
+                        upper: Bound::Opaque(0),
                     },
                 }
             }
@@ -344,8 +344,8 @@ impl<'a, 'bump> IndexDisjointCtx<'a, 'bump> {
             } => {
                 let Some(func) = resolve(*name) else {
                     return Interval {
-                        lower: Bound::Opaque,
-                        upper: Bound::Opaque,
+                        lower: Bound::Opaque(0),
+                        upper: Bound::Opaque(0),
                     };
                 };
 
@@ -367,8 +367,8 @@ impl<'a, 'bump> IndexDisjointCtx<'a, 'bump> {
                         if let HirParam::Normal { name, .. } = param {
                             let Some(arg) = arg_iter.next() else {
                                 return Interval {
-                                    lower: Bound::Opaque,
-                                    upper: Bound::Opaque,
+                                    lower: Bound::Opaque(0),
+                                    upper: Bound::Opaque(0),
                                 };
                             };
 
@@ -382,13 +382,13 @@ impl<'a, 'bump> IndexDisjointCtx<'a, 'bump> {
             }
 
             HirExpr::Call { .. } => Interval {
-                lower: Bound::Opaque,
-                upper: Bound::Opaque,
+                lower: Bound::Opaque(0),
+                upper: Bound::Opaque(0),
             },
 
             _ => Interval {
-                lower: Bound::Opaque,
-                upper: Bound::Opaque,
+                lower: Bound::Opaque(0),
+                upper: Bound::Opaque(0),
             },
         }
     }
@@ -430,7 +430,7 @@ impl<'a, 'bump> IndexDisjointCtx<'a, 'bump> {
 
             Bound::SelfField(_) => bound.clone(),
             Bound::FreshPerCall => bound.clone(),
-            Bound::Opaque => bound.clone(),
+            Bound::Opaque(_) => bound.clone(),
 
             Bound::Offset { base, offset } => Bound::Offset {
                 base: Box::new(Self::substitute_lower(base, subst)),
@@ -474,7 +474,7 @@ impl<'a, 'bump> IndexDisjointCtx<'a, 'bump> {
 
             Bound::SelfField(_) => bound.clone(),
             Bound::FreshPerCall => bound.clone(),
-            Bound::Opaque => bound.clone(),
+            Bound::Opaque(_) => bound.clone(),
 
             Bound::Offset { base, offset } => Bound::Offset {
                 base: Box::new(Self::substitute_upper(base, subst)),
@@ -704,7 +704,7 @@ impl<'a, 'bump> CopyAnalysisCtx<'a, 'bump> {
 
             HirType::Nullable(inner) => self.type_is_copy(inner),
 
-            HirType::Struct(name, _) => self
+            HirType::Struct { name, .. } => self
                 .is_copy
                 .get(name)
                 .copied()
@@ -725,6 +725,8 @@ impl<'a, 'bump> CopyAnalysisCtx<'a, 'bump> {
             // A kind of reference to an array of compile-time-unknown length, known to be able to store multiple elements
             HirType::Slice(_) => true,
             HirType::OwnedPointer(_) => false,
+            HirType::Usize => true,
+            HirType::Isize => true,
         }
     }
 
