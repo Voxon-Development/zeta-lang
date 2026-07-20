@@ -3,7 +3,9 @@ use crate::midend::ir::block_data::CurrentBlockData;
 use crate::optimized_string_buffering;
 use codex_dependency_graph::DepGraph;
 use core::panic;
-use ir::hir::{AssignmentOperator, HirExpr, HirFieldInit, HirStruct, HirType, Operator, StrId};
+use ir::hir::{
+    AssignmentOperator, HirExpr, HirFieldInit, HirStmt, HirStruct, HirType, Operator, StrId,
+};
 use ir::ir_conversion::{assign_op_to_bin_op, lower_operator_bin, lower_type_hir};
 use ir::ir_hasher::{FxHashBuilder, HashSet};
 use ir::layout::TargetInfo;
@@ -18,8 +20,8 @@ use zetaruntime::string_pool::StringPool;
 /// MIR Expr Lowerer, which converts HIR expressions to MIR expressions.
 /// MIR is similar to a higher level representation of assembly which can be optimized in Zeta specific ways.
 /// If we are here this means we passed all type safety, memory safety and semantic checks, and we can safely discard of stuff and all debug like span's
-pub struct MirExprLowerer<'el, 'a, 'cx, 'bump> {
-    pub current_block_data: &'el mut CurrentBlockData,
+pub struct MirExprLowerer<'el, 'f, 'a, 'cx, 'bump> {
+    pub current_block_data: &'el mut CurrentBlockData<'f>,
     pub var_map: &'el mut HashMap<StrId, Value, FxHashBuilder>,
     pub context: Arc<StringPool>,
     phantom_data: PhantomData<&'bump ()>,
@@ -45,13 +47,13 @@ pub struct MirExprLowerer<'el, 'a, 'cx, 'bump> {
     pub interface_methods: &'a HashMap<StrId, Vec<(StrId, Vec<SsaType>, SsaType)>, FxHashBuilder>,
 }
 
-impl<'el, 'a, 'cx, 'bump> MirExprLowerer<'el, 'a, 'cx, 'bump>
+impl<'el, 'f, 'a, 'cx, 'bump> MirExprLowerer<'el, 'f, 'a, 'cx, 'bump>
 where
     'bump: 'a,
 {
     #[inline(always)]
     pub fn new(
-        current_block_data: &'el mut CurrentBlockData,
+        current_block_data: &'el mut CurrentBlockData<'f>,
         funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
         global_funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
         var_map: &'el mut HashMap<StrId, Value, FxHashBuilder>,
@@ -312,9 +314,9 @@ where
 
             HirExpr::This { .. } => {
                 let this_name = StrId(self.context.intern("this"));
-                *self.var_map.get(&this_name).unwrap_or_else(|| {
-                    panic!("`this` referenced but not found in var_map, are we inside a method?")
-                })
+                let v = *self.var_map.get(&this_name).unwrap();
+
+                v
             }
             HirExpr::Ref { expr, .. } => {
                 let (addr, _pointee_ty) = self.lower_place_addr(expr);
@@ -404,7 +406,286 @@ where
 
                 v
             }
+            HirExpr::Intrinsic {
+                kind,
+                type_args,
+                args,
+                span: _,
+            } => {
+                use ir::hir::IntrinsicKind;
+                use ir::ssa_ir::IntrinsicOp;
+
+                match kind {
+                    IntrinsicKind::SizeOf | IntrinsicKind::AlignOf | IntrinsicKind::TypeName => {
+                        let query_ty = lower_type_hir(&type_args[0]);
+                        let op = match kind {
+                            IntrinsicKind::SizeOf => IntrinsicOp::SizeOf,
+                            IntrinsicKind::AlignOf => IntrinsicOp::AlignOf,
+                            IntrinsicKind::TypeName => IntrinsicOp::TypeName,
+                            _ => unreachable!(),
+                        };
+
+                        let dest = self.current_block_data.fresh_value();
+                        self.emit(Instruction::Intrinsic {
+                            dest: Some(dest),
+                            op,
+                            query_ty: Some(query_ty),
+                            args: SmallVec::new(),
+                        });
+
+                        let result_ty = match kind {
+                            IntrinsicKind::SizeOf | IntrinsicKind::AlignOf => SsaType::Usize,
+                            IntrinsicKind::TypeName => SsaType::String,
+                            _ => unreachable!(),
+                        };
+                        self.current_block_data.value_types.insert(dest, result_ty);
+                        dest
+                    }
+
+                    IntrinsicKind::AssertAlign => {
+                        let ptr_val = self.lower_expr(&args[0]);
+                        let align_val = self.lower_expr(&args[1]);
+
+                        // mask = align - 1; misaligned if (ptr & mask) != 0
+                        let one = self.current_block_data.fresh_value();
+                        self.emit(Instruction::Const {
+                            dest: one,
+                            ty: SsaType::Usize,
+                            value: Operand::ConstInt(1),
+                        });
+                        self.current_block_data
+                            .value_types
+                            .insert(one, SsaType::Usize);
+
+                        let mask = self.current_block_data.fresh_value();
+                        self.emit(Instruction::Binary {
+                            dest: mask,
+                            op: BinOp::Sub,
+                            left: Operand::Value(align_val),
+                            right: Operand::Value(one),
+                        });
+                        self.current_block_data
+                            .value_types
+                            .insert(mask, SsaType::Usize);
+
+                        let masked = self.current_block_data.fresh_value();
+                        self.emit(Instruction::Binary {
+                            dest: masked,
+                            op: BinOp::BitAnd,
+                            left: Operand::Value(ptr_val),
+                            right: Operand::Value(mask),
+                        });
+                        self.current_block_data
+                            .value_types
+                            .insert(masked, SsaType::Usize);
+
+                        let zero = self.current_block_data.fresh_value();
+                        self.emit(Instruction::Const {
+                            dest: zero,
+                            ty: SsaType::Usize,
+                            value: Operand::ConstInt(0),
+                        });
+                        self.current_block_data
+                            .value_types
+                            .insert(zero, SsaType::Usize);
+
+                        let is_misaligned = self.current_block_data.fresh_value();
+                        self.emit(Instruction::Binary {
+                            dest: is_misaligned,
+                            op: BinOp::Ne,
+                            left: Operand::Value(masked),
+                            right: Operand::Value(zero),
+                        });
+                        self.current_block_data
+                            .value_types
+                            .insert(is_misaligned, SsaType::Bool);
+
+                        let panic_bb = self.current_block_data.new_block();
+                        let cont_bb = self.current_block_data.new_block();
+
+                        self.emit(Instruction::Branch {
+                            cond: Operand::Value(is_misaligned),
+                            then_bb: panic_bb,
+                            else_bb: cont_bb,
+                        });
+
+                        self.current_block_data.switch_to(panic_bb);
+                        let msg = self.current_block_data.fresh_value();
+                        let msg_str = self.context.intern("alignment assertion failed");
+                        self.emit(Instruction::Const {
+                            dest: msg,
+                            ty: SsaType::String,
+                            value: Operand::ConstString(StrId(msg_str)),
+                        });
+                        self.current_block_data
+                            .value_types
+                            .insert(msg, SsaType::String);
+                        self.emit(Instruction::Panic {
+                            message: Operand::Value(msg),
+                        });
+
+                        self.current_block_data.switch_to(cont_bb);
+                        let dest = self.current_block_data.fresh_value();
+                        self.current_block_data
+                            .value_types
+                            .insert(dest, SsaType::Void);
+                        dest
+                    }
+                }
+            }
+            HirExpr::UnknownIntrinsic { .. } => unreachable!(),
+            HirExpr::If { if_stmt, span: _ } => {
+                let HirStmt::If {
+                    cond,
+                    then_block,
+                    else_block,
+                } = *if_stmt
+                else {
+                    unreachable!("HirExpr::If must always wrap HirStmt::If")
+                };
+                self.lower_if_expr(&cond, then_block, *else_block)
+            }
         }
+    }
+
+    fn lower_if_expr(
+        &mut self,
+        condition: &HirExpr<'a, 'bump>,
+        then_block: &[HirStmt<'a, 'bump>],
+        else_block: Option<&'bump HirStmt<'a, 'bump>>,
+    ) -> Value {
+        let cond = self.lower_expr(condition);
+
+        let then_bb = self.current_block_data.new_block();
+        let else_bb = self.current_block_data.new_block();
+        let merge_bb = self.current_block_data.new_block();
+
+        self.emit(Instruction::Branch {
+            cond: Operand::Value(cond),
+            then_bb,
+            else_bb,
+        });
+
+        // then
+        self.current_block_data.switch_to(then_bb);
+        let then_val = self.lower_block_value(then_block);
+        let then_end = self.current_block_data.current_block;
+        let then_terminated = self.block_terminated();
+        if !then_terminated {
+            self.emit(Instruction::Jump { target: merge_bb });
+        }
+
+        // else
+        self.current_block_data.switch_to(else_bb);
+        let else_val = match else_block {
+            Some(HirStmt::Block { body }) => self.lower_block_value(body),
+            Some(HirStmt::If {
+                cond: ec,
+                then_block: etb,
+                else_block: eeb,
+            }) => self.lower_if_expr(ec, etb, *eeb),
+            Some(other) => panic!(
+                "if-expression else-arm must be a block or else-if, found {:?}: \
+                 every path through an if used as an expression needs a value",
+                other
+            ),
+            None => panic!(
+                "if-expression used without an else arm; the type checker should \
+                 have caught this before MIR lowering"
+            ),
+        };
+        let else_end = self.current_block_data.current_block;
+        let else_terminated = self.block_terminated();
+        if !else_terminated {
+            self.emit(Instruction::Jump { target: merge_bb });
+        }
+
+        // both arms diverged, nothing reaches merge_bb, so there's no real value
+        if then_terminated && else_terminated {
+            return self.unreachable_value();
+        }
+
+        self.current_block_data.switch_to(merge_bb);
+
+        let result = self.current_block_data.fresh_value();
+        let mut incoming = SmallVec::new();
+        if !then_terminated {
+            incoming.push((then_end, then_val));
+        }
+        if !else_terminated {
+            incoming.push((else_end, else_val));
+        }
+        self.emit(Instruction::Phi {
+            dest: result,
+            incoming,
+        });
+
+        let ty = self
+            .value_type(if !then_terminated { then_val } else { else_val })
+            .cloned()
+            .unwrap_or(SsaType::Void);
+        self.current_block_data.value_types.insert(result, ty);
+
+        result
+    }
+
+    fn lower_block_value(&mut self, stmts: &[HirStmt<'a, 'bump>]) -> Value {
+        if stmts.is_empty() {
+            return self.unit_value();
+        }
+        let (last, rest) = stmts.split_last().unwrap();
+        for stmt in rest {
+            self.lower_block_stmt_for_effect(stmt);
+        }
+        match last {
+            HirStmt::Expr(e) => self.lower_expr(e),
+            other => {
+                self.lower_block_stmt_for_effect(other);
+                self.unit_value()
+            }
+        }
+    }
+
+    // TODO replace with real `lower_stmt` for highest reusability and flexibility
+    fn lower_block_stmt_for_effect(&mut self, stmt: &HirStmt<'a, 'bump>) {
+        match stmt {
+            HirStmt::Expr(e) => {
+                self.lower_expr(e);
+            }
+            HirStmt::Let { name, value, .. } => {
+                let v = self.lower_expr(value);
+                self.var_map.insert(*name, v);
+            }
+            other => panic!(
+                "lower_block_stmt_for_effect: {:?} inside an if-expression arm isn't \
+                 wired up yet, needs the real statement lowerer",
+                other
+            ),
+        }
+    }
+
+    fn block_terminated(&mut self) -> bool {
+        self.current_block_data
+            .bb()
+            .instructions
+            .last()
+            .map_or(false, |i| ir::ssa_ir::inst_is_terminator(i))
+    }
+
+    fn unit_value(&mut self) -> Value {
+        let v = self.current_block_data.fresh_value();
+        self.current_block_data.value_types.insert(v, SsaType::Void);
+        v
+    }
+
+    fn unreachable_value(&mut self) -> Value {
+        let v = self.current_block_data.fresh_value();
+        self.current_block_data.value_types.insert(v, SsaType::Void);
+        v
+    }
+
+    fn value_type(&self, v: Value) -> Option<&SsaType> {
+        self.current_block_data.value_types.get(&v)
     }
 
     fn lower_index_addr(
@@ -510,12 +791,30 @@ where
             return bare_name;
         }
 
-        optimized_string_buffering::build_module_scoped_name(
-            path,
-            member,
-            extra,
-            self.context.clone(),
-        )
+        match extra {
+            // Method call through a module-qualified class: `path::ClassName.method()`.
+            // Registration mangles as [ClassName, ...path] + method, so mirror that
+            // order here rather than passing class_name/method through as
+            // build_module_scoped_name's member/extra slots.
+            Some(method_name) => {
+                let mut segments: Vec<StrId> = Vec::with_capacity(path.len() + 1);
+                segments.push(member); // class name
+                segments.extend_from_slice(path);
+                optimized_string_buffering::build_module_scoped_name(
+                    &segments,
+                    method_name,
+                    None,
+                    self.context.clone(),
+                )
+            }
+            // Plain module-qualified free function/global: `path::name`.
+            None => optimized_string_buffering::build_module_scoped_name(
+                path,
+                member,
+                None,
+                self.context.clone(),
+            ),
+        }
     }
 
     fn lower_array_literal(&mut self, elements: &[HirExpr<'a, 'bump>]) -> Value {
@@ -1024,18 +1323,12 @@ where
         let cls_name = match self.current_block_data.value_types.get(&obj_val) {
             Some(SsaType::User(name, _)) => {
                 let resolved = self.context.resolve_string(name);
-                StrId(
-                    self.context
-                        .intern(resolved.split('_').next().unwrap_or(resolved)),
-                )
+                StrId(self.context.intern(resolved))
             }
             Some(SsaType::Pointer(inner)) => {
                 if let SsaType::User(name, _) = inner.as_ref() {
                     let resolved = self.context.resolve_string(name);
-                    StrId(
-                        self.context
-                            .intern(resolved.split('_').next().unwrap_or(resolved)),
-                    )
+                    StrId(self.context.intern(resolved))
                 } else {
                     panic!("FieldAccess through pointer to non-User type: {:?}", inner)
                 }
@@ -1125,6 +1418,7 @@ where
                 let param_types: Vec<SsaType> = self
                     .funcs
                     .get(fname)
+                    .or_else(|| self.global_funcs.get(fname))
                     .map(|f| f.params.iter().map(|(_, ty)| ty.clone()).collect())
                     .unwrap_or_default();
 
@@ -1149,6 +1443,7 @@ where
                 let ret_ty = self
                     .funcs
                     .get(fname)
+                    .or_else(|| self.global_funcs.get(fname))
                     .map(|f| f.ret_type.clone())
                     .unwrap_or_else(|| {
                         panic!(
@@ -1542,12 +1837,10 @@ where
 
     fn get_field_offset(&mut self, obj: &Value, field: StrId) -> usize {
         let cls_name = match self.current_block_data.value_types.get(obj) {
-            Some(SsaType::User(name, _)) => {
-                optimized_string_buffering::get_type(*name, self.context.clone())
-            }
+            Some(SsaType::User(name, _)) => *name,
             Some(SsaType::Pointer(inner)) => {
                 if let SsaType::User(name, _) = inner.as_ref() {
-                    optimized_string_buffering::get_type(*name, self.context.clone())
+                    *name
                 } else {
                     panic!("get_field_offset: pointer to non-User type: {:?}", inner)
                 }

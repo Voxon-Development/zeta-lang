@@ -5,7 +5,7 @@ use crate::midend::ir::expr_lowerer::MirExprLowerer;
 use codex_dependency_graph::DepGraph;
 use ir::hir::{
     DropKind, HirErrorHandlerPattern, HirExpr, HirFunc, HirParam, HirStmt, HirStruct, HirType,
-    StrId, ThisPassingKind,
+    StrId,
 };
 use ir::ir_conversion::lower_type_hir;
 use ir::ir_hasher::{FxHashBuilder, HashSet};
@@ -39,18 +39,11 @@ struct LoopCtx {
     scope_depth_at_entry: usize,
 }
 
-pub struct FunctionLowerer<'a, 'bump> {
-    current_block_data: CurrentBlockData,
+pub struct FunctionLowerer<'f, 'a, 'bump> {
+    current_block_data: CurrentBlockData<'f>,
     var_map: HashMap<StrId, Value, FxHashBuilder>,
     phantom_data: PhantomData<&'bump ()>,
-
-    /// Stack of enclosing loops, innermost last. `break`/`continue` jump to
-    /// the top entry's targets, and must also contribute a phi edge to the
-    /// corresponding join point (see `LoopCtx`) since they're extra
-    /// predecessors the loop-header/exit blocks don't otherwise know about.
     loop_stack: Vec<LoopCtx>,
-
-    // immutable metadata snapshots
     funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
     class_field_offsets: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
     class_method_slots: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
@@ -59,10 +52,8 @@ pub struct FunctionLowerer<'a, 'bump> {
     interface_id_map: &'a HashMap<StrId, usize, FxHashBuilder>,
     interface_method_slots: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
     classes: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
-
     enum_variant_tags: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
     context: Arc<StringPool>,
-
     extern_c_names: &'a HashSet<StrId>,
     pub dep_graph: &'a RefCell<DepGraph>,
     pub module_idx: usize,
@@ -74,11 +65,12 @@ pub struct FunctionLowerer<'a, 'bump> {
     pub interface_methods: &'a HashMap<StrId, Vec<(StrId, Vec<SsaType>, SsaType)>, FxHashBuilder>,
 }
 
-impl<'a, 'bump> FunctionLowerer<'a, 'bump>
+impl<'f, 'a, 'bump> FunctionLowerer<'f, 'a, 'bump>
 where
     'bump: 'a,
 {
     pub fn new(
+        function: &'f mut Function,
         hir_fn: &HirFunc<'a, 'bump>,
         funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
         global_funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
@@ -106,8 +98,8 @@ where
         interface_methods: &'a HashMap<StrId, Vec<(StrId, Vec<SsaType>, SsaType)>, FxHashBuilder>,
     ) -> Result<Self, std::alloc::AllocError> {
         Self::new_internal(
+            function,
             hir_fn,
-            None,
             funcs,
             global_funcs,
             class_field_offsets,
@@ -128,8 +120,8 @@ where
     }
 
     pub fn new_with_class(
+        function: &'f mut Function,
         hir_fn: &HirFunc<'a, 'bump>,
-        class_name: StrId,
         funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
         global_funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
         class_field_offsets: &'a HashMap<
@@ -156,8 +148,8 @@ where
         interface_methods: &'a HashMap<StrId, Vec<(StrId, Vec<SsaType>, SsaType)>, FxHashBuilder>,
     ) -> Result<Self, std::alloc::AllocError> {
         Self::new_internal(
+            function,
             hir_fn,
-            Some(class_name),
             funcs,
             global_funcs,
             class_field_offsets,
@@ -178,8 +170,8 @@ where
     }
 
     fn new_internal(
+        function: &'f mut Function,
         hir_fn: &HirFunc<'a, 'bump>,
-        class_context: Option<StrId>,
         funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
         global_funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
         class_field_offsets: &'a HashMap<
@@ -205,43 +197,47 @@ where
         glue_registry: &'a DropGlueRegistry,
         interface_methods: &'a HashMap<StrId, Vec<(StrId, Vec<SsaType>, SsaType)>, FxHashBuilder>,
     ) -> Result<Self, std::alloc::AllocError> {
-        let mut func: Function = Function {
-            name: hir_fn.name,
-            params: SmallVec::new(),
-            ret_type: lower_type_hir(hir_fn.return_type.as_ref().unwrap_or(&HirType::Void)),
-            blocks: SmallVec::new(),
-            value_types: HashMap::with_hasher(FxHashBuilder),
-            entry: BlockId(0),
-            function_metadata: hir_fn.function_metadata,
-        };
-
-        let mut next_value = 0usize;
-        let mut next_block = 0usize;
         let mut var_map = HashMap::with_hasher(FxHashBuilder);
         let mut value_types = HashMap::with_hasher(FxHashBuilder);
 
         if let Some(params) = hir_fn.params {
-            Self::insert_existing_params_with_class(
-                context.clone(),
-                &mut func,
-                &mut next_value,
-                &mut var_map,
-                &mut value_types,
-                params,
-                class_context,
+            assert_eq!(
+                params.len(),
+                function.params.len(),
+                "param count mismatch between HIR signature and pre-registered \
+                 Function for `{}`, Function::from_signature and this \
+                 constructor have gone out of sync on how params are counted",
+                hir_fn.name
             );
+
+            for (hir_param, &(value, ref ssa_ty)) in params.iter().zip(function.params.iter()) {
+                value_types.insert(value, ssa_ty.clone());
+                match hir_param {
+                    HirParam::This { .. } => {
+                        let name = StrId(context.intern("this"));
+                        var_map.insert(name, value);
+                    }
+                    HirParam::Normal { name, .. } => {
+                        var_map.insert(*name, value);
+                    }
+                }
+            }
         }
 
+        let next_value = function.params.len();
+        let mut next_block = 0usize;
+
+        function.blocks.clear();
         let entry_bb = BlockId(next_block);
         next_block += 1;
-        func.entry = entry_bb;
-        func.blocks.push(BasicBlock {
+        function.entry = entry_bb;
+        function.blocks.push(BasicBlock {
             id: entry_bb,
             instructions: Vec::new(),
         });
 
-        let current_block_data: CurrentBlockData =
-            CurrentBlockData::new(func, entry_bb, next_value, next_block, value_types);
+        let current_block_data: CurrentBlockData<'f> =
+            CurrentBlockData::new(function, entry_bb, next_value, next_block, value_types);
 
         Ok(Self {
             current_block_data,
@@ -263,59 +259,11 @@ where
             module_idx,
             return_type: hir_fn.return_type,
             global_funcs,
-            scope_stack: vec![DropScope { locals: Vec::new() }], // function-body scope
+            scope_stack: vec![DropScope { locals: Vec::new() }],
             drop_state: DropMoveState::default(),
             glue_registry,
             interface_methods,
         })
-    }
-
-    fn insert_existing_params_with_class(
-        context: Arc<StringPool>,
-        func: &mut Function,
-        next_value: &mut usize,
-        var_map: &mut HashMap<StrId, Value, FxHashBuilder>,
-        value_types: &mut HashMap<Value, SsaType, FxHashBuilder>,
-        params: &[HirParam],
-        _class_context: Option<StrId>,
-    ) {
-        for p in params {
-            let v = Value(*next_value);
-            *next_value += 1;
-
-            match *p {
-                HirParam::This { kind, span: _ } => {
-                    let name = StrId(context.intern("this"));
-                    // For ref/ptr passing kinds, `this` arrives as a pointer (i64 address).
-                    // For move/move-mut, it arrives as an inline struct value, but since our
-                    // ABI already passes structs as stack-allocated pointers everywhere, we
-                    // always use Pointer here. The difference is only semantic (mutability).
-                    // TODO: Reinvestigate this
-                    let inner_ty = if let Some(cn) = _class_context {
-                        SsaType::User(cn, vec![])
-                    } else {
-                        SsaType::Dyn
-                    };
-                    let ty = match kind {
-                        ThisPassingKind::Move | ThisPassingKind::MoveMut => inner_ty,
-                        _ => SsaType::Pointer(Box::new(inner_ty)),
-                    };
-                    func.params.push((v, ty.clone()));
-                    value_types.insert(v, ty);
-                    var_map.insert(name, v);
-                }
-                HirParam::Normal {
-                    name,
-                    param_type,
-                    span: _,
-                } => {
-                    let ty = lower_type_hir(&param_type);
-                    func.params.push((v, ty.clone()));
-                    value_types.insert(v, ty);
-                    var_map.insert(name, v);
-                }
-            }
-        }
     }
 
     pub(super) fn lower_body(&mut self, body: Option<HirStmt<'a, 'bump>>) {
@@ -359,6 +307,12 @@ where
 
     pub(super) fn lower_stmt(&mut self, stmt: &HirStmt<'a, 'bump>) {
         match stmt {
+            HirStmt::Panic { message, span: _ } => {
+                let msg_val = self.allow_lowering_expr(message);
+                self.emit(Instruction::Panic {
+                    message: Operand::Value(msg_val),
+                });
+            }
             HirStmt::Expr(expr) => {
                 let _ = self.allow_lowering_expr(expr);
             }
@@ -403,7 +357,10 @@ where
 
                 self.var_map.insert(name.clone(), val);
 
-                if let HirType::Struct(struct_name, _) = ty {
+                if let HirType::Struct {
+                    name: struct_name, ..
+                } = ty
+                {
                     if self.glue_registry.is_droppable(*struct_name) {
                         self.scope_stack.last_mut().unwrap().locals.push(DropLocal {
                             name: *name,
@@ -491,12 +448,24 @@ where
         let names: Vec<StrId> = self.var_map.keys().copied().collect();
         let mut phis = Vec::with_capacity(names.len());
         for name in names {
+            let old = self.var_map[&name];
+
+            let ty = self
+                .current_block_data
+                .value_type(old)
+                .expect("phi source should have a type")
+                .clone();
+
             let dest = self.current_block_data.fresh_value();
+
+            self.current_block_data.value_types.insert(dest, ty);
+
             let idx = self.current_block_data.bb().instructions.len();
             self.emit(Instruction::Phi {
                 dest,
                 incoming: SmallVec::new(),
             });
+
             self.var_map.insert(name, dest);
             phis.push((name, idx, dest));
         }
@@ -569,7 +538,15 @@ where
                     if entries.iter().all(|(_, v)| *v == first_val) {
                         merged.insert(name, first_val);
                     } else {
+                        let first_ty = self
+                            .current_block_data
+                            .value_type(first_val)
+                            .unwrap()
+                            .clone();
+
                         let dest = self.current_block_data.fresh_value();
+                        self.current_block_data.value_types.insert(dest, first_ty);
+
                         self.emit(Instruction::Phi {
                             dest,
                             incoming: entries.into_iter().collect(),
@@ -667,7 +644,7 @@ where
             then_bb: body_bb,
             else_bb: after_bb,
         });
-        // Snapshot before `open_join` (below) rewrites `var_map` to point at
+        // Snapshot before `open_join` rewrites `var_map` to point at
         // `after_bb`'s own phis.
         let header_vars = self.var_map.clone();
 
@@ -864,7 +841,7 @@ where
 
         for (i, (error_type, binding, body)) in branches.iter().enumerate() {
             let error_name = match error_type {
-                HirType::Struct(name, _) | HirType::Enum(name, _) => *name,
+                HirType::Struct { name, .. } | HirType::Enum(name, _) => *name,
                 other => panic!("catch branch type {:?} is not a nominal error type", other),
             };
             let arm_tag = *tags.get(&error_name).unwrap_or_else(|| {
@@ -1026,7 +1003,7 @@ where
             self.emit(Instruction::LoadField {
                 dest: tag,
                 base: Operand::Value(val),
-                offset: 0, // Nullable's tag is always at offset 0, per layout_of_ssa
+                offset: 0,
             });
             self.current_block_data.value_types.insert(tag, SsaType::U8);
 
@@ -1110,7 +1087,7 @@ where
         el.lower_expr(value)
     }
 
-    pub(super) fn finish(self) -> Function {
+    pub(super) fn finish(self) {
         self.current_block_data.finish()
     }
 
@@ -1187,7 +1164,11 @@ where
                             continue;
                         }
 
-                        let HirType::Struct(field_struct_name, _) = &field.field_type else {
+                        let HirType::Struct {
+                            name: field_struct_name,
+                            ..
+                        } = &field.field_type
+                        else {
                             continue;
                         };
 
