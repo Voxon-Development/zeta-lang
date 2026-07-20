@@ -1,11 +1,13 @@
-use ir::errors::reporter::{CompilerError, ErrorReporter};
+use ir::{
+    errors::reporter::{CompilerError, ErrorReporter},
+    ir_hasher::HashMap,
+};
 use lsp_types::{Diagnostic, DiagnosticSeverity};
-use std::collections::HashMap;
 
 use crate::text_utils::span_to_range;
 
 pub fn group_by_file<'a>(reporter: &ErrorReporter<'a>) -> HashMap<String, Vec<Diagnostic>> {
-    let mut out: HashMap<String, Vec<Diagnostic>> = HashMap::new();
+    let mut out: HashMap<String, Vec<Diagnostic>> = HashMap::default();
 
     for err in &reporter.errors {
         let (file_name, message, line, column, end_line, end_column) = match err {

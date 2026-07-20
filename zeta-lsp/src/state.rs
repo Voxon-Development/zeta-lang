@@ -1,5 +1,6 @@
+use ir::ir_hasher::HashMap;
 use lsp_types::Uri;
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 use zeta_compiler_api::Compiler;
 
 pub struct Document {

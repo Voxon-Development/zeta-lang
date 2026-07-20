@@ -75,7 +75,7 @@ impl Chunk {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct GrowableAtomicBump<'bump> {
     head: AtomicPtr<Chunk>,
     base_capacity: usize,

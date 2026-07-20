@@ -1,7 +1,6 @@
 #![feature(allocator_api)]
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -13,6 +12,7 @@ use ir::analysis_context::CopyAnalysisCtx;
 use ir::ast::Stmt;
 use ir::errors::reporter::ErrorReporter;
 use ir::hir::{HirModule, StrId};
+use ir::ir_hasher::{HashMap, HashSet};
 use ir::registry::global_registry::GlobalRegistry;
 use scribe_parser::hir_lowerer::HirLowerer;
 use scribe_parser::hir_lowerer::lambda_hoisting::LambdaHoister;
@@ -46,7 +46,9 @@ pub struct Compiler<'a, 'bump> {
     next_module_idx: usize,
     stdlib_module_ids: HashSet<usize>,
     modules: HashMap<usize, ModuleWithArena<'a, 'bump>>,
-    hir_modules: HashMap<usize, HirModule<'a, 'bump>>,
+    hir_modules: HashMap<usize, HirModule<'a, 'bump>>, // pre-monomorphization
+    codegen_hir_modules: HashMap<usize, HirModule<'a, 'bump>>, // post-monomorphization
+    loaded_sources: HashMap<String, String>,
 }
 
 impl<'a, 'bump> Compiler<'a, 'bump>
@@ -94,11 +96,13 @@ where
             lowerer_bump,
             type_checker,
             cpy_ctx,
-            module_ids: HashMap::new(),
+            module_ids: HashMap::default(),
             next_module_idx: 0,
-            stdlib_module_ids: HashSet::new(),
-            modules: HashMap::new(),
-            hir_modules: HashMap::new(),
+            stdlib_module_ids: HashSet::default(),
+            modules: HashMap::default(),
+            hir_modules: HashMap::default(),
+            codegen_hir_modules: HashMap::default(),
+            loaded_sources: HashMap::default(),
         })
     }
 
@@ -169,7 +173,7 @@ where
         let compilation_order = self.dep_graph.borrow().get_module_compilation_order();
 
         let ordered_hir: Vec<HirModule<'a, 'bump>> = (0..self.next_module_idx)
-            .filter_map(|i| self.hir_modules.get(&i).copied())
+            .filter_map(|i| self.codegen_hir_modules.get(&i).copied())
             .collect();
 
         let mut backend: CraneliftBackend =
@@ -225,7 +229,7 @@ where
         let canonical_name = StrId(self.pool.intern(file_stem));
         let module_idx = self.module_idx_for(canonical_name);
 
-        let mut reporter = ErrorReporter::new();
+        let mut reporter = self.make_reporter();
 
         let parsed = match crate::file_handling::parse_single_file_from_source(
             self.pool.clone(),
@@ -345,6 +349,16 @@ where
         Ok(reporter)
     }
 
+    fn make_reporter(&self) -> ErrorReporter<'a> {
+        let mut reporter = ErrorReporter::new();
+
+        for (path, source) in &self.loaded_sources {
+            reporter.add_source_file(path.clone(), source.clone());
+        }
+
+        reporter
+    }
+
     fn ingest_parsed_module(
         &mut self,
         name: &str,
@@ -354,7 +368,11 @@ where
         let canonical_name = StrId(self.pool.intern(name));
         let module_idx = self.module_idx_for(canonical_name);
 
-        let mut reporter = ErrorReporter::new();
+        self.loaded_sources.insert(
+            parsed.path.to_string_lossy().to_string(),
+            parsed.source.to_string(),
+        );
+        let mut reporter = self.make_reporter();
         for perr in &parsed.parser_diagnostics.errors {
             reporter.add_parser_error(perr.clone());
         }
@@ -372,6 +390,17 @@ where
             stmt_vec.push(*stmt);
         }
 
+        let ast_module = codex_dependency_graph::dep_graph::AstModule {
+            name: canonical_name,
+            path: parsed.path.clone(),
+            stmts: parsed.stmts,
+        };
+
+        // Register this module's import edges FIRST, so lower_module can see them.
+        self.dep_graph
+            .borrow_mut()
+            .update_module_items(module_idx, &ast_module, &self.pool);
+
         let mut lowerer = HirLowerer::new(
             self.pool.clone(),
             parsed.bump.clone(),
@@ -379,21 +408,9 @@ where
             self.registry.clone(),
         );
         let hir = lowerer.lower_module(stmt_vec, module_idx);
-
-        let ast_module = codex_dependency_graph::dep_graph::AstModule {
-            name: canonical_name,
-            path: parsed.path.clone(),
-            stmts: parsed.stmts,
-        };
+        self.hir_modules.insert(module_idx, hir);
 
         let importers = { self.dep_graph.borrow().get_module_importers(module_idx) };
-
-        {
-            self.dep_graph
-                .borrow_mut()
-                .update_module_items(module_idx, &ast_module, &self.pool);
-        }
-
         for imp_idx in importers {
             if let Some(imp_module) = self.modules.get(&imp_idx) {
                 let imp_ast = codex_dependency_graph::dep_graph::AstModule {
@@ -446,30 +463,39 @@ where
         self.cpy_ctx.borrow_mut().recompute(&updated);
 
         {
-            let mut checker = self.type_checker.borrow_mut();
-            for &m in &invalidation_set {
-                if let Some(hir) = self.hir_modules.get(&m) {
-                    checker.check_module_body(hir, m);
+            {
+                let mut checker = self.type_checker.borrow_mut();
+                for &m in &invalidation_set {
+                    if let Some(hir) = self.hir_modules.get(&m) {
+                        checker.check_module_body(hir, m);
+                    }
                 }
             }
-            for err in checker.errors() {
-                reporter.add_type_error(err.clone());
+            let mut checker = self.type_checker.borrow_mut();
+            for err in checker.take_errors() {
+                reporter.add_type_error(err);
             }
         }
 
-        let hoister = LambdaHoister::new(parsed.bump.clone(), self.pool.clone(), hir.name);
-        let hoisted_module = hoister.run(hir);
+        let checked_hir = self.hir_modules[&module_idx];
+
+        let hoister = LambdaHoister::new(parsed.bump.clone(), self.pool.clone(), checked_hir.name);
+        let hoisted_module = hoister.run(checked_hir);
 
         let monomorphizer = Monomorphizer::new(
             self.pool.clone(),
             parsed.bump.clone(),
             lowerer.ctx.functions.clone(),
             &lowerer.ctx,
+            self.registry.instantiated_functions.clone(),
+            self.registry.instantiated_classes.clone(),
+            self.registry.instantiated_class_origins.clone(),
         );
         let monomorphized_module = monomorphizer.run(hoisted_module);
 
         self.modules.insert(module_idx, parsed);
-        self.hir_modules.insert(module_idx, monomorphized_module);
+        self.codegen_hir_modules
+            .insert(module_idx, monomorphized_module);
         reporter
     }
 

@@ -12,3 +12,10 @@ zeta-compiler-api = { path = "../zeta-compiler-api"}
 sentinel-typechecker = { path = "../sentinel-typechecker"}
 ir = { path = "../ir"}
 url = "2.5.8"
+
+[profile.release]
+opt-level = 3
+debug = "line-tables-only"
+strip = "debuginfo"
+lto = "thin"
+codegen-units = 1

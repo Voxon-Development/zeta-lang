@@ -5,11 +5,10 @@ use emberforge_compiler::midend::ir::module_lowerer::MirModuleLowerer;
 use engraver_assembly_emit::backend::Backend;
 use engraver_assembly_emit::cranelift::cranelift_backend::CraneliftBackend;
 use ir::hir::{HirModule, StrId};
-use ir::ir_hasher::{FxHashBuilder, HashSet};
+use ir::ir_hasher::HashSet;
 use ir::registry::global_registry::GlobalRegistry;
-use ir::ssa_ir::{Function, Module};
+use ir::ssa_ir::Module;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -107,8 +106,7 @@ where
     'bump: 'a,
 {
     let file_name_str = path
-        .file_stem()
-        .and_then(|s| s.to_str())
+        .to_str()
         .ok_or_else(|| CompilerError::InvalidFileName(Vec::new()))?;
 
     let name = StrId(pool.intern(file_name_str));
@@ -171,34 +169,16 @@ pub(crate) fn emit_all<'a, 'bump>(
 ) where
     'bump: 'a,
 {
-    let len = hir_modules.len();
-
-    let mut global_funcs: HashMap<StrId, Function, FxHashBuilder> =
-        HashMap::with_hasher(FxHashBuilder);
-
     let glue_registry = DropGlueRegistry::new(&registry, pool.clone());
 
-    let funcs_snapshot = global_funcs.clone();
-    for &module_idx in compilation_order {
-        if module_idx < len {
-            let mir_module: Module = MirModuleLowerer::new(
-                pool.clone(),
-                extern_c_names.clone(),
-                dep_graph,
-                module_idx,
-                &funcs_snapshot,
-                &glue_registry,
-            )
-            .lower_module(hir_modules[module_idx]);
+    let mir_module: Module = MirModuleLowerer::new(
+        pool.clone(),
+        extern_c_names.clone(),
+        dep_graph,
+        0, // sentinel, it's overwritten
+        &glue_registry,
+    )
+    .lower_all_modules(hir_modules, compilation_order);
 
-            global_funcs.extend(mir_module.functions.iter().map(|(k, v)| (*k, v.clone())));
-
-            CraneliftBackend::emit_module(backend, &mir_module);
-        } else {
-            eprintln!(
-                "Warning: compilation order index {} is out of bounds (have {} modules)",
-                module_idx, len
-            );
-        }
-    }
+    CraneliftBackend::emit_module(backend, &mir_module);
 }

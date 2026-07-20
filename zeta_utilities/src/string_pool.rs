@@ -110,7 +110,7 @@ impl Hash for VmString {
 unsafe impl Send for VmString {}
 unsafe impl Sync for VmString {}
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct StringPool {
     data_buffer: GrowableAtomicBump<'static>,
     interned_strings: DashMap<u64, SmallVec<VmString, 2>, IdentityBuild>,

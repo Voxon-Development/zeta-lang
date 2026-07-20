@@ -339,7 +339,7 @@ fn completions_at(state: &ServerState, params: &CompletionParams) -> Vec<Complet
                 let (line, column) = to_span_coords(&source, position);
                 nearest_prior_occurrence(checker.occurrences(), module_idx, base, line, column)
                     .and_then(|ty| match strip_container(&ty) {
-                        HirType::Struct(name, _) => Some(name.to_string()),
+                        HirType::Struct { name, .. } => Some(name.to_string()),
                         _ => None,
                     })
             };
