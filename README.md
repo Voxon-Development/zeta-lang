@@ -5,7 +5,7 @@ Research systems programming language on concurrency and memory safety.
 ## Building from Source (Linux)
 
 Zeta ships two binaries you'll want on your `PATH`: the compiler CLI
-(`zetac`) and the language server (`zeta-lsp`, used by editor
+(`zeta-lang`) and the language server (`zeta-lsp`, used by editor
 integrations like the Zed extension).
 
 ### Prerequisites
@@ -18,7 +18,7 @@ integrations like the Zed extension).
 ```bash
 git clone https://github.com/Voxon-Development/zeta-lang.git
 cd zeta-lang
-cargo build --release --bin zetac
+cargo build --release --bin zeta-lang
 cargo build --release --bin zeta-lsp
 ```
 
@@ -26,7 +26,7 @@ cargo build --release --bin zeta-lsp
 
 This produces:
 
-target/release/zetac  
+target/release/zeta-lang  
 target/release/zeta-lsp
 
 ### 2. Install to your PATH
