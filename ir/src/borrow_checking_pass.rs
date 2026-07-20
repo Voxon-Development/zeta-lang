@@ -415,9 +415,6 @@ impl BorrowChecker {
         Ok(())
     }
 
-    /// Explicitly ends a loan.
-    ///
-    /// dataflow will usually call this automatically.
     pub fn end_loan(&mut self, loan: LoanId) {
         let Some(loan) = self.active_loans.remove(&loan) else {
             return;
@@ -537,7 +534,6 @@ impl BorrowChecker {
         let mut stack = vec![place];
 
         while let Some(current) = stack.pop() {
-            // Find child places.
             let children: Vec<_> = self
                 .places
                 .values()
@@ -547,7 +543,6 @@ impl BorrowChecker {
 
             stack.extend(children);
 
-            // End loans.
             let loans: Vec<_> = self
                 .active_loans
                 .values()
