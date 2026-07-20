@@ -4,8 +4,8 @@ use ir::ast::{
     ProvenancePathSegment, ProvenanceRoot, ThisParam, Type, TypeKind, Visibility,
 };
 use ir::errors::error::{DiagnosticError, ParseErrorKind};
-use ir::tokens::TokenKind;
 use ir::tokens::TokenKind::LBracket;
+use ir::tokens::{Cursor, TokenKind};
 use zetaruntime::bump::GrowableBump;
 
 impl<'a, 'bump> DescentParser<'a, 'bump>
@@ -264,46 +264,53 @@ where
     }
 
     pub(crate) fn parse_type(&mut self) -> Result<Type<'a, 'bump>, DiagnosticError<'a>> {
-        match self.cursor.peek() {
+        Self::parse_type_impl(&self.bump, &mut self.cursor)
+    }
+
+    pub fn parse_type_impl(
+        bump: &&'bump GrowableBump,
+        cursor: &mut Cursor<'a>,
+    ) -> Result<Type<'a, 'bump>, DiagnosticError<'a>> {
+        match cursor.peek() {
             TokenKind::LBracket => {
-                let kind = self.parse_bracket_type_kind()?;
-                let nullable = self.cursor.consume(TokenKind::Question);
+                let kind = Self::parse_bracket_type_kind_impl(bump, cursor)?;
+                let nullable = cursor.consume(TokenKind::Question);
                 return Ok(Type { kind, nullable });
             }
             TokenKind::BitAnd => {
-                self.cursor.advance();
+                cursor.advance();
 
-                let provenance = self.parse_optional_provenance()?;
+                let provenance = Self::parse_optional_provenance_impl(bump, cursor)?;
 
-                if self.cursor.peek() == LBracket {
-                    let kind = self.parse_bracket_type_kind()?;
+                if cursor.peek() == LBracket {
+                    let kind = Self::parse_bracket_type_kind_impl(bump, cursor)?;
                     if let TypeKind::UnsafePointer { .. } = kind {
                         todo!("Handle error when & and [*] are mixed together.")
                     }
 
-                    let nullable = self.cursor.consume(TokenKind::Question);
+                    let nullable = cursor.consume(TokenKind::Question);
 
                     return Ok(Type { kind, nullable });
                 } else {
-                    let mutability_state = if self.cursor.consume(TokenKind::Mut) {
+                    let mutability_state = if cursor.consume(TokenKind::Mut) {
                         MutabilityState::Mut
                     } else {
                         MutabilityState::Const
                     };
 
-                    let is_dyn = self.cursor.consume(TokenKind::Dyn);
+                    let is_dyn = cursor.consume(TokenKind::Dyn);
 
                     if is_dyn {
-                        let mut bounds = Vec::new_in(self.bump);
-                        bounds.push(self.parse_core_type()?);
-                        while self.cursor.consume(TokenKind::Add) {
-                            bounds.push(self.parse_core_type()?);
+                        let mut bounds = Vec::new_in(*bump);
+                        bounds.push(Self::parse_core_type_impl(bump, cursor)?);
+                        while cursor.consume(TokenKind::Add) {
+                            bounds.push(Self::parse_core_type_impl(bump, cursor)?);
                         }
                         return Ok(Type {
                             kind: TypeKind::Ref {
-                                inner: self.bump.alloc_value(Type {
+                                inner: bump.alloc_value(Type {
                                     kind: TypeKind::Dyn {
-                                        bounds: self.bump.alloc_slice_copy(&bounds),
+                                        bounds: bump.alloc_slice_copy(&bounds),
                                     },
                                     nullable: false,
                                 }),
@@ -315,12 +322,12 @@ where
                     }
 
                     // parse_core_type now handles `[` directly, so `&mut [4]i64` works.
-                    let inner = self.parse_core_type()?;
-                    let nullable = self.cursor.consume(TokenKind::Question);
+                    let inner = Self::parse_core_type_impl(bump, cursor)?;
+                    let nullable = cursor.consume(TokenKind::Question);
 
                     return Ok(Type {
                         kind: TypeKind::Ref {
-                            inner: self.bump.alloc_value_immutable(inner),
+                            inner: bump.alloc_value_immutable(inner),
                             mutability_state,
                             provenance,
                         },
@@ -331,28 +338,28 @@ where
             _ => {}
         }
 
-        let is_dyn = self.cursor.consume(TokenKind::Dyn);
+        let is_dyn = cursor.consume(TokenKind::Dyn);
 
         if is_dyn {
-            let mut bounds = Vec::new_in(self.bump);
+            let mut bounds = Vec::new_in(*bump);
 
-            bounds.push(self.parse_core_type()?);
+            bounds.push(Self::parse_core_type_impl(bump, cursor)?);
 
-            while self.cursor.consume(TokenKind::Add) {
-                bounds.push(self.parse_core_type()?);
+            while cursor.consume(TokenKind::Add) {
+                bounds.push(Self::parse_core_type_impl(bump, cursor)?);
             }
 
             return Ok(Type {
                 kind: TypeKind::Dyn {
-                    bounds: self.bump.alloc_slice_copy(&bounds),
+                    bounds: bump.alloc_slice_copy(&bounds),
                 },
                 nullable: false,
             });
         }
 
-        let mut ty = self.parse_core_type()?;
+        let mut ty = Self::parse_core_type_impl(bump, cursor)?;
 
-        if self.cursor.consume(TokenKind::Question) {
+        if cursor.consume(TokenKind::Question) {
             ty.nullable = true;
         }
 
@@ -360,19 +367,20 @@ where
     }
 
     /// Assumes `[` has already been consumed. Parses `]inner`, `N]inner`, or `*]mut/const inner`.
-    fn parse_bracket_type_kind_inner(
-        &mut self,
+    fn parse_bracket_type_kind_inner_impl(
+        bump: &&'bump GrowableBump,
+        cursor: &mut Cursor<'a>,
     ) -> Result<TypeKind<'a, 'bump>, DiagnosticError<'a>> {
-        let token = self.cursor.peek_token();
+        let token = cursor.peek_token();
 
         if token.kind == TokenKind::RBracket {
-            self.cursor.advance();
-            let inner = self.parse_core_type()?;
-            let inner_ref = self.bump.alloc_value(inner);
+            cursor.advance();
+            let inner = Self::parse_core_type_impl(bump, cursor)?;
+            let inner_ref = bump.alloc_value(inner);
             return Ok(TypeKind::Slice { inner: inner_ref });
         } else if token.kind == TokenKind::Number {
-            self.cursor.advance();
-            self.cursor.expect(TokenKind::RBracket)?;
+            cursor.advance();
+            cursor.expect(TokenKind::RBracket)?;
 
             // SAFETY: a token with kind TokenKind::Number always comes with text.
             let number_unparsed = unsafe { token.text.unwrap_unchecked() };
@@ -382,28 +390,28 @@ where
                         expected: TokenKind::Number,
                         found: token.kind,
                     },
-                    self.cursor.peek_token().span,
+                    cursor.peek_token().span,
                 )
             })?;
 
-            let inner = self.parse_core_type()?;
-            let inner_ref = self.bump.alloc_value(inner);
+            let inner = Self::parse_core_type_impl(bump, cursor)?;
+            let inner_ref = bump.alloc_value(inner);
             return Ok(TypeKind::Array {
                 inner: inner_ref,
                 length,
             });
         } else if token.kind == TokenKind::Mul {
-            self.cursor.advance(); // consume *
-            self.cursor.expect(TokenKind::RBracket)?; // consume ]
+            cursor.advance(); // consume *
+            cursor.expect(TokenKind::RBracket)?; // consume ]
 
-            let mutability_token = self.cursor.expect_or(TokenKind::Mut, TokenKind::Const)?;
+            let mutability_token = cursor.expect_or(TokenKind::Mut, TokenKind::Const)?;
             let mutability_state = match mutability_token.kind {
                 TokenKind::Mut => MutabilityState::Mut,
                 _ => MutabilityState::Const,
             };
 
-            let inner = self.parse_core_type()?;
-            let inner_ref = self.bump.alloc_value(inner);
+            let inner = Self::parse_core_type_impl(bump, cursor)?;
+            let inner_ref = bump.alloc_value(inner);
             return Ok(TypeKind::UnsafePointer {
                 inner: inner_ref,
                 mutability_state,
@@ -412,74 +420,79 @@ where
             return Err(DiagnosticError::new(
                 ParseErrorKind::UnexpectedToken {
                     expected: TokenKind::Mul,
-                    found: self.cursor.peek_token().kind,
+                    found: cursor.peek_token().kind,
                 },
-                self.cursor.peek_token().span,
+                cursor.peek_token().span,
             ));
         }
     }
 
-    fn parse_optional_provenance(
-        &mut self,
+    fn parse_optional_provenance_impl(
+        bump: &&'bump GrowableBump,
+        cursor: &mut Cursor<'a>,
     ) -> Result<Option<ProvenanceAnnotation<'bump>>, DiagnosticError<'a>> {
         // &self Player / &self.world Player
-        if self.cursor.peek() == TokenKind::This {
-            let save = self.cursor.pos();
-            self.cursor.advance();
+        if cursor.peek() == TokenKind::This {
+            let save = cursor.pos();
+            cursor.advance();
 
-            if self.cursor.consume(TokenKind::Dot) {
-                let (field, _) = self.cursor.expect_ident()?;
-                if self.starts_type() {
-                    let path = self
-                        .bump
-                        .alloc_slice_copy(&[ProvenancePathSegment::Field(field)]);
+            if cursor.consume(TokenKind::Dot) {
+                let (field, _) = cursor.expect_ident()?;
+                if Self::starts_type_impl(cursor) {
+                    let path = bump.alloc_slice_copy(&[ProvenancePathSegment::Field(field)]);
                     return Ok(Some(ProvenanceAnnotation {
                         root: ProvenanceRoot::ThisRoot,
                         path,
                     }));
                 }
-            } else if self.starts_type() {
+            } else if Self::starts_type_impl(cursor) {
                 return Ok(Some(ProvenanceAnnotation {
                     root: ProvenanceRoot::ThisRoot,
                     path: &[],
                 }));
             }
 
-            self.cursor.reset(save); // wasn't provenance, e.g. bare `&this` as a type
+            cursor.reset(save); // wasn't provenance, e.g. bare `&this` as a type
             return Ok(None);
         }
 
         // &world Player
-        if self.cursor.peek() == TokenKind::Ident {
-            let save = self.cursor.pos();
-            let (name, _) = self.cursor.expect_ident()?;
-            if self.starts_type() {
+        if cursor.peek() == TokenKind::Ident {
+            let save = cursor.pos();
+            let (name, _) = cursor.expect_ident()?;
+            if Self::starts_type_impl(cursor) {
                 return Ok(Some(ProvenanceAnnotation {
                     root: ProvenanceRoot::Var(name),
                     path: &[],
                 }));
             }
-            self.cursor.reset(save);
+            cursor.reset(save);
         }
 
         Ok(None)
     }
 
-    fn starts_type(&self) -> bool {
+    fn starts_type_impl(cursor: &Cursor<'a>) -> bool {
         matches!(
-            self.cursor.peek(),
+            cursor.peek(),
             TokenKind::Ident | TokenKind::This | TokenKind::LBracket
-        ) || self.cursor.peek().is_primitive_type()
+        ) || cursor.peek().is_primitive_type()
     }
 
     /// Consumes `[` itself, then delegates. Use this when `[` hasn't been consumed yet.
-    fn parse_bracket_type_kind(&mut self) -> Result<TypeKind<'a, 'bump>, DiagnosticError<'a>> {
-        self.cursor.expect(TokenKind::LBracket)?;
-        self.parse_bracket_type_kind_inner()
+    fn parse_bracket_type_kind_impl(
+        bump: &&'bump GrowableBump,
+        cursor: &mut Cursor<'a>,
+    ) -> Result<TypeKind<'a, 'bump>, DiagnosticError<'a>> {
+        cursor.expect(TokenKind::LBracket)?;
+        Self::parse_bracket_type_kind_inner_impl(bump, cursor)
     }
 
-    fn parse_core_type(&mut self) -> Result<Type<'a, 'bump>, DiagnosticError<'a>> {
-        let tok = self.cursor.bump();
+    fn parse_core_type_impl(
+        bump: &&'bump GrowableBump,
+        cursor: &mut Cursor<'a>,
+    ) -> Result<Type<'a, 'bump>, DiagnosticError<'a>> {
+        let tok = cursor.bump();
 
         let kind = match tok.kind {
             TokenKind::U8 => return Ok(Type::u8()),
@@ -492,6 +505,8 @@ where
             TokenKind::I32 => return Ok(Type::i32()),
             TokenKind::I64 => return Ok(Type::i64()),
             TokenKind::I128 => return Ok(Type::i128()),
+            TokenKind::Usize => return Ok(Type::usize()),
+            TokenKind::Isize => return Ok(Type::isize()),
             TokenKind::F32 => return Ok(Type::f32()),
             TokenKind::F64 => return Ok(Type::f64()),
             TokenKind::Boolean => return Ok(Type::boolean()),
@@ -504,17 +519,17 @@ where
 
             TokenKind::Underscore => return Ok(Type::infer()),
 
-            TokenKind::LBracket => self.parse_bracket_type_kind_inner()?,
+            TokenKind::LBracket => Self::parse_bracket_type_kind_inner_impl(bump, cursor)?,
 
             TokenKind::Mul => {
-                let mutability_token = self.cursor.expect_or(TokenKind::Mut, TokenKind::Const)?;
+                let mutability_token = cursor.expect_or(TokenKind::Mut, TokenKind::Const)?;
                 let mutability_state = match mutability_token.kind {
                     TokenKind::Mut => MutabilityState::Mut,
                     // I wish rust knew that only Mut and Const is possible here :(
                     _ => MutabilityState::Const,
                 };
-                let inner = self.parse_core_type()?;
-                let inner_ref = self.bump.alloc_value(inner);
+                let inner = Self::parse_core_type_impl(bump, cursor)?;
+                let inner_ref = bump.alloc_value(inner);
                 TypeKind::SafePointer {
                     inner: inner_ref,
                     mutability_state,
@@ -522,31 +537,31 @@ where
             }
 
             TokenKind::BitXor => {
-                let inner = self.parse_core_type()?;
-                let inner_ref = self.bump.alloc_value(inner);
+                let inner = Self::parse_core_type_impl(bump, cursor)?;
+                let inner_ref = bump.alloc_value(inner);
                 TypeKind::OwnedPointer { inner: inner_ref }
             }
 
             TokenKind::Func => {
-                self.cursor.expect(TokenKind::LParen)?;
+                cursor.expect(TokenKind::LParen)?;
                 let mut params: Vec<Type<'a, 'bump>> = Vec::new();
-                while self.cursor.peek() != TokenKind::RParen {
-                    params.push(self.parse_type()?);
-                    if self.cursor.peek() == TokenKind::Comma {
-                        self.cursor.advance();
+                while cursor.peek() != TokenKind::RParen {
+                    params.push(Self::parse_type_impl(bump, cursor)?);
+                    if cursor.peek() == TokenKind::Comma {
+                        cursor.advance();
                     }
                 }
-                self.cursor.expect(TokenKind::RParen)?;
+                cursor.expect(TokenKind::RParen)?;
 
-                let return_type = if self.cursor.peek() == TokenKind::Arrow {
-                    self.cursor.advance();
-                    self.parse_core_type()?
+                let return_type = if cursor.peek() == TokenKind::Arrow {
+                    cursor.advance();
+                    Self::parse_core_type_impl(bump, cursor)?
                 } else {
                     Type::void()
                 };
 
-                let params_bump = self.bump.alloc_slice(&params);
-                let ret_ref = self.bump.alloc_value(return_type);
+                let params_bump = bump.alloc_slice(&params);
+                let ret_ref = bump.alloc_value(return_type);
                 TypeKind::Lambda {
                     params: params_bump,
                     return_type: ret_ref,
@@ -557,6 +572,31 @@ where
                 let name = tok
                     .text
                     .ok_or_else(|| DiagnosticError::new(ParseErrorKind::EmptyIdent, tok.span))?;
+
+                let mut path = Vec::new();
+                let mut name = name;
+
+                while cursor.peek() == TokenKind::ColonColon {
+                    cursor.advance(); // ::
+
+                    path.push(name);
+
+                    let tok = cursor.expect(TokenKind::Ident)?;
+                    name = tok.text.ok_or_else(|| {
+                        DiagnosticError::new(ParseErrorKind::EmptyIdent, tok.span)
+                    })?;
+                }
+
+                if cursor.peek() == TokenKind::Dot {
+                    cursor.advance();
+
+                    let tok = cursor.expect(TokenKind::Ident)?;
+                    name = tok.text.ok_or_else(|| {
+                        DiagnosticError::new(ParseErrorKind::EmptyIdent, tok.span)
+                    })?;
+                }
+
+                let path = bump.alloc_slice(&path);
 
                 match name.as_str() {
                     "void" => return Ok(Type::void()),
@@ -579,21 +619,21 @@ where
                     _ => {}
                 }
 
-                let generics = if self.cursor.peek() == TokenKind::Lt {
-                    self.cursor.advance();
+                let generics = if cursor.peek() == TokenKind::Lt {
+                    cursor.advance();
                     let mut args: Vec<Type<'a, 'bump>> = Vec::new();
                     loop {
-                        args.push(self.parse_type()?);
-                        match self.cursor.peek() {
+                        args.push(Self::parse_type_impl(bump, cursor)?);
+                        match cursor.peek() {
                             TokenKind::Comma => {
-                                self.cursor.advance();
+                                cursor.advance();
                             }
                             TokenKind::Gt => {
-                                self.cursor.advance();
+                                cursor.advance();
                                 break;
                             }
                             _ => {
-                                let t = self.cursor.peek_token();
+                                let t = cursor.peek_token();
                                 return Err(DiagnosticError::new(
                                     ParseErrorKind::UnexpectedToken {
                                         expected: TokenKind::Gt,
@@ -604,12 +644,16 @@ where
                             }
                         }
                     }
-                    self.bump.alloc_slice(&args)
+                    bump.alloc_slice(&args)
                 } else {
-                    self.bump.alloc_slice(&[])
+                    bump.alloc_slice(&[])
                 };
 
-                TypeKind::Struct { name, generics }
+                TypeKind::Struct {
+                    name,
+                    path,
+                    generics,
+                }
             }
 
             _ => {
