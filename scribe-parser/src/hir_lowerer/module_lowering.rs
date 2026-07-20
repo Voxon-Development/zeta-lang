@@ -16,17 +16,29 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         module_idx: usize,
     ) -> HirModule<'a, 'bump> {
         self.ctx.module_idx = module_idx;
-        // Register all modules this file imports so expression lowering
-        // can resolve module-qualified paths.
-        let imported_idxs = self.ctx.dep_graph.borrow().get_module_imports(module_idx);
-        for imp_idx in imported_idxs {
-            if let Some(pkg) = self.ctx.dep_graph.borrow().get_module_package(imp_idx) {
-                let local_name = pkg.as_str().split("_").last().unwrap_or(pkg.as_str());
-                let local_id = StrId(self.ctx.context.intern(local_name));
-                self.ctx
-                    .imported_modules
-                    .borrow_mut()
-                    .insert(local_id, imp_idx);
+
+        for stmt in &stmts {
+            if let Stmt::Import(import_stmt) = stmt {
+                let segments = import_stmt.path.path;
+                if let Some(target_idx) = self.ctx.dep_graph.borrow().resolve_module_path(segments)
+                {
+                    match import_stmt.path.member {
+                        None => {
+                            if let Some(&local_name) = segments.last() {
+                                self.ctx
+                                    .imported_modules
+                                    .borrow_mut()
+                                    .insert(local_name, target_idx);
+                            }
+                        }
+                        Some(member) => {
+                            self.ctx
+                                .imported_modules
+                                .borrow_mut()
+                                .insert(member, target_idx);
+                        }
+                    }
+                }
             }
         }
 
@@ -37,6 +49,13 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             name: pkg_name.unwrap_or_else(|| StrId(self.ctx.context.intern("root"))),
             imports: self.ctx.bump.alloc_slice(&imports),
             items: self.ctx.bump.alloc_slice(&items),
+        }
+    }
+
+    pub fn struct_type_name_path(ty: &ir::ast::Type<'a, 'bump>) -> Option<(StrId, &'bump [StrId])> {
+        match ty.kind {
+            ir::ast::TypeKind::Struct { name, path, .. } => Some((name, path)),
+            _ => None,
         }
     }
 
@@ -66,31 +85,59 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 let Some(methods) = interface_decl.methods else {
                     continue;
                 };
+
+                let iface_generics = interface_decl.generics.unwrap_or_default();
+                for g in iface_generics {
+                    self.add_generic_param(g.type_name);
+                }
+
                 for x in methods {
                     self.lower_func_as_proto(x, Some(interface_decl.name));
                 }
+
+                for g in iface_generics {
+                    self.remove_generic_param(g.type_name);
+                }
             }
             if let Stmt::ImplDecl(impl_decl) = stmt {
-                if let Some(iface) = impl_decl.interface {
+                let (target_name, target_path) = Self::struct_type_name_path(&impl_decl.target)
+                    .expect("impl target must be a named type");
+                let target_key = self.ctx.resolve_type_path_name(target_path, target_name);
+
+                if let Some(iface_ty) = impl_decl.interface {
+                    let (iface_name, iface_path) = Self::struct_type_name_path(&iface_ty)
+                        .expect("impl interface must be a named type");
+                    let iface_key = self.ctx.resolve_type_path_name(iface_path, iface_name);
+
                     self.ctx
                         .struct_interfaces
                         .borrow_mut()
-                        .entry(impl_decl.target)
+                        .entry(target_key)
                         .or_insert_with(Vec::new)
-                        .push(iface);
+                        .push(iface_key);
                 }
 
                 let Some(methods) = impl_decl.methods else {
                     continue;
                 };
+
+                let impl_generics = impl_decl.generics.unwrap_or_default();
+                for g in impl_generics {
+                    self.add_generic_param(g.type_name);
+                }
+
                 for x in methods {
-                    let hir_func = self.lower_func_as_proto(x, Some(impl_decl.target));
+                    let hir_func = self.lower_func_as_proto(x, Some(target_name));
                     self.ctx
                         .struct_methods
                         .borrow_mut()
-                        .entry(impl_decl.target)
+                        .entry(target_key)
                         .or_insert_with(FxHashMap::default)
                         .insert(hir_func.unmangled_name, hir_func.name);
+                }
+
+                for g in impl_generics {
+                    self.remove_generic_param(g.type_name);
                 }
             }
             if let Stmt::Module(module_decl) = stmt {
@@ -122,6 +169,8 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             function_metadata: proto.function_metadata,
             generics: None,
             unmangled_name: proto.unmangled_name,
+            declaring_module_idx: self.ctx.module_idx,
+            impl_target: class_name,
         };
 
         self.ctx.functions.borrow_mut().insert(proto.name, hir_func);
@@ -262,11 +311,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             params,
             return_type,
             function_metadata: f.function_metadata,
-            generics: if f.generics.is_none() {
-                None
-            } else {
-                self.lower_generics_slice(f.generics.unwrap())
-            },
+            generics: None,
             unmangled_name: f.name,
         };
 
