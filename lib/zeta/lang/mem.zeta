@@ -1,9 +1,0 @@
-package zeta.lang
-
-inline func size_of<T>(): usize {
-    intrinsics::sizeof<T>()
-}
-
-inline func align_of<T>(): usize {
-    intrinsics::alignof<T>()
-}
