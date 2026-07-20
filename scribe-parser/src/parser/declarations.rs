@@ -13,7 +13,7 @@ where
 {
     /// Parse a struct declaration
     /// ```rs
-    /// pub struct Point<T> {
+    /// public struct Point<T> {
     ///     x: i32,
     ///     y: i32,
     /// }
@@ -111,13 +111,13 @@ where
     /// Parse an impl block
     /// ```rs
     /// impl Point {
-    ///     fn new(x: i32, y: i32) -> Point {
+    ///     func new(x: i32, y: i32): Point {
     ///         return Point { x, y };
     ///     }
     /// }
     ///
-    /// impl Drawable by Point {
-    ///     fn draw(&this) { ... }
+    /// impl Point by Drawable {
+    ///     func draw(&this) { ... }
     /// }
     /// ```
     pub fn parse_impl_decl(
@@ -133,11 +133,12 @@ where
             None
         };
 
-        let (target, _span) = self.cursor.expect_ident()?;
+        let target = self.parse_type()?;
 
         let interface = if self.cursor.peek() == TokenKind::By {
             self.cursor.advance();
-            let (trait_name, _) = self.cursor.expect_ident()?;
+            let trait_name = self.parse_type()?;
+
             Some(trait_name)
         } else {
             None
@@ -277,11 +278,11 @@ where
     /// Parse an interface declaration (like Rust trait)
     /// ```ignore
     /// interface Drawable {
-    ///     fn draw(&this);
+    ///     func draw(&this);
     /// }
     ///
     /// sealed interface SealedTrait permits A, B, C {
-    ///     fn method(&this);
+    ///     func method(&this);
     /// }
     /// ```
     pub fn parse_interface_decl(
