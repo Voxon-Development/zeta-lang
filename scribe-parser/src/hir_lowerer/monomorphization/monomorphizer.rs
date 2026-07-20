@@ -15,14 +15,19 @@ use zetaruntime::arena::GrowableAtomicBump;
 use zetaruntime::string_pool::StringPool;
 
 pub struct Monomorphizer<'a, 'bump, 'ctx> {
-    /// Maps (original_name, type_suffix) to instantiated function name
-    pub instantiated_functions: RefCell<FxHashMap<(StrId, StrId), StrId>>,
-    /// Maps (original_name, type_suffix) to instantiated class name
-    pub instantiated_classes: RefCell<FxHashMap<(StrId, StrId), StrId>>,
+    pub instantiated_functions: Rc<RefCell<FxHashMap<(StrId, StrId), StrId>>>,
+    pub instantiated_structs: Rc<RefCell<FxHashMap<(StrId, StrId), StrId>>>,
+    pub instantiated_struct_origins:
+        Rc<RefCell<FxHashMap<StrId, (StrId, Vec<HirType<'a, 'bump>>)>>>,
     functions: Rc<RefCell<FxHashMap<StrId, HirFunc<'a, 'bump>>>>,
     bump: Arc<GrowableAtomicBump<'bump>>,
     context: Arc<StringPool>,
     ctx: &'ctx LoweringCtx<'a, 'bump>,
+    /// Concrete type of `this` for whatever method body is currently being
+    /// walked. Set/restored around each specialization in
+    /// `resolve_method_for_type`. None outside a method body (free
+    /// functions, or a method that hasn't been receiver-resolved yet).
+    current_this: RefCell<Option<HirType<'a, 'bump>>>,
     _phantom: PhantomData<&'bump ()>,
 }
 
@@ -32,14 +37,21 @@ impl<'a, 'bump, 'ctx> Monomorphizer<'a, 'bump, 'ctx> {
         bump: Arc<GrowableAtomicBump<'bump>>,
         functions: Rc<RefCell<FxHashMap<StrId, HirFunc<'a, 'bump>>>>,
         ctx: &'ctx LoweringCtx<'a, 'bump>,
+        instantiated_functions: Rc<RefCell<FxHashMap<(StrId, StrId), StrId>>>,
+        instantiated_structs: Rc<RefCell<FxHashMap<(StrId, StrId), StrId>>>,
+        instantiated_struct_origins: Rc<
+            RefCell<FxHashMap<StrId, (StrId, Vec<HirType<'a, 'bump>>)>>,
+        >,
     ) -> Self {
         Self {
-            instantiated_functions: RefCell::new(FxHashMap::default()),
-            instantiated_classes: RefCell::new(FxHashMap::default()),
+            instantiated_functions,
+            instantiated_structs,
+            instantiated_struct_origins,
             functions,
             bump,
             context,
             ctx,
+            current_this: RefCell::new(None),
             _phantom: PhantomData,
         }
     }
@@ -63,17 +75,48 @@ impl<'a, 'bump, 'ctx> Monomorphizer<'a, 'bump, 'ctx> {
                     }
                     new_items.push(Hir::Func(self.bump.alloc_value_immutable(new_func)));
                 }
+                Hir::Impl(i) => {
+                    // Always walk method bodies with empty_subs at this stage, this
+                    // catches non-generic impls outright (ArrayList itself has no
+                    // concrete counterpart yet, but a `impl Point { .. }` block's
+                    // methods need this pass regardless), and for generic impls it
+                    // rewrites any nested generic calls inside the still-templated
+                    // body.
+                    // The template itself gets dropped by the retain filter
+                    // below, only requested instantiations (harvested next) survive.
+                    let mut new_impl = (*i).clone();
+                    if let Some(methods) = new_impl.methods {
+                        let new_methods: Vec<HirFunc> = methods
+                            .iter()
+                            .map(|m| {
+                                let mut nm = m.clone();
+                                if let Some(body) = nm.body {
+                                    let new_body = self.monomorphize_stmt(&body, &empty_subs);
+                                    nm.body = Some(*self.bump.alloc_value_immutable(new_body));
+                                }
+                                nm
+                            })
+                            .collect();
+                        new_impl.methods = Some(self.bump.alloc_slice(&new_methods));
+                    }
+                    new_items.push(Hir::Impl(self.bump.alloc_value_immutable(new_impl)));
+                }
                 other => new_items.push(*other),
             }
         }
 
         for new_name in self.instantiated_functions.borrow().values() {
-            if let Some(func) = self.functions.borrow().get(new_name) {
-                new_items.push(Hir::Func(self.bump.alloc_value_immutable(func.clone())));
+            match self.functions.borrow().get(new_name) {
+                Some(func) => {
+                    new_items.push(Hir::Func(self.bump.alloc_value_immutable(func.clone())));
+                }
+                None => {
+                    panic!("missing instantiated function {}", new_name);
+                }
             }
         }
 
-        for new_class_name in self.instantiated_classes.borrow().values() {
+        for new_class_name in self.instantiated_structs.borrow().values() {
             if let Some(new_struct) = self.ctx.classes.borrow().get(new_class_name) {
                 new_items.push(Hir::Struct(
                     self.bump.alloc_value_immutable(new_struct.clone()),
@@ -90,11 +133,100 @@ impl<'a, 'bump, 'ctx> Monomorphizer<'a, 'bump, 'ctx> {
             _ => true,
         });
 
-        HirModule {
+        let new_module = HirModule {
             name: module.name,
             imports: module.imports,
             items: self.bump.alloc_slice(&new_items),
+        };
+        new_module
+    }
+
+    fn concrete_type_of(&self, expr: &HirExpr<'a, 'bump>) -> Option<HirType<'a, 'bump>> {
+        match expr {
+            HirExpr::This { .. } => *self.current_this.borrow(),
+            HirExpr::Ident(name, _) => self.ctx.variable_types.borrow().get(name).copied(),
+            _ => None, // anything else falls through unspecialized
+                       // rather than risk misresolving. We should extend this as real cases surface.
         }
+    }
+
+    fn resolve_method_for_type(
+        &self,
+        struct_ty: &HirType<'a, 'bump>,
+        method_name: StrId,
+    ) -> Option<StrId> {
+        let HirType::Struct {
+            name, type_args, ..
+        } = struct_ty
+        else {
+            return None;
+        };
+
+        if type_args.is_empty() {
+            // `name` might already be a concrete/instantiated class (e.g. ArrayList_Outer)
+            // rather than a true non-generic struct. struct_methods is keyed by the
+            // generic template name (ArrayList), so a direct lookup under the concrete
+            // name silently misses. Recover the template name + type_args and retry
+            // through the generic path below instead of returning None here.
+            if let Some((origin_name, origin_targs)) =
+                self.instantiated_struct_origins.borrow().get(name).cloned()
+            {
+                let targs_slice = self.bump.alloc_slice_immutable(&origin_targs);
+                let generic_ty = HirType::Struct {
+                    name: origin_name,
+                    field_types: &[],
+                    type_args: targs_slice,
+                };
+                return self.resolve_method_for_type(&generic_ty, method_name);
+            }
+
+            return self
+                .ctx
+                .struct_methods
+                .borrow()
+                .get(name)
+                .and_then(|m| m.get(&method_name))
+                .copied();
+        }
+
+        let instantiated = instantiate_class_for_types(
+            self.ctx,
+            &self.instantiated_structs,
+            &self.instantiated_struct_origins,
+            *name,
+            type_args,
+            self.bump.clone(),
+        )?;
+        let concrete_name = instantiated.name;
+
+        let base_method_name = *self
+            .ctx
+            .struct_methods
+            .borrow()
+            .get(name)?
+            .get(&method_name)?;
+        let base_func = self.functions.borrow().get(&base_method_name)?.clone();
+        let type_params = base_func.generics?;
+        if type_params.len() != type_args.len() {
+            return None;
+        }
+
+        let mut inner_subs: FxHashMap<StrId, HirType> = FxHashMap::default();
+        for (p, a) in type_params.iter().zip(type_args.iter()) {
+            inner_subs.insert(p.name, a.clone());
+        }
+
+        let field_types: Vec<HirType> = instantiated.fields.iter().map(|f| f.field_type).collect();
+        let concrete_recv_ty = HirType::Struct {
+            name: concrete_name,
+            field_types: self.bump.alloc_slice_immutable(&field_types),
+            type_args: &[],
+        };
+
+        let prev_self = self.current_this.replace(Some(concrete_recv_ty));
+        let result = self.monomorphize_function(&base_func, &inner_subs);
+        self.current_this.replace(prev_self);
+        result
     }
 
     pub fn monomorphize_function<'subs>(
@@ -104,6 +236,13 @@ impl<'a, 'bump, 'ctx> Monomorphizer<'a, 'bump, 'ctx> {
     ) -> Option<StrId> {
         let mut new_func = func.clone();
         self.apply_substitutions_to_func(&mut new_func, substitutions);
+
+        if new_func.impl_target.is_some() {
+            let cur_self = *self.current_this.borrow();
+            if let Some(HirType::Struct { name, .. }) = cur_self {
+                new_func.impl_target = Some(name);
+            }
+        }
 
         let suffix = suffix_for_subs(self.context.clone(), substitutions);
         let orig_name = new_func.name.clone();
@@ -145,6 +284,19 @@ impl<'a, 'bump, 'ctx> Monomorphizer<'a, 'bump, 'ctx> {
         Some(new_name)
     }
 
+    fn substitute_type_with_self(
+        &self,
+        ty: &HirType<'a, 'bump>,
+        subs: &FxHashMap<StrId, HirType<'a, 'bump>>,
+    ) -> HirType<'a, 'bump> {
+        if let HirType::This = ty {
+            if let Some(self_ty) = *self.current_this.borrow() {
+                return self_ty;
+            }
+        }
+        substitute_type(ty, subs, self.bump.clone())
+    }
+
     fn apply_substitutions_to_func<'subs>(
         &self,
         func: &mut HirFunc<'a, 'bump>,
@@ -153,8 +305,10 @@ impl<'a, 'bump, 'ctx> Monomorphizer<'a, 'bump, 'ctx> {
         self.apply_substitutions_to_params(func, substitutions);
 
         if let Some(ret) = &mut func.return_type {
-            *ret = substitute_type(ret, substitutions, self.bump.clone());
+            *ret = self.substitute_type_with_self(ret, substitutions);
         }
+
+        func.generics = None;
     }
 
     fn apply_substitutions_to_params<'subs>(
@@ -167,9 +321,7 @@ impl<'a, 'bump, 'ctx> Monomorphizer<'a, 'bump, 'ctx> {
                 func.params = None;
                 return;
             }
-
             let mut new_params: Vec<HirParam> = Vec::new();
-
             for param in params.iter() {
                 let new_param = match param {
                     HirParam::Normal {
@@ -178,7 +330,7 @@ impl<'a, 'bump, 'ctx> Monomorphizer<'a, 'bump, 'ctx> {
                         span,
                     } => HirParam::Normal {
                         name: *name,
-                        param_type: substitute_type(param_type, substitutions, self.bump.clone()),
+                        param_type: self.substitute_type_with_self(param_type, substitutions),
                         span: *span,
                     },
                     HirParam::This { kind, span } => HirParam::This {
@@ -188,7 +340,6 @@ impl<'a, 'bump, 'ctx> Monomorphizer<'a, 'bump, 'ctx> {
                 };
                 new_params.push(new_param);
             }
-
             func.params = Some(self.bump.alloc_slice_immutable(&new_params));
         }
     }
@@ -199,6 +350,13 @@ impl<'a, 'bump, 'ctx> Monomorphizer<'a, 'bump, 'ctx> {
         substitutions: &'subs HashMap<StrId, HirType<'a, 'bump>>,
     ) -> HirStmt<'a, 'bump> {
         match stmt {
+            HirStmt::Panic { message, span } => {
+                let new_msg = self.monomorphize_expr(message, substitutions);
+                HirStmt::Panic {
+                    message: self.bump.alloc_value_immutable(new_msg),
+                    span: *span,
+                }
+            }
             HirStmt::Block { body } => {
                 let new_body: Vec<HirStmt> = body
                     .iter()
@@ -247,7 +405,19 @@ impl<'a, 'bump, 'ctx> Monomorphizer<'a, 'bump, 'ctx> {
                 span,
             } => {
                 let new_ty = substitute_type(ty, substitutions, self.bump.clone());
-                let new_value = self.monomorphize_expr(value, substitutions);
+
+                // If this is `let x: Base<Concrete> = module::path::Base.assoc_fn(...)`,
+                // resolve the associated function using the binding's declared type args,
+                // since there's no receiver expr to read a concrete type from.
+                let new_value = self
+                    .try_monomorphize_assoc_call(value, &new_ty, substitutions)
+                    .unwrap_or_else(|| self.monomorphize_expr(value, substitutions));
+
+                // If new_ty names a still-generic base struct with concrete type_args,
+                // make sure the concrete struct itself gets instantiated too (mirrors
+                // what StructInit already does) so MIR sees ArrayList_Outer, not ArrayList.
+                let new_ty = self.instantiate_struct_ty_if_needed(new_ty);
+
                 HirStmt::Let {
                     name: *name,
                     ty: new_ty,
@@ -281,12 +451,164 @@ impl<'a, 'bump, 'ctx> Monomorphizer<'a, 'bump, 'ctx> {
         }
     }
 
+    fn try_monomorphize_assoc_call<'subs>(
+        &self,
+        value: &HirExpr<'a, 'bump>,
+        expected_ty: &HirType<'a, 'bump>,
+        outer_subs: &'subs HashMap<StrId, HirType<'a, 'bump>>,
+    ) -> Option<HirExpr<'a, 'bump>> {
+        let HirExpr::Call {
+            callee,
+            args,
+            type_args: None,
+            span,
+        } = value
+        else {
+            return None;
+        };
+        let HirExpr::ModuleAccess(acc) = &**callee else {
+            return None;
+        };
+        let HirType::Struct {
+            type_args: expected_targs,
+            ..
+        } = expected_ty
+        else {
+            return None;
+        };
+        if expected_targs.is_empty() {
+            return None;
+        }
+
+        let (&class_name, module_path) = acc.path.split_last()?;
+        let target_key = self.ctx.resolve_type_path_name(module_path, class_name);
+
+        let base_method_name = *self
+            .ctx
+            .struct_methods
+            .borrow()
+            .get(&target_key)?
+            .get(&acc.member)?;
+        let base_func = self.functions.borrow().get(&base_method_name)?.clone();
+        let type_params = base_func.generics?;
+        if type_params.len() != expected_targs.len() {
+            return None;
+        }
+
+        let mut inner_subs: FxHashMap<StrId, HirType> = FxHashMap::default();
+        for (p, a) in type_params.iter().zip(expected_targs.iter()) {
+            inner_subs.insert(p.name, substitute_type(a, outer_subs, self.bump.clone()));
+        }
+
+        let new_args: Vec<HirExpr> = args
+            .iter()
+            .map(|a| self.monomorphize_expr(a, outer_subs))
+            .collect();
+        let args_slice = self.bump.alloc_slice(&new_args);
+
+        // Resolve the concrete receiver class so monomorphize_function can rewrite
+        // impl_target (mirrors resolve_method_for_type's current_this handling).
+        let concrete_recv_ty = instantiate_class_for_types(
+            self.ctx,
+            &self.instantiated_structs,
+            &self.instantiated_struct_origins,
+            target_key,
+            expected_targs,
+            self.bump.clone(),
+        )
+        .map(|instantiated| {
+            let field_types: Vec<HirType> =
+                instantiated.fields.iter().map(|f| f.field_type).collect();
+            HirType::Struct {
+                name: instantiated.name,
+                field_types: self.bump.alloc_slice_immutable(&field_types),
+                type_args: &[],
+            }
+        });
+
+        let prev_self = self.current_this.replace(concrete_recv_ty);
+        let new_name = self.monomorphize_function(&base_func, &inner_subs);
+        self.current_this.replace(prev_self);
+        let new_name = new_name?;
+
+        Some(HirExpr::Call {
+            callee: self
+                .bump
+                .alloc_value_immutable(HirExpr::Ident(new_name, acc.span)),
+            args: args_slice,
+            type_args: None,
+            span: *span,
+        })
+    }
+
+    fn instantiate_struct_ty_if_needed(&self, ty: HirType<'a, 'bump>) -> HirType<'a, 'bump> {
+        let HirType::Struct {
+            name, type_args, ..
+        } = &ty
+        else {
+            return ty;
+        };
+        if type_args.is_empty() {
+            return ty;
+        }
+        let Some(new_struct) = instantiate_class_for_types(
+            self.ctx,
+            &self.instantiated_structs,
+            &self.instantiated_struct_origins,
+            *name,
+            type_args,
+            self.bump.clone(),
+        ) else {
+            return ty;
+        };
+
+        let field_types: Vec<HirType> = new_struct.fields.iter().map(|f| f.field_type).collect();
+        HirType::Struct {
+            name: new_struct.name,
+            field_types: self.bump.alloc_slice_immutable(&field_types),
+            type_args: &[],
+        }
+    }
+
     pub fn monomorphize_expr<'subs>(
         &self,
         expr: &HirExpr<'a, 'bump>,
         subs: &'subs HashMap<StrId, HirType<'a, 'bump>>,
     ) -> HirExpr<'a, 'bump> {
         match expr {
+            HirExpr::Cast {
+                expr,
+                target_type,
+                span,
+            } => HirExpr::Cast {
+                expr: self
+                    .bump
+                    .alloc_value_immutable(self.monomorphize_expr(expr, subs)),
+                target_type: self.substitute_type_with_self(target_type, subs),
+                span: *span,
+            },
+            HirExpr::Intrinsic {
+                kind,
+                type_args,
+                args,
+                span,
+            } => {
+                let new_type_args: Vec<HirType> = type_args
+                    .iter()
+                    .map(|t| self.substitute_type_with_self(t, subs))
+                    .collect();
+
+                let new_args: Vec<HirExpr> = args
+                    .iter()
+                    .map(|a| self.monomorphize_expr(a, subs))
+                    .collect();
+                HirExpr::Intrinsic {
+                    kind: *kind,
+                    type_args: self.bump.alloc_slice_immutable(&new_type_args),
+                    args: self.bump.alloc_slice(&new_args),
+                    span: *span,
+                }
+            }
             HirExpr::Call {
                 callee,
                 args,
@@ -335,6 +657,53 @@ impl<'a, 'bump, 'ctx> Monomorphizer<'a, 'bump, 'ctx> {
                             }
                         }
                     }
+                }
+
+                if let HirExpr::FieldAccess {
+                    object,
+                    field,
+                    span: fa_span,
+                } = &**callee
+                {
+                    let new_object = self.monomorphize_expr(object, subs);
+
+                    if let Some(concrete_recv_ty) = self.concrete_type_of(&new_object) {
+                        if matches!(concrete_recv_ty, HirType::Struct { .. }) {
+                            if let Some(concrete_method_name) =
+                                self.resolve_method_for_type(&concrete_recv_ty, *field)
+                            {
+                                let mut new_args: Vec<HirExpr> = Vec::with_capacity(args.len() + 1);
+                                new_args.push(new_object.clone());
+                                new_args
+                                    .extend(args.iter().map(|a| self.monomorphize_expr(a, subs)));
+                                let args_slice = self.bump.alloc_slice(&new_args);
+                                let new_callee = HirExpr::Ident(concrete_method_name, *fa_span);
+                                return HirExpr::Call {
+                                    callee: self.bump.alloc_value_immutable(new_callee),
+                                    args: args_slice,
+                                    type_args: None,
+                                    span: *span,
+                                };
+                            }
+                        }
+                    }
+
+                    let new_args: Vec<HirExpr> = args
+                        .iter()
+                        .map(|a| self.monomorphize_expr(a, subs))
+                        .collect();
+                    let args_slice = self.bump.alloc_slice(&new_args);
+                    let new_callee = HirExpr::FieldAccess {
+                        object: self.bump.alloc_value_immutable(new_object),
+                        field: *field,
+                        span: *fa_span,
+                    };
+                    return HirExpr::Call {
+                        callee: self.bump.alloc_value_immutable(new_callee),
+                        args: args_slice,
+                        type_args: *type_args,
+                        span: *span,
+                    };
                 }
 
                 let new_callee = self.monomorphize_expr(callee, subs);
@@ -397,7 +766,8 @@ impl<'a, 'bump, 'ctx> Monomorphizer<'a, 'bump, 'ctx> {
 
                     if let Some(new_struct) = instantiate_class_for_types(
                         self.ctx,
-                        self,
+                        &self.instantiated_structs.clone(),
+                        &&self.instantiated_struct_origins.clone(),
                         *struct_name,
                         &resolved_targs,
                         self.bump.clone(),

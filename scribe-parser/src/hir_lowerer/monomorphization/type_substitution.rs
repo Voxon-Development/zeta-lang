@@ -10,15 +10,41 @@ pub fn substitute_type<'a, 'subs, 'bump>(
 ) -> HirType<'a, 'bump> {
     match ty {
         HirType::Generic(name) => subs.get(name).copied().unwrap_or(*ty),
-        HirType::Struct(name, args) => {
-            if args.is_empty() {
-                HirType::Struct(*name, &[])
-            } else {
-                let new_args: Vec<HirType<'a, 'bump>> = args
-                    .iter()
-                    .map(|a| substitute_type(a, subs, bump.clone()))
-                    .collect();
-                HirType::Struct(*name, bump.alloc_slice(&new_args))
+        HirType::Ref {
+            inner,
+            mutability_state,
+            provenance,
+        } => HirType::Ref {
+            inner: bump.alloc_value_immutable(substitute_type(inner, subs, bump.clone())),
+            mutability_state: *mutability_state,
+            provenance: *provenance,
+        },
+        HirType::SafePointer(inner) => HirType::SafePointer(
+            bump.alloc_value_immutable(substitute_type(inner, subs, bump.clone())),
+        ),
+        HirType::UnsafePointer(inner) => HirType::UnsafePointer(
+            bump.alloc_value_immutable(substitute_type(inner, subs, bump.clone())),
+        ),
+        HirType::OwnedPointer(inner) => HirType::OwnedPointer(
+            bump.alloc_value_immutable(substitute_type(inner, subs, bump.clone())),
+        ),
+        HirType::Struct {
+            name,
+            field_types,
+            type_args,
+        } => {
+            let new_fields: Vec<_> = field_types
+                .iter()
+                .map(|f| substitute_type(f, subs, bump.clone()))
+                .collect();
+            let new_args: Vec<_> = type_args
+                .iter()
+                .map(|a| substitute_type(a, subs, bump.clone()))
+                .collect();
+            HirType::Struct {
+                name: *name,
+                field_types: bump.alloc_slice_immutable(&new_fields),
+                type_args: bump.alloc_slice_immutable(&new_args),
             }
         }
 

@@ -13,22 +13,16 @@ pub fn suffix_for_subs(pool: Arc<StringPool>, subs: &HashMap<StrId, HirType>) ->
             (*k, suffix)
         })
         .collect();
-
     // sort deterministically by key bytes so result is stable across hashmap order
     pieces.sort_by_key(|(k, _)| pool.resolve_string(k).to_string());
-
     let mut buf: SmallVec<u8, 128> = SmallVec::new();
-
-    for (i, (k, v)) in pieces.iter().enumerate() {
+    for (i, (_, v)) in pieces.iter().enumerate() {
         if i > 0 {
             buf.push(b'_');
         }
-        buf.extend_from_slice(pool.resolve_bytes(&*k));
         buf.extend_from_slice(pool.resolve_bytes(&*v));
     }
-
     let s = std::str::from_utf8(&buf).expect("Generated string should be valid UTF-8");
-
     StrId(pool.intern(s))
 }
 
