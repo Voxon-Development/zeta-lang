@@ -1,4 +1,7 @@
-use crate::hir::{HirEnum, HirInterface, HirStruct, StrId};
+use crate::hir::{
+    HirEnum, HirFunc, HirInterface, HirParam, HirStruct, HirType, StrId, ThisPassingKind,
+};
+use crate::ir_conversion::lower_type_hir;
 use crate::ir_hasher::FxHashBuilder;
 use std::collections::HashMap;
 
@@ -54,8 +57,8 @@ impl SsaType {
                 | SsaType::U64
                 | SsaType::I128
                 | SsaType::U128
-                | SsaType::ISize
-                | SsaType::USize
+                | SsaType::Isize
+                | SsaType::Usize
         )
     }
 
@@ -67,7 +70,7 @@ impl SsaType {
                 | SsaType::I32
                 | SsaType::I64
                 | SsaType::I128
-                | SsaType::ISize
+                | SsaType::Isize
         )
     }
 
@@ -85,7 +88,7 @@ impl SsaType {
             SsaType::I64 | SsaType::U64 | SsaType::F64 => 64,
             SsaType::I128 | SsaType::U128 => 128,
 
-            SsaType::ISize | SsaType::USize => 64, // target for now
+            SsaType::Isize | SsaType::Usize => 64, // target for now
 
             _ => return None,
         })
@@ -106,6 +109,14 @@ pub enum Operand {
     GlobalRef(StrId),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IntrinsicOp {
+    SizeOf,
+    AlignOf,
+    AssertAlign,
+    TypeName,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SsaType {
     I8,
@@ -120,8 +131,8 @@ pub enum SsaType {
     U128,
     F32,
     F64,
-    ISize, // Signed pointer-sized integer
-    USize, // Unsigned pointer-sized integer
+    Isize, // Signed pointer-sized integer
+    Usize, // Unsigned pointer-sized integer
     Null,
 
     // Special types
@@ -177,6 +188,19 @@ pub enum CastKind {
 
 #[derive(Debug, Clone)]
 pub enum Instruction {
+    Panic {
+        message: Operand, // string value: pointer to [len:8][bytes...] blob
+    },
+
+    Intrinsic {
+        dest: Option<Value>,
+        op: IntrinsicOp,
+        /// The type being queried, for SizeOf/AlignOf/TypeName. None for AssertAlign.
+        query_ty: Option<SsaType>,
+        /// Runtime args: [ptr, align] for AssertAlign, empty otherwise.
+        args: SmallVec<Operand, 2>,
+    },
+
     /// Binary operation: dest = left OP right
     Binary {
         dest: Value,
@@ -335,6 +359,54 @@ pub struct Function {
     pub function_metadata: FuncModifiers,
 }
 
+impl Function {
+    /// Builds a Function's signature
+    pub fn from_signature(hir_fn: &HirFunc) -> Function {
+        let mut params: SmallVec<(Value, SsaType), 8> = SmallVec::new();
+        let mut value_types: HashMap<Value, SsaType, FxHashBuilder> =
+            HashMap::with_hasher(FxHashBuilder);
+        let mut next_value = 0usize;
+
+        if let Some(hir_params) = hir_fn.params {
+            for p in hir_params {
+                let v = Value(next_value);
+                next_value += 1;
+
+                let ty = match p {
+                    HirParam::This { kind, .. } => {
+                        let inner = match hir_fn.impl_target {
+                            Some(class_name) => SsaType::User(class_name, vec![]),
+                            None => unreachable!(),
+                        };
+                        match kind {
+                            ThisPassingKind::Move | ThisPassingKind::MoveMut => inner,
+                            _ => SsaType::Pointer(Box::new(inner)),
+                        }
+                    }
+                    HirParam::Normal { param_type, .. } => lower_type_hir(param_type),
+                };
+
+                value_types.insert(v, ty.clone());
+                params.push((v, ty));
+            }
+        }
+
+        let ret_type = lower_type_hir(hir_fn.return_type.as_ref().unwrap_or(&HirType::Void));
+
+        let function = Function {
+            name: hir_fn.name,
+            params,
+            ret_type,
+            blocks: SmallVec::new(),
+            value_types,
+            entry: BlockId(0),
+            function_metadata: hir_fn.function_metadata,
+        };
+
+        function
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MethodInfo {
     pub name: StrId,
@@ -365,7 +437,7 @@ where
 
     pub class_layouts: HashMap<StrId, ClassLayout, FxHashBuilder>,
     pub interface_layouts: HashMap<StrId, InterfaceLayout, FxHashBuilder>,
-    pub class_interface_vtables: HashMap<(StrId, StrId), VTableInfo>,
+    pub class_interface_vtables: HashMap<(StrId, StrId), VTableInfo, FxHashBuilder>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -409,6 +481,7 @@ pub fn inst_is_terminator(inst: &Instruction) -> bool {
             | Instruction::Branch { .. }
             | Instruction::Ret { .. }
             | Instruction::MatchEnum { .. } // lower this to br_table (terminator)
+            | Instruction::Panic { .. }
     )
 }
 
