@@ -1,9 +1,9 @@
 use codex_dependency_graph::DepGraph;
 use ir::{
     hir::{HirEnum, HirFunc, HirInterface, HirStruct, HirType, StrId},
-    ir_hasher::HashSet,
+    ir_hasher::{HashMap, HashSet},
 };
-use std::{cell::RefCell, collections::HashMap, sync::Arc};
+use std::{cell::RefCell, sync::Arc};
 use zetaruntime::{bump::GrowableBump, string_pool::StringPool};
 
 use crate::type_checker::SymbolId;
@@ -64,12 +64,12 @@ impl<'a, 'bump> TypeContext<'a, 'bump> {
         string_pool: Arc<StringPool>,
     ) -> Self {
         Self {
-            variables: HashMap::new(),
-            structs: HashMap::new(),
-            enums: HashMap::new(),
-            interfaces: HashMap::new(),
-            module_functions: HashMap::new(),
-            type_methods: HashMap::new(),
+            variables: HashMap::default(),
+            structs: HashMap::default(),
+            enums: HashMap::default(),
+            interfaces: HashMap::default(),
+            module_functions: HashMap::default(),
+            type_methods: HashMap::default(),
             current_return_type: None,
             in_loop: false,
             current_module_idx: usize::MAX, // sentinel
