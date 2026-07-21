@@ -124,8 +124,6 @@ pub fn notification(
             let path =
                 uri_to_path(&uri).map_err(|_| anyhow::anyhow!("non-file URI: {}", uri.as_str()))?;
 
-            println!("Opened {:?}", path);
-
             state.documents.insert(
                 uri.clone(),
                 Document {
@@ -153,8 +151,6 @@ pub fn notification(
             for change in params.content_changes {
                 apply_change(&mut doc.text, change);
             }
-
-            println!("Saved  {:?}", path);
 
             let reporter = state.compiler.update_module(&path, doc.text.clone());
             publish_all(connection, &reporter)?;
