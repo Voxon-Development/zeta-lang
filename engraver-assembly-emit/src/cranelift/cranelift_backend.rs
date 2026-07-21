@@ -1,7 +1,6 @@
 use crate::backend::Backend;
 use crate::cranelift::{clif_type, cranelift_intrinsics};
-use cranelift_codegen::ir::Block as ClifBlock;
-use cranelift_codegen::ir::BlockArg;
+use cranelift_codegen::ir::AbiParam;
 use cranelift_codegen::ir::Function as ClifFunction;
 use cranelift_codegen::ir::InstBuilder;
 use cranelift_codegen::ir::MemFlags;
@@ -9,8 +8,9 @@ use cranelift_codegen::ir::Signature;
 use cranelift_codegen::ir::Type;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types;
-use cranelift_codegen::ir::{AbiParam, SigRef};
+use cranelift_codegen::ir::{Block as ClifBlock, StackSlotKind};
 use cranelift_codegen::ir::{Block, TrapCode};
+use cranelift_codegen::ir::{BlockArg, StackSlotData};
 use cranelift_codegen::isa;
 use cranelift_codegen::settings::Configurable;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
@@ -49,8 +49,6 @@ pub struct CraneliftBackend {
     target: TargetInfo,
     emit_asm: bool,
     main_emitted: bool,
-    #[allow(dead_code)] // TODO remove
-    sig_cache: HashMap<(usize, usize), SigRef, FxHashBuilder>,
     func_ret_types: HashMap<StrId, SsaType, FxHashBuilder>,
     current_sret_var: Option<Variable>,
 }
@@ -129,9 +127,6 @@ impl CraneliftBackend {
             .declare_function("write", Linkage::Import, &sig_write)
             .unwrap();
 
-        let sig_cache: HashMap<(usize, usize), SigRef, FxHashBuilder> =
-            HashMap::with_hasher(FxHashBuilder);
-
         CraneliftBackend {
             module,
             string_data: HashMap::new(),
@@ -145,7 +140,6 @@ impl CraneliftBackend {
             target: TargetInfo { ptr_bytes: 8 },
             emit_asm: false,
             main_emitted: false,
-            sig_cache,
             func_ret_types: HashMap::with_hasher(FxHashBuilder),
             current_sret_var: None,
         }
@@ -177,6 +171,8 @@ impl CraneliftBackend {
         func: &Function,
     ) {
         match inst {
+            // TODO: Replace with runtime panic implementation once runtime
+            // support for stack traces and cross-platform I/O exists.
             Instruction::Panic { message } => {
                 let msg_val = match message {
                     Operand::Value(v) => {
@@ -194,7 +190,23 @@ impl CraneliftBackend {
                 let write_ref = self
                     .module
                     .declare_func_in_func(self.write_func, &mut builder.func);
+
+                // Write the panic message.
                 builder.ins().call(write_ref, &[fd, data_ptr, len]);
+
+                // Write a trailing '\n'.
+                let newline = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    1,
+                    1,
+                ));
+
+                let nl_ptr = builder.ins().stack_addr(types::I64, newline, 0);
+                let nl = builder.ins().iconst(types::I8, b'\n' as i64);
+                builder.ins().store(MemFlags::new(), nl, nl_ptr, 0);
+
+                let one = builder.ins().iconst(types::I64, 1);
+                builder.ins().call(write_ref, &[fd, nl_ptr, one]);
 
                 builder.ins().trap(TrapCode::user(1).unwrap());
             }
@@ -305,14 +317,44 @@ impl CraneliftBackend {
                     BinOp::BitXor => builder.ins().bxor(l, r),
                     BinOp::ShiftLeft => builder.ins().ishl(l, r),
                     BinOp::ShiftRight => builder.ins().sshr(l, r),
+                    BinOp::LogicalAnd => unreachable!(),
+                    BinOp::LogicalOr => unreachable!(),
                 };
-                let var = builder.declare_var(types::I64);
-                let res_i64 = if builder.func.dfg.value_type(res) != types::I64 {
-                    builder.ins().uextend(types::I64, res)
-                } else {
+                let ty = func.value_types.get(dest).unwrap();
+                let clif_ty = clif_type(ty);
+
+                let var = builder.declare_var(clif_ty);
+
+                let res_ty = builder.func.dfg.value_type(res);
+
+                let res = if res_ty == clif_ty {
                     res
+                } else {
+                    match (res_ty, clif_ty) {
+                        // Integer widening
+                        _ if res_ty.is_int()
+                            && clif_ty.is_int()
+                            && res_ty.bits() < clif_ty.bits() =>
+                        {
+                            builder.ins().uextend(clif_ty, res)
+                        }
+
+                        // Integer narrowing
+                        _ if res_ty.is_int()
+                            && clif_ty.is_int()
+                            && res_ty.bits() > clif_ty.bits() =>
+                        {
+                            builder.ins().ireduce(clif_ty, res)
+                        }
+
+                        _ => panic!(
+                            "cannot assign value of type {:?} to variable of type {:?}",
+                            res_ty, clif_ty
+                        ),
+                    }
                 };
-                builder.def_var(var, res_i64);
+
+                builder.def_var(var, res);
                 var_map.insert(*dest, var);
             }
 
@@ -320,18 +362,19 @@ impl CraneliftBackend {
                 let clif_bb = block_map
                     .get(&curr_bb)
                     .expect("current block missing for Phi");
+
                 let idx = phi_param_map
                     .get(&(curr_bb, *dest))
                     .expect("phi param missing");
+
                 let param = builder.block_params(*clif_bb)[*idx];
+
                 let value_type = builder.func.dfg.value_type(param);
+
                 let var = builder.declare_var(value_type);
-                let param_i64 = if value_type != types::I64 {
-                    builder.ins().uextend(types::I64, param)
-                } else {
-                    param
-                };
-                builder.def_var(var, param_i64);
+
+                builder.def_var(var, param);
+
                 var_map.insert(*dest, var);
             }
 
@@ -352,6 +395,7 @@ impl CraneliftBackend {
                         for (pred, val) in incomings {
                             if pred == &curr_bb {
                                 let v = *val;
+
                                 let var = var_map.get(&v).expect("phi incoming value not lowered");
                                 let valv = builder.use_var(*var);
                                 args.push(BlockArg::Value(valv));
@@ -796,18 +840,44 @@ impl CraneliftBackend {
                         let var = var_map.get(v).expect("unary operand undefined");
                         builder.use_var(*var)
                     }
-                    Operand::ConstInt(i) => builder.ins().iconst(types::I64, *i),
+                    Operand::ConstInt(i) => {
+                        let ty = func.value_types.get(dest).unwrap();
+                        builder.ins().iconst(clif_type(ty), *i)
+                    }
                     _ => unimplemented!(),
                 };
 
                 let res = match op {
-                    UnOp::Not => {
-                        let zero = builder.ins().iconst(types::I64, 0);
-                        builder.ins().icmp(IntCC::Equal, val, zero)
+                    UnOp::Neg => builder.ins().ineg(val),
+
+                    UnOp::BitNot => builder.ins().bnot(val),
+
+                    UnOp::LogicalNot => {
+                        let value_type = builder.func.dfg.value_type(val);
+                        match value_type {
+                            types::I8 => {
+                                let zero = builder.ins().iconst(value_type, 0);
+                                builder.ins().icmp(IntCC::Equal, val, zero)
+                            }
+                            ty => panic!("LogicalNot not supported for {:?}", ty),
+                        }
                     }
                 };
 
-                let var = builder.declare_var(types::I64);
+                let ty = func.value_types.get(dest).unwrap();
+                let clif_ty = clif_type(ty);
+
+                let var = builder.declare_var(clif_ty);
+
+                assert_eq!(
+                    builder.func.dfg.value_type(res),
+                    clif_ty,
+                    "Unary {:?} produced {:?}, expected {:?}",
+                    op,
+                    builder.func.dfg.value_type(res),
+                    clif_ty,
+                );
+
                 builder.def_var(var, res);
                 var_map.insert(*dest, var);
             }
@@ -1303,9 +1373,14 @@ impl Backend for CraneliftBackend {
         for bb in &func.blocks {
             let clif_bb = block_map[&bb.id];
             let mut phi_index = 0usize;
+
             for inst in &bb.instructions {
                 if let Instruction::Phi { dest, .. } = inst {
-                    builder.append_block_param(clif_bb, types::I64);
+                    let ty = func.value_types.get(dest).unwrap();
+                    let clif_ty = clif_type(ty);
+
+                    builder.append_block_param(clif_bb, clif_ty);
+
                     phi_param_map.insert((bb.id, *dest), phi_index);
                     phi_index += 1;
                 } else {

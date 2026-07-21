@@ -634,7 +634,7 @@ impl<'a, 'bump> CopyAnalysisCtx<'a, 'bump> {
     }
 
     fn struct_names(&self) -> Vec<StrId> {
-        self.registry.classes.borrow().keys().copied().collect()
+        self.registry.structs.borrow().keys().copied().collect()
     }
 
     fn implements(&self, struct_name: StrId, iface: StrId) -> bool {
@@ -647,8 +647,8 @@ impl<'a, 'bump> CopyAnalysisCtx<'a, 'bump> {
     }
 
     fn compute_struct_copy(&self, name: StrId) -> bool {
-        let classes = self.registry.classes.borrow();
-        let Some(hir_struct) = classes.get(&name) else {
+        let structs = self.registry.structs.borrow();
+        let Some(hir_struct) = structs.get(&name) else {
             return false;
         };
 

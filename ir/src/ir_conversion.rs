@@ -58,7 +58,7 @@ pub fn lower_type_hir(ty: &HirType) -> SsaType {
             SsaType::User(*name, vec![])
         }
         HirType::This => {
-            // This should have been replaced with the actual class type before lowering
+            // This should have been replaced with the actual struct type before lowering
             // If we get here, treat it as a generic user type
             SsaType::Dyn
         }
@@ -96,6 +96,8 @@ pub fn lower_operator_bin(operator: &Operator) -> BinOp {
         Operator::LessThanOrEqual => BinOp::Le,
         Operator::GreaterThan => BinOp::Gt,
         Operator::GreaterThanOrEqual => BinOp::Ge,
+        Operator::LogicalAnd => BinOp::LogicalAnd,
+        Operator::LogicalOr => BinOp::LogicalOr,
         Operator::BitAnd => BinOp::BitAnd,
         Operator::BitOr => BinOp::BitOr,
         Operator::BitXor => BinOp::BitXor,
