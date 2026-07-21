@@ -219,6 +219,9 @@ where
                 TokenKind::Shl => Op::Shl,
                 TokenKind::Shr => Op::Shr,
 
+                TokenKind::AndAnd => Op::LogicalAnd,
+                TokenKind::OrOr => Op::LogicalOr,
+
                 TokenKind::Eq => Op::Eq,
                 TokenKind::Ne => Op::Neq,
                 TokenKind::Lt => Op::Lt,

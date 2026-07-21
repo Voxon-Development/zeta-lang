@@ -11,6 +11,7 @@ use ir::ir_hasher::{FxHashBuilder, HashSet};
 use ir::layout::TargetInfo;
 use ir::ssa_ir::{BinOp, Function, Instruction, Operand, SsaType, Value, cast_kind};
 use smallvec::SmallVec;
+use smallvec::smallvec;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -27,15 +28,16 @@ pub struct MirExprLowerer<'el, 'f, 'a, 'cx, 'bump> {
     phantom_data: PhantomData<&'bump ()>,
 
     pub funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
-    pub class_field_offsets:
+    pub struct_field_offsets:
         &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
-    pub class_method_slots: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
-    pub class_mangled_map: &'a HashMap<StrId, HashMap<StrId, StrId, FxHashBuilder>, FxHashBuilder>,
-    pub class_vtable_slots: &'a HashMap<StrId, Vec<StrId>, FxHashBuilder>,
+    pub struct_method_slots:
+        &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
+    pub struct_mangled_map: &'a HashMap<StrId, HashMap<StrId, StrId, FxHashBuilder>, FxHashBuilder>,
+    pub struct_vtable_slots: &'a HashMap<StrId, Vec<StrId>, FxHashBuilder>,
     pub interface_id_map: &'a HashMap<StrId, usize, FxHashBuilder>,
     pub interface_method_slots:
         &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
-    pub classes: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
+    pub structs: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
 
     pub cx_phantom: PhantomData<&'cx ()>,
     pub extern_c_names: &'a HashSet<StrId>,
@@ -58,21 +60,25 @@ where
         global_funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
         var_map: &'el mut HashMap<StrId, Value, FxHashBuilder>,
         context: Arc<StringPool>,
-        class_field_offsets: &'a HashMap<
+        struct_field_offsets: &'a HashMap<
             StrId,
             HashMap<StrId, usize, FxHashBuilder>,
             FxHashBuilder,
         >,
-        class_method_slots: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
-        class_mangled_map: &'a HashMap<StrId, HashMap<StrId, StrId, FxHashBuilder>, FxHashBuilder>,
-        class_vtable_slots: &'a HashMap<StrId, Vec<StrId>, FxHashBuilder>,
+        struct_method_slots: &'a HashMap<
+            StrId,
+            HashMap<StrId, usize, FxHashBuilder>,
+            FxHashBuilder,
+        >,
+        struct_mangled_map: &'a HashMap<StrId, HashMap<StrId, StrId, FxHashBuilder>, FxHashBuilder>,
+        struct_vtable_slots: &'a HashMap<StrId, Vec<StrId>, FxHashBuilder>,
         interface_id_map: &'a HashMap<StrId, usize, FxHashBuilder>,
         interface_method_slots: &'a HashMap<
             StrId,
             HashMap<StrId, usize, FxHashBuilder>,
             FxHashBuilder,
         >,
-        classes: &'a HashMap<StrId, HirStruct<'a, 'bump>, FxHashBuilder>,
+        structs: &'a HashMap<StrId, HirStruct<'a, 'bump>, FxHashBuilder>,
         extern_c_names: &'a HashSet<StrId>,
         dep_graph: &'a RefCell<DepGraph>,
         module_idx: usize,
@@ -86,13 +92,13 @@ where
             global_funcs,
             var_map,
             context,
-            class_field_offsets,
-            class_method_slots,
-            class_mangled_map,
-            class_vtable_slots,
+            struct_field_offsets,
+            struct_method_slots,
+            struct_mangled_map,
+            struct_vtable_slots,
             interface_id_map,
             interface_method_slots,
-            classes,
+            structs,
             phantom_data: PhantomData,
             cx_phantom: PhantomData,
             extern_c_names,
@@ -155,7 +161,7 @@ where
                 args,
                 span: _,
                 type_args: _,
-            } => self.lower_class_init(name, args),
+            } => self.lower_struct_init(name, args),
 
             HirExpr::Undefined { span: _, ty } => {
                 let ssa_ty = lower_type_hir(ty);
@@ -308,7 +314,7 @@ where
                     left: Operand::Value(l),
                     right: Operand::Value(r),
                 });
-                self.current_block_data.value_types.insert(v, SsaType::I64);
+                self.current_block_data.value_types.insert(v, SsaType::Bool);
                 v
             }
 
@@ -546,6 +552,111 @@ where
                 self.lower_if_expr(&cond, then_block, *else_block)
             }
         }
+    }
+
+    fn lower_short_circuit_and(
+        &mut self,
+        left: &HirExpr<'a, 'bump>,
+        right: &HirExpr<'a, 'bump>,
+    ) -> Value {
+        let lhs = self.lower_expr(left);
+
+        let rhs_bb = self.current_block_data.new_block();
+        let false_bb = self.current_block_data.new_block();
+        let merge_bb = self.current_block_data.new_block();
+
+        self.emit(Instruction::Branch {
+            cond: Operand::Value(lhs),
+            then_bb: rhs_bb,
+            else_bb: false_bb,
+        });
+
+        // RHS
+        self.current_block_data.switch_to(rhs_bb);
+        let rhs = self.lower_expr(right);
+        self.emit(Instruction::Jump { target: merge_bb });
+
+        // FALSE
+        self.current_block_data.switch_to(false_bb);
+        let false_val = self.current_block_data.fresh_value();
+
+        self.emit(Instruction::Const {
+            dest: false_val,
+            ty: SsaType::Bool,
+            value: Operand::ConstBool(false),
+        });
+
+        self.emit(Instruction::Jump { target: merge_bb });
+
+        // MERGE
+        self.current_block_data.switch_to(merge_bb);
+
+        let result = self.current_block_data.fresh_value();
+
+        self.emit(Instruction::Phi {
+            dest: result,
+            incoming: smallvec![(rhs_bb, rhs), (false_bb, false_val),],
+        });
+
+        self.current_block_data
+            .value_types
+            .insert(result, SsaType::Bool);
+
+        result
+    }
+
+    fn lower_short_circuit_or(
+        &mut self,
+        left: &HirExpr<'a, 'bump>,
+        right: &HirExpr<'a, 'bump>,
+    ) -> Value {
+        let lhs = self.lower_expr(left);
+
+        let true_bb = self.current_block_data.new_block();
+        let rhs_bb = self.current_block_data.new_block();
+        let merge_bb = self.current_block_data.new_block();
+
+        self.emit(Instruction::Branch {
+            cond: Operand::Value(lhs),
+            then_bb: true_bb,
+            else_bb: rhs_bb,
+        });
+
+        // TRUE
+        self.current_block_data.switch_to(true_bb);
+
+        let true_val = self.current_block_data.fresh_value();
+
+        self.emit(Instruction::Const {
+            dest: true_val,
+            ty: SsaType::Bool,
+            value: Operand::ConstBool(true),
+        });
+
+        self.emit(Instruction::Jump { target: merge_bb });
+
+        // RHS
+        self.current_block_data.switch_to(rhs_bb);
+
+        let rhs = self.lower_expr(right);
+
+        self.emit(Instruction::Jump { target: merge_bb });
+
+        // MERGE
+        self.current_block_data.switch_to(merge_bb);
+
+        let result = self.current_block_data.fresh_value();
+
+        self.emit(Instruction::Phi {
+            dest: result,
+            incoming: smallvec![(true_bb, true_val), (rhs_bb, rhs),],
+        });
+
+        self.current_block_data
+            .value_types
+            .insert(result, SsaType::Bool);
+
+        result
     }
 
     fn lower_if_expr(
@@ -792,13 +903,13 @@ where
         }
 
         match extra {
-            // Method call through a module-qualified class: `path::ClassName.method()`.
-            // Registration mangles as [ClassName, ...path] + method, so mirror that
-            // order here rather than passing class_name/method through as
+            // Method call through a module-qualified struct: `path::StructName.method()`.
+            // Registration mangles as [StructName, ...path] + method, so mirror that
+            // order here rather than passing struct_name/method through as
             // build_module_scoped_name's member/extra slots.
             Some(method_name) => {
                 let mut segments: Vec<StrId> = Vec::with_capacity(path.len() + 1);
-                segments.push(member); // class name
+                segments.push(member); // struct name
                 segments.extend_from_slice(path);
                 optimized_string_buffering::build_module_scoped_name(
                     &segments,
@@ -1211,37 +1322,43 @@ where
         op: &Operator,
         right: &HirExpr<'a, 'bump>,
     ) -> Value {
-        let l = self.lower_expr(left);
-        let r = self.lower_expr(right);
-        let v = self.current_block_data.fresh_value();
-        self.emit(Instruction::Binary {
-            dest: v,
-            op: lower_operator_bin(op),
-            left: Operand::Value(l),
-            right: Operand::Value(r),
-        });
-        self.current_block_data.value_types.insert(v, SsaType::I64);
-        v
+        match op {
+            Operator::LogicalAnd => self.lower_short_circuit_and(left, right),
+            Operator::LogicalOr => self.lower_short_circuit_or(left, right),
+            _ => {
+                let l = self.lower_expr(left);
+                let r = self.lower_expr(right);
+                let v = self.current_block_data.fresh_value();
+                self.emit(Instruction::Binary {
+                    dest: v,
+                    op: lower_operator_bin(op),
+                    left: Operand::Value(l),
+                    right: Operand::Value(r),
+                });
+                self.current_block_data.value_types.insert(v, SsaType::I64);
+                v
+            }
+        }
     }
 
-    fn lower_class_init(&mut self, name: &HirExpr, args: &[HirFieldInit<'a, 'bump>]) -> Value {
-        let class_name = match name {
+    fn lower_struct_init(&mut self, name: &HirExpr, args: &[HirFieldInit<'a, 'bump>]) -> Value {
+        let struct_name = match name {
             HirExpr::Ident(n, _) => *n,
-            other => panic!("ClassInit name must be identifier; got {:?}", other),
+            other => panic!("StructInit name must be identifier; got {:?}", other),
         };
 
         let obj = self.new_value();
 
         // Moved up from after the arg-lowering loop so field types are known
         // before checking whether each positional arg moves into its field.
-        let field_types: Vec<SsaType> = if let Some(hir_class) = self.classes.get(&class_name) {
-            hir_class
+        let field_types: Vec<SsaType> = if let Some(hir_struct) = self.structs.get(&struct_name) {
+            hir_struct
                 .fields
                 .iter()
                 .map(|f| lower_type_hir(&f.field_type))
                 .collect()
         } else {
-            panic!("Class {} not found", class_name)
+            panic!("Struct {} not found", struct_name)
         };
 
         let mut arg_values: Vec<Value> = Vec::with_capacity(args.len());
@@ -1255,7 +1372,7 @@ where
             arg_values.push(self.lower_expr(&arg.value));
         }
 
-        let alloc_ty = SsaType::User(class_name, field_types.clone());
+        let alloc_ty = SsaType::User(struct_name, field_types.clone());
 
         self.emit(Instruction::StackAlloc {
             dest: obj,
@@ -1266,21 +1383,21 @@ where
         self.current_block_data.value_types.insert(obj, alloc_ty);
 
         if !arg_values.is_empty() {
-            self.init_class_fields_from_args(obj, class_name, &arg_values);
+            self.init_struct_fields_from_args(obj, struct_name, &arg_values);
         }
 
-        self.store_vtable_if_any(obj, class_name);
+        self.store_vtable_if_any(obj, struct_name);
         obj
     }
 
-    fn init_class_fields_from_args(&mut self, obj: Value, class_name: StrId, args: &Vec<Value>) {
+    fn init_struct_fields_from_args(&mut self, obj: Value, struct_name: StrId, args: &Vec<Value>) {
         let offsets = self
-            .class_field_offsets
-            .get(&class_name)
+            .struct_field_offsets
+            .get(&struct_name)
             .unwrap_or_else(|| {
                 panic!(
-                    "Unknown class {} when initializing",
-                    self.context.resolve_string(&*class_name)
+                    "Unknown struct {} when initializing",
+                    self.context.resolve_string(&*struct_name)
                 )
             });
 
@@ -1300,8 +1417,8 @@ where
         }
     }
 
-    fn store_vtable_if_any(&mut self, obj: Value, class_name: StrId) {
-        let Some(vslots) = self.class_vtable_slots.get(&class_name) else {
+    fn store_vtable_if_any(&mut self, obj: Value, struct_name: StrId) {
+        let Some(vslots) = self.struct_vtable_slots.get(&struct_name) else {
             return;
         };
         if vslots.is_empty() {
@@ -1309,7 +1426,7 @@ where
         }
 
         let vtable_name =
-            optimized_string_buffering::make_vtable_name(class_name, self.context.clone());
+            optimized_string_buffering::make_vtable_name(struct_name, self.context.clone());
         self.emit(Instruction::StoreField {
             base: Operand::Value(obj),
             offset: 0usize,
@@ -1334,19 +1451,19 @@ where
                 }
             }
             other => panic!(
-                "Could not determine object's class for FieldAccess: {:?}",
+                "Could not determine object's struct for FieldAccess: {:?}",
                 other
             ),
         };
 
         let offsets = self
-            .class_field_offsets
+            .struct_field_offsets
             .get(&cls_name)
-            .unwrap_or_else(|| panic!("Unknown class {} in FieldAccess", cls_name));
+            .unwrap_or_else(|| panic!("Unknown struct {} in FieldAccess", cls_name));
 
         let offset = *offsets
             .get(&field)
-            .unwrap_or_else(|| panic!("Unknown field {} on class {}", field, cls_name));
+            .unwrap_or_else(|| panic!("Unknown field {} on struct {}", field, cls_name));
 
         let dest = self.new_value();
         self.emit(Instruction::LoadField {
@@ -1356,13 +1473,13 @@ where
         });
 
         let field_type = self
-            .classes
+            .structs
             .get(&cls_name)
-            .and_then(|hir_class| hir_class.fields.iter().find(|f| f.name == field))
+            .and_then(|hir_struct| hir_struct.fields.iter().find(|f| f.name == field))
             .map(|hir_field| lower_type_hir(&hir_field.field_type))
             .unwrap_or_else(|| {
                 eprintln!(
-                    "WARNING: lower_field_access could not find field {:?} on class {:?}, defaulting to I64",
+                    "WARNING: lower_field_access could not find field {:?} on struct {:?}, defaulting to I64",
                     field, cls_name
                 );
                 SsaType::I64
@@ -1537,21 +1654,21 @@ where
                 _ => panic!("lower_field_addr: pointer to non-User type: {:?}", inner),
             },
             other => panic!(
-                "lower_field_addr: could not determine object's class: {:?}",
+                "lower_field_addr: could not determine object's struct: {:?}",
                 other
             ),
         };
 
         let offsets = self
-            .class_field_offsets
+            .struct_field_offsets
             .get(&cls_name)
-            .unwrap_or_else(|| panic!("Unknown class {} in FieldAccess", cls_name));
+            .unwrap_or_else(|| panic!("Unknown struct {} in FieldAccess", cls_name));
         let offset = *offsets
             .get(&field)
-            .unwrap_or_else(|| panic!("Unknown field {} on class {}", field, cls_name));
+            .unwrap_or_else(|| panic!("Unknown field {} on struct {}", field, cls_name));
 
         let field_ty = self
-            .classes
+            .structs
             .get(&cls_name)
             .and_then(|hc| hc.fields.iter().find(|f| f.name == field))
             .map(|f| lower_type_hir(&f.field_type))
@@ -1631,7 +1748,7 @@ where
 
         if let Some(cls_name) = cls_name_id {
             let receiver_is_moved = self
-                .class_mangled_map
+                .struct_mangled_map
                 .get(&cls_name)
                 .and_then(|mmap| mmap.get(&field))
                 .and_then(|mangled| self.funcs.get(mangled))
@@ -1661,9 +1778,9 @@ where
         }
 
         panic!(
-            "lower_method_call: no mangled mapping or vtable slot found for method `{}` on class `{:?}`, \
-             this means class_mangled_map/class_method_slots is missing an entry, not that the method doesn't exist. \
-             Check MirModuleLowerer::build_mangled_map / build_class_vtable for this class.",
+            "lower_method_call: no mangled mapping or vtable slot found for method `{}` on struct `{:?}`, \
+             this means struct_mangled_map/struct_method_slots is missing an entry, not that the method doesn't exist. \
+             Check MirModuleLowerer::build_mangled_map / build_struct_vtable for this struct.",
             self.context.resolve_string(&field),
             cls_name_id.map(|id| self.context.resolve_string(&id).to_string())
         );
@@ -1705,7 +1822,7 @@ where
             return None;
         };
 
-        if let Some(mmap) = self.class_mangled_map.get(&cls_name) {
+        if let Some(mmap) = self.struct_mangled_map.get(&cls_name) {
             if let Some(mangled_name) = mmap.get(&field) {
                 let dest = self.current_block_data.fresh_value();
                 self.emit(Instruction::Call {
@@ -1724,8 +1841,8 @@ where
             }
         }
 
-        if let Some(class_slots) = self.class_method_slots.get(&cls_name) {
-            if let Some(slot_idx) = class_slots.get(&field) {
+        if let Some(struct_slots) = self.struct_method_slots.get(&cls_name) {
+            if let Some(slot_idx) = struct_slots.get(&field) {
                 let dest = self.current_block_data.fresh_value();
                 self.emit(Instruction::InterfaceDispatch {
                     dest: Some(dest),
@@ -1846,19 +1963,19 @@ where
                 }
             }
             other => panic!(
-                "Could not determine object's class for FieldAccess: {:?}",
+                "Could not determine object's struct for FieldAccess: {:?}",
                 other
             ),
         };
 
-        self.class_field_offsets
+        self.struct_field_offsets
             .get(&cls_name)
-            .unwrap_or_else(|| panic!("Unknown class {} in FieldAccess", cls_name))
+            .unwrap_or_else(|| panic!("Unknown struct {} in FieldAccess", cls_name))
             .get(&field)
             .copied()
             .unwrap_or_else(|| {
                 panic!(
-                    "Unknown field {} on class {}",
+                    "Unknown field {} on struct {}",
                     self.context.resolve_string(&*field),
                     self.context.resolve_string(&*cls_name)
                 )

@@ -45,13 +45,13 @@ pub struct FunctionLowerer<'f, 'a, 'bump> {
     phantom_data: PhantomData<&'bump ()>,
     loop_stack: Vec<LoopCtx>,
     funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
-    class_field_offsets: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
-    class_method_slots: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
-    class_mangled_map: &'a HashMap<StrId, HashMap<StrId, StrId, FxHashBuilder>, FxHashBuilder>,
-    class_vtable_slots: &'a HashMap<StrId, Vec<StrId>, FxHashBuilder>,
+    struct_field_offsets: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
+    struct_method_slots: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
+    struct_mangled_map: &'a HashMap<StrId, HashMap<StrId, StrId, FxHashBuilder>, FxHashBuilder>,
+    struct_vtable_slots: &'a HashMap<StrId, Vec<StrId>, FxHashBuilder>,
     interface_id_map: &'a HashMap<StrId, usize, FxHashBuilder>,
     interface_method_slots: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
-    classes: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
+    structs: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
     enum_variant_tags: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
     context: Arc<StringPool>,
     extern_c_names: &'a HashSet<StrId>,
@@ -74,21 +74,25 @@ where
         hir_fn: &HirFunc<'a, 'bump>,
         funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
         global_funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
-        class_field_offsets: &'a HashMap<
+        struct_field_offsets: &'a HashMap<
             StrId,
             HashMap<StrId, usize, FxHashBuilder>,
             FxHashBuilder,
         >,
-        class_method_slots: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
-        class_mangled_map: &'a HashMap<StrId, HashMap<StrId, StrId, FxHashBuilder>, FxHashBuilder>,
-        class_vtable_slots: &'a HashMap<StrId, Vec<StrId>, FxHashBuilder>,
+        struct_method_slots: &'a HashMap<
+            StrId,
+            HashMap<StrId, usize, FxHashBuilder>,
+            FxHashBuilder,
+        >,
+        struct_mangled_map: &'a HashMap<StrId, HashMap<StrId, StrId, FxHashBuilder>, FxHashBuilder>,
+        struct_vtable_slots: &'a HashMap<StrId, Vec<StrId>, FxHashBuilder>,
         interface_id_map: &'a HashMap<StrId, usize, FxHashBuilder>,
         interface_method_slots: &'a HashMap<
             StrId,
             HashMap<StrId, usize, FxHashBuilder>,
             FxHashBuilder,
         >,
-        classes: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
+        structs: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
         enum_variant_tags: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
         context: Arc<StringPool>,
         extern_c_names: &'a HashSet<StrId>,
@@ -102,13 +106,13 @@ where
             hir_fn,
             funcs,
             global_funcs,
-            class_field_offsets,
-            class_method_slots,
-            class_mangled_map,
-            class_vtable_slots,
+            struct_field_offsets,
+            struct_method_slots,
+            struct_mangled_map,
+            struct_vtable_slots,
             interface_id_map,
             interface_method_slots,
-            classes,
+            structs,
             enum_variant_tags,
             context,
             extern_c_names,
@@ -119,26 +123,30 @@ where
         )
     }
 
-    pub fn new_with_class(
+    pub fn new_with_struct(
         function: &'f mut Function,
         hir_fn: &HirFunc<'a, 'bump>,
         funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
         global_funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
-        class_field_offsets: &'a HashMap<
+        struct_field_offsets: &'a HashMap<
             StrId,
             HashMap<StrId, usize, FxHashBuilder>,
             FxHashBuilder,
         >,
-        class_method_slots: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
-        class_mangled_map: &'a HashMap<StrId, HashMap<StrId, StrId, FxHashBuilder>, FxHashBuilder>,
-        class_vtable_slots: &'a HashMap<StrId, Vec<StrId>, FxHashBuilder>,
+        struct_method_slots: &'a HashMap<
+            StrId,
+            HashMap<StrId, usize, FxHashBuilder>,
+            FxHashBuilder,
+        >,
+        struct_mangled_map: &'a HashMap<StrId, HashMap<StrId, StrId, FxHashBuilder>, FxHashBuilder>,
+        struct_vtable_slots: &'a HashMap<StrId, Vec<StrId>, FxHashBuilder>,
         interface_id_map: &'a HashMap<StrId, usize, FxHashBuilder>,
         interface_method_slots: &'a HashMap<
             StrId,
             HashMap<StrId, usize, FxHashBuilder>,
             FxHashBuilder,
         >,
-        classes: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
+        structs: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
         enum_variant_tags: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
         context: Arc<StringPool>,
         extern_c_names: &'a HashSet<StrId>,
@@ -152,13 +160,13 @@ where
             hir_fn,
             funcs,
             global_funcs,
-            class_field_offsets,
-            class_method_slots,
-            class_mangled_map,
-            class_vtable_slots,
+            struct_field_offsets,
+            struct_method_slots,
+            struct_mangled_map,
+            struct_vtable_slots,
             interface_id_map,
             interface_method_slots,
-            classes,
+            structs,
             enum_variant_tags,
             context,
             extern_c_names,
@@ -174,21 +182,25 @@ where
         hir_fn: &HirFunc<'a, 'bump>,
         funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
         global_funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
-        class_field_offsets: &'a HashMap<
+        struct_field_offsets: &'a HashMap<
             StrId,
             HashMap<StrId, usize, FxHashBuilder>,
             FxHashBuilder,
         >,
-        class_method_slots: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
-        class_mangled_map: &'a HashMap<StrId, HashMap<StrId, StrId, FxHashBuilder>, FxHashBuilder>,
-        class_vtable_slots: &'a HashMap<StrId, Vec<StrId>, FxHashBuilder>,
+        struct_method_slots: &'a HashMap<
+            StrId,
+            HashMap<StrId, usize, FxHashBuilder>,
+            FxHashBuilder,
+        >,
+        struct_mangled_map: &'a HashMap<StrId, HashMap<StrId, StrId, FxHashBuilder>, FxHashBuilder>,
+        struct_vtable_slots: &'a HashMap<StrId, Vec<StrId>, FxHashBuilder>,
         interface_id_map: &'a HashMap<StrId, usize, FxHashBuilder>,
         interface_method_slots: &'a HashMap<
             StrId,
             HashMap<StrId, usize, FxHashBuilder>,
             FxHashBuilder,
         >,
-        classes: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
+        structs: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
         enum_variant_tags: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
         context: Arc<StringPool>,
         extern_c_names: &'a HashSet<StrId>,
@@ -244,13 +256,13 @@ where
             funcs,
             var_map,
             loop_stack: Vec::new(),
-            class_field_offsets,
-            class_method_slots,
-            class_mangled_map,
-            class_vtable_slots,
+            struct_field_offsets,
+            struct_method_slots,
+            struct_mangled_map,
+            struct_vtable_slots,
             interface_id_map,
             interface_method_slots,
-            classes,
+            structs,
             enum_variant_tags,
             context,
             phantom_data: Default::default(),
@@ -301,7 +313,12 @@ where
     fn block_terminated(&mut self) -> bool {
         matches!(
             self.current_block_data.bb().instructions.last(),
-            Some(Instruction::Ret { .. } | Instruction::Jump { .. } | Instruction::Branch { .. })
+            Some(
+                Instruction::Ret { .. }
+                    | Instruction::Jump { .. }
+                    | Instruction::Branch { .. }
+                    | Instruction::Panic { .. }
+            )
         )
     }
 
@@ -1070,13 +1087,13 @@ where
             self.global_funcs,
             &mut self.var_map,
             self.context.clone(),
-            &self.class_field_offsets,
-            &self.class_method_slots,
-            &self.class_mangled_map,
-            &self.class_vtable_slots,
+            &self.struct_field_offsets,
+            &self.struct_method_slots,
+            &self.struct_mangled_map,
+            &self.struct_vtable_slots,
             &self.interface_id_map,
             &self.interface_method_slots,
-            &self.classes,
+            &self.structs,
             self.extern_c_names,
             self.dep_graph,
             self.module_idx,
@@ -1152,10 +1169,10 @@ where
                     }
 
                     // Partial move (or no generated glue): recursively drop remaining fields.
-                    let Some(hir_struct) = self.classes.get(struct_name) else {
+                    let Some(hir_struct) = self.structs.get(struct_name) else {
                         continue;
                     };
-                    let Some(offsets) = self.class_field_offsets.get(struct_name) else {
+                    let Some(offsets) = self.struct_field_offsets.get(struct_name) else {
                         continue;
                     };
 

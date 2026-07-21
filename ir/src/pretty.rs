@@ -599,7 +599,7 @@ impl IrPrettyPrinter {
             Operator::ShiftLeftAssign => "<<=",
             Operator::ShiftRightAssign => ">>=",
             Operator::BitNot => "~",
-            Operator::LogicalNot => "!",
+            Operator::LogicalOr => "||",
             Operator::Equals => "==",
             Operator::NotEquals => "!=",
             Operator::GreaterThan => ">",
@@ -607,7 +607,6 @@ impl IrPrettyPrinter {
             Operator::GreaterThanOrEqual => ">=",
             Operator::LessThanOrEqual => "<=",
             Operator::LogicalAnd => "&&",
-            Operator::LogicalOr => "||",
             Operator::DerefUnsafe => "[*]",
             Operator::Deref => "*",
             Operator::Ref => "&",
@@ -666,14 +665,14 @@ impl IrPrettyPrinter {
                 )?;
                 writeln!(output, " {{ /* function body */ }}")?;
             }
-            Stmt::StructDecl(class_decl) => {
+            Stmt::StructDecl(struct_decl) => {
                 write!(
                     output,
-                    "{}class {}",
+                    "{}struct {}",
                     self.indent(),
-                    self.resolve_str(class_decl.name)
+                    self.resolve_str(struct_decl.name)
                 )?;
-                writeln!(output, " {{ /* class body */ }}")?;
+                writeln!(output, " {{ /* struct body */ }}")?;
             }
             Stmt::Break(expr, _span) => {
                 write!(output, "{}break", self.indent())?;

@@ -868,6 +868,8 @@ pub enum Op {
     BitOr,
     BitXor,
     BitAnd,
+    LogicalAnd,
+    LogicalOr,
     Assign,
     AddAssign,
     SubAssign,
@@ -896,14 +898,11 @@ pub enum Op {
 }
 
 impl Op {
-    /// Returns (left_binding_power, right_binding_power) for Pratt parsing
-    /// Higher values bind tighter
     pub fn binding_power(&self) -> (u8, u8) {
         match self {
-            // Range operators - lowest precedence
             Op::Range | Op::RangeExcl => (25, 26),
-
-            // Assignment operators - right associative
+            Op::LogicalOr => (30, 31),
+            Op::LogicalAnd => (35, 36),
             Op::Assign => (10, 11),
             Op::AddAssign
             | Op::SubAssign
@@ -915,34 +914,15 @@ impl Op {
             | Op::BitOrAssign
             | Op::BitXorAssign
             | Op::BitAndAssign => (10, 11),
-
-            // Bitwise OR
             Op::BitOr => (42, 43),
-
-            // Bitwise XOR
             Op::BitXor => (43, 44),
-
-            // Bitwise AND
             Op::BitAnd => (44, 45),
-
-            // Equality
             Op::Eq | Op::Neq => (45, 46),
-
-            // Comparison
             Op::Lt | Op::Lte | Op::Gt | Op::Gte => (50, 51),
-
-            // Shift
             Op::Shl | Op::Shr => (55, 56),
-
-            // Additive
             Op::Add | Op::Sub => (60, 61),
-
-            // Multiplicative
             Op::Mul | Op::Div | Op::Mod => (70, 71),
-
-            // Handled in prefix
             Op::BitNot | Op::LogicalNot => (0, 80),
-
             _ => (0, 0),
         }
     }

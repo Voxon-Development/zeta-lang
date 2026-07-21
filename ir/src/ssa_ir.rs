@@ -248,7 +248,7 @@ pub enum Instruction {
         args: SmallVec<Operand, 8>,
     },
 
-    /// Cast class -> interface
+    /// Cast struct -> interface
     UpcastToInterface {
         dest: Value,
         object: Value,
@@ -336,7 +336,9 @@ pub enum InterpolationOperand {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnOp {
-    Not,
+    LogicalNot,
+    BitNot,
+    Neg,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -375,7 +377,7 @@ impl Function {
                 let ty = match p {
                     HirParam::This { kind, .. } => {
                         let inner = match hir_fn.impl_target {
-                            Some(class_name) => SsaType::User(class_name, vec![]),
+                            Some(struct_name) => SsaType::User(struct_name, vec![]),
                             None => unreachable!(),
                         };
                         match kind {
@@ -415,7 +417,7 @@ pub struct MethodInfo {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct ClassLayout {
+pub struct StructLayout {
     pub vtable: SmallVec<MethodInfo, 12>,
 }
 
@@ -430,14 +432,14 @@ where
     'bump: 'a,
 {
     pub functions: HashMap<StrId, Function, FxHashBuilder>,
-    pub classes: HashMap<StrId, HirStruct<'a, 'bump>, FxHashBuilder>,
+    pub structs: HashMap<StrId, HirStruct<'a, 'bump>, FxHashBuilder>,
     pub interfaces: HashMap<StrId, HirInterface<'a, 'bump>, FxHashBuilder>,
     pub enums: HashMap<StrId, HirEnum<'a, 'bump>, FxHashBuilder>,
     pub types: HashMap<StrId, SsaType, FxHashBuilder>,
 
-    pub class_layouts: HashMap<StrId, ClassLayout, FxHashBuilder>,
+    pub struct_layouts: HashMap<StrId, StructLayout, FxHashBuilder>,
     pub interface_layouts: HashMap<StrId, InterfaceLayout, FxHashBuilder>,
-    pub class_interface_vtables: HashMap<(StrId, StrId), VTableInfo, FxHashBuilder>,
+    pub struct_interface_vtables: HashMap<(StrId, StrId), VTableInfo, FxHashBuilder>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -472,6 +474,8 @@ pub enum BinOp {
     BitXor,
     ShiftLeft,
     ShiftRight,
+    LogicalAnd,
+    LogicalOr,
 }
 
 pub fn inst_is_terminator(inst: &Instruction) -> bool {
@@ -487,7 +491,7 @@ pub fn inst_is_terminator(inst: &Instruction) -> bool {
 
 #[derive(Debug, Clone, Default)]
 pub struct VTable {
-    pub class: StrId,
+    pub struct_name: StrId,
     pub interface: StrId,
     pub methods: Vec<StrId>,
 }
