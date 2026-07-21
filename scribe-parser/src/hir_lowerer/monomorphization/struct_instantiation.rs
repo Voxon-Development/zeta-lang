@@ -1,4 +1,4 @@
-use super::naming::instantiate_class_name;
+use super::naming::instantiate_struct_name;
 use super::type_substitution::substitute_type;
 use crate::hir_lowerer::context::LoweringCtx;
 use crate::hir_lowerer::monomorphization::suffix_for_subs;
@@ -9,17 +9,17 @@ use std::rc::Rc;
 use std::sync::Arc;
 use zetaruntime::arena::GrowableAtomicBump;
 
-pub fn instantiate_class_for_types<'a, 'bump>(
+pub fn instantiate_struct_for_types<'a, 'bump>(
     ctx: &LoweringCtx<'a, 'bump>,
-    instantiated_classes: &Rc<RefCell<FxHashMap<(StrId, StrId), StrId>>>,
-    instantiated_class_origins: &Rc<RefCell<FxHashMap<StrId, (StrId, Vec<HirType<'a, 'bump>>)>>>,
+    instantiated_structs: &Rc<RefCell<FxHashMap<(StrId, StrId), StrId>>>,
+    instantiated_struct_origins: &Rc<RefCell<FxHashMap<StrId, (StrId, Vec<HirType<'a, 'bump>>)>>>,
     base_id: StrId,
     concrete_args: &[HirType<'a, 'bump>],
     bump: Arc<GrowableAtomicBump<'bump>>,
 ) -> Option<&'bump HirStruct<'a, 'bump>> {
     if concrete_args.is_empty() {
         return ctx
-            .classes
+            .structs
             .borrow()
             .get(&base_id)
             .map(|c| unsafe { std::mem::transmute::<_, &'bump _>(c) });
@@ -32,7 +32,7 @@ pub fn instantiate_class_for_types<'a, 'bump>(
         return None;
     }
 
-    let binding = ctx.classes.borrow();
+    let binding = ctx.structs.borrow();
     let base = binding.get(&base_id)?;
     let type_map = if let Some(generics) = &base.generics {
         let mut map = FxHashMap::default();
@@ -46,10 +46,10 @@ pub fn instantiate_class_for_types<'a, 'bump>(
     let suffix = suffix_for_subs(ctx.context.clone(), &type_map);
     let key = (base_id, suffix);
     {
-        let cache = instantiated_classes.borrow();
+        let cache = instantiated_structs.borrow();
         if let Some(cached) = cache.get(&key) {
             let ptr = ctx
-                .classes
+                .structs
                 .borrow()
                 .get(cached)
                 .map(|c| unsafe { std::mem::transmute::<_, &'bump _>(c) });
@@ -60,19 +60,19 @@ pub fn instantiate_class_for_types<'a, 'bump>(
     }
     drop(binding);
     let base = {
-        let classes = ctx.classes.borrow();
-        classes.get(&base_id)?.clone()
+        let structs = ctx.structs.borrow();
+        structs.get(&base_id)?.clone()
     };
-    let mut new_class = base.clone();
-    let interned = instantiate_class_name(concrete_args, &base, ctx.context.clone());
-    new_class.name = interned;
+    let mut new_struct = base.clone();
+    let interned = instantiate_struct_name(concrete_args, &base, ctx.context.clone());
+    new_struct.name = interned;
     if let Some(generics) = &base.generics {
         let mut type_map = FxHashMap::default();
         for (param, arg) in generics.iter().zip(concrete_args) {
             type_map.insert(param.name, arg.clone());
         }
         let mut new_fields = Vec::new();
-        for field in new_class.fields {
+        for field in new_struct.fields {
             let field_generics = match field.generics {
                 Some(generics) => {
                     let mut new_generics = Vec::with_capacity(generics.len());
@@ -91,41 +91,60 @@ pub fn instantiate_class_for_types<'a, 'bump>(
                 generics: field_generics,
             });
         }
-        new_class.fields = bump.alloc_slice(&new_fields);
-        new_class.generics = None;
+        new_struct.fields = bump.alloc_slice(&new_fields);
+        new_struct.generics = None;
     }
-    let new_class_ptr = bump.alloc_value(new_class);
+    let new_struct_ptr = bump.alloc_value(new_struct);
     {
-        let mut classes = ctx.classes.borrow_mut();
-        classes.insert(interned, *new_class_ptr);
-        instantiated_classes
+        let mut structs = ctx.structs.borrow_mut();
+        structs.insert(interned, *new_struct_ptr);
+        instantiated_structs
             .borrow_mut()
-            .insert(key, new_class_ptr.name);
-        instantiated_class_origins
+            .insert(key, new_struct_ptr.name);
+        instantiated_struct_origins
             .borrow_mut()
             .insert(interned, (base_id, concrete_args.to_vec()));
     }
-    Some(new_class_ptr)
+    {
+        if ctx.struct_interfaces.borrow().get(&base_id).is_none() {
+            return Some(new_struct_ptr);
+        }
+    }
+    let interfaces = { ctx.struct_interfaces.borrow().get(&base_id).cloned() };
+
+    if let Some(interfaces) = interfaces {
+        ctx.struct_interfaces
+            .borrow_mut()
+            .insert(interned, interfaces);
+    }
+
+    let methods = { ctx.struct_methods.borrow().get(&base_id).cloned() };
+
+    if let Some(methods) = methods {
+        ctx.struct_methods.borrow_mut().insert(interned, methods);
+    }
+
+    Some(new_struct_ptr)
 }
 
 pub fn direct_method_lookup<'a, 'bump>(
     ctx: &LoweringCtx<'a, 'bump>,
-    instantiated_classes: &Rc<RefCell<FxHashMap<(StrId, StrId), StrId>>>,
-    instantiated_class_origins: &Rc<RefCell<FxHashMap<StrId, (StrId, Vec<HirType<'a, 'bump>>)>>>,
-    class_name: &StrId,
-    class_args: &[HirType<'a, 'bump>],
+    instantiated_structs: &Rc<RefCell<FxHashMap<(StrId, StrId), StrId>>>,
+    instantiated_struct_origins: &Rc<RefCell<FxHashMap<StrId, (StrId, Vec<HirType<'a, 'bump>>)>>>,
+    struct_name: &StrId,
+    struct_args: &[HirType<'a, 'bump>],
     method_name: &StrId,
     bump: Arc<GrowableAtomicBump<'bump>>,
 ) -> Option<StrId> {
-    let concrete_name = if class_args.is_empty() {
-        *class_name
+    let concrete_name = if struct_args.is_empty() {
+        *struct_name
     } else {
-        instantiate_class_for_types(
+        instantiate_struct_for_types(
             ctx,
-            instantiated_classes,
-            instantiated_class_origins,
-            *class_name,
-            class_args,
+            instantiated_structs,
+            instantiated_struct_origins,
+            *struct_name,
+            struct_args,
             bump.clone(),
         )?
         .name
