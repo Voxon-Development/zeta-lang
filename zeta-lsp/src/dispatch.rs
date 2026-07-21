@@ -10,7 +10,7 @@ use lsp_types::notification::{
 };
 use lsp_types::request::{
     Completion, DocumentSymbolRequest, GotoDefinition, GotoTypeDefinitionParams, HoverRequest,
-    References, Rename, Request as _,
+    References, Rename, Request as _, SemanticTokensFullRequest,
 };
 use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse,
@@ -18,12 +18,15 @@ use lsp_types::{
     DidSaveTextDocumentParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
     GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams, Location,
     MarkupContent, MarkupKind, Position, PublishDiagnosticsParams, ReferenceParams, RenameParams,
-    SymbolKind, TextDocumentContentChangeEvent, TextEdit, Uri, WorkspaceEdit,
+    SemanticTokens, SemanticTokensParams, SemanticTokensResult, SymbolKind,
+    TextDocumentContentChangeEvent, TextEdit, Uri, WorkspaceEdit,
 };
 use sentinel_typechecker::type_checker::SymbolId;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use zeta_compiler_api::file_handling::compiler_lib_path;
+use zeta_compiler_api::file_loader::choose_file_loader;
 
 use crate::lsp_diagnostics::group_by_file;
 use crate::state::{Document, ServerState};
@@ -44,6 +47,23 @@ pub fn initialize(state: &mut ServerState, params: serde_json::Value) -> Result<
                 #[allow(deprecated)]
                 init.root_uri.as_ref().and_then(|uri| uri_to_path(uri).ok())
             });
+
+        let stdlib = compiler_lib_path().map_err(|e| anyhow::anyhow!("{}", e))?;
+        let loader = choose_file_loader();
+
+        state
+            .compiler
+            .load_directory(&loader, &stdlib, true)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        state
+            .compiler
+            .load_directory(
+                &loader,
+                &state.workspace_root.as_ref().unwrap().join("src"),
+                false,
+            )
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
     }
     Ok(())
 }
@@ -52,8 +72,20 @@ pub fn request(connection: &Connection, state: &mut ServerState, request: &Reque
     match request.method.as_str() {
         HoverRequest::METHOD => {
             let params: HoverParams = serde_json::from_value(request.params.clone())?;
-            let result: Option<Hover> = hover_at(state, &params);
+
+            let result = hover_at(state, &params);
+
             let response = Response::new_ok(request.id.clone(), result);
+
+            connection.sender.send(Message::Response(response))?;
+        }
+        SemanticTokensFullRequest::METHOD => {
+            let params: SemanticTokensParams = serde_json::from_value(request.params.clone())?;
+
+            let result = semantic_tokens_at(state, &params);
+
+            let response = Response::new_ok(request.id.clone(), result);
+
             connection.sender.send(Message::Response(response))?;
         }
         DocumentSymbolRequest::METHOD => {
@@ -165,7 +197,14 @@ pub fn notification(
             };
             let path = doc.path.clone();
             // include_text: false, so re-read from disk explicitly here.
-            let source = std::fs::read_to_string(&path).unwrap_or_default();
+            let source = std::fs::read_to_string(&path).unwrap_or_else(|err| {
+                panic!(
+                    "failed to read file '{}' during didSave: {}",
+                    path.display(),
+                    err
+                )
+            });
+
             let reporter = state.compiler.update_module(&path, source);
             publish_all(connection, &reporter)?;
         }
@@ -194,6 +233,28 @@ pub fn response(state: &mut ServerState, response: &Response) -> Result<()> {
     Ok(())
 }
 
+fn semantic_tokens_at(
+    state: &ServerState,
+    params: &SemanticTokensParams,
+) -> Option<SemanticTokensResult> {
+    let uri = &params.text_document.uri;
+
+    let doc = state.documents.get(uri)?;
+    let module_idx = state.compiler.module_idx_for_path(&doc.path)?;
+    let source = state.compiler.source_text(module_idx)?;
+
+    let checker = state.compiler.type_checker();
+    let checker = checker.borrow();
+
+    let tokens =
+        crate::semantic_tokens::build_semantic_tokens(&checker, &state, module_idx, &source);
+
+    Some(SemanticTokensResult::Tokens(SemanticTokens {
+        result_id: None,
+        data: tokens,
+    }))
+}
+
 /// Publishes one publishDiagnostics notification per file touched by this
 /// reporter, converting each file_name string back to a file:// URI.
 fn publish_all(
@@ -201,9 +262,10 @@ fn publish_all(
     reporter: &ir::errors::reporter::ErrorReporter,
 ) -> Result<()> {
     for (file_name, diagnostics) in group_by_file(reporter) {
-        let Ok(uri) = lsp_types::Uri::from_str(file_name.as_str()) else {
+        let Ok(uri) = path_to_uri(Path::new(&file_name)) else {
             continue;
         };
+
         let params = PublishDiagnosticsParams {
             uri,
             diagnostics,
@@ -582,24 +644,10 @@ fn go_to_definition(
     let (occ_name, ty, symbol_id) =
         tightest_occurrence(checker.occurrences(), module_idx, line, column)?;
 
-    let (target_module, span) = match symbol_id {
-        SymbolId::Local(_) | SymbolId::Field { .. } => {
-            let span = declaration_span(checker.occurrences(), symbol_id)?;
-            (module_idx, span)
-        }
-        SymbolId::Item {
-            module_idx: m,
-            item_idx,
-            tag,
-        } => {
-            let stmts = state.compiler.ast_stmts(m)?;
-            let span = item_decl_span(stmts, item_idx, tag)?;
-            (m, span)
-        }
-    };
+    let span = declaration_span(checker.occurrences(), symbol_id)?;
 
-    let target_path = state.compiler.path_for_module(target_module)?;
-    let target_source = state.compiler.source_text(target_module)?;
+    let target_path = state.compiler.path_for_module(module_idx)?;
+    let target_source = state.compiler.source_text(module_idx)?;
     let range = span_to_range(
         &target_source,
         span.line,

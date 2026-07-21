@@ -1,8 +1,18 @@
+use ir::ast::Stmt;
 use lsp_types::{SemanticToken, SemanticTokenType, SemanticTokensLegend};
 use sentinel_typechecker::type_checker::{SymbolId, TypeChecker};
 
-pub const TOKEN_TYPES: &[SemanticTokenType] =
-    &[SemanticTokenType::VARIABLE, SemanticTokenType::PROPERTY];
+use crate::state::ServerState;
+
+pub const TOKEN_TYPES: &[SemanticTokenType] = &[
+    SemanticTokenType::VARIABLE,  // 0
+    SemanticTokenType::PROPERTY,  // 1
+    SemanticTokenType::FUNCTION,  // 2
+    SemanticTokenType::METHOD,    // 3
+    SemanticTokenType::STRUCT,    // 4
+    SemanticTokenType::ENUM,      // 5
+    SemanticTokenType::INTERFACE, // 6
+];
 
 pub fn legend() -> SemanticTokensLegend {
     SemanticTokensLegend {
@@ -13,6 +23,7 @@ pub fn legend() -> SemanticTokensLegend {
 
 pub fn build_semantic_tokens(
     checker: &TypeChecker,
+    state: &ServerState,
     module_idx: usize,
     source: &str,
 ) -> Vec<SemanticToken> {
@@ -29,9 +40,29 @@ pub fn build_semantic_tokens(
             continue;
         }
         let token_type = match symbol_id {
-            SymbolId::Local(_) => 0u32,
-            SymbolId::Field { .. } => 1u32,
-            SymbolId::Item { .. } => continue, // TODO: usage sites not tracked
+            SymbolId::Local(_) => 0,
+
+            SymbolId::Field { .. } => 1,
+
+            SymbolId::Method { .. } => 3,
+
+            SymbolId::Item {
+                module_idx,
+                item_idx,
+                ..
+            } => {
+                let Some(stmts) = state.compiler.ast_stmts(*module_idx) else {
+                    continue;
+                };
+
+                match stmts.get(*item_idx) {
+                    Some(Stmt::FuncDecl(_)) => 2,
+                    Some(Stmt::StructDecl(_)) => 4,
+                    Some(Stmt::EnumDecl(_)) => 5,
+                    Some(Stmt::InterfaceDecl(_)) => 6,
+                    _ => continue,
+                }
+            }
         };
 
         let expected = name.to_string();
