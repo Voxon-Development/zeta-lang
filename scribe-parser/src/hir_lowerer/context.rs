@@ -17,7 +17,7 @@ use crate::optimized_string_buffering::build_module_scoped_name;
 pub type FxHashSet<T> = HashSet<T, FxHashBuilder>;
 
 pub struct LoweringCtx<'a, 'bump> {
-    pub classes: Rc<RefCell<FxHashMap<StrId, HirStruct<'a, 'bump>>>>,
+    pub structs: Rc<RefCell<FxHashMap<StrId, HirStruct<'a, 'bump>>>>,
     pub interfaces: Rc<RefCell<FxHashMap<StrId, HirInterface<'a, 'bump>>>>,
     pub functions: Rc<RefCell<FxHashMap<StrId, HirFunc<'a, 'bump>>>>,
     pub func_protos: RefCell<FxHashMap<StrId, HirFuncProto<'a, 'bump>>>,
@@ -31,8 +31,9 @@ pub struct LoweringCtx<'a, 'bump> {
     pub module_idx: usize,
     pub struct_interfaces: Rc<RefCell<FxHashMap<StrId, Vec<StrId>>>>,
     pub struct_methods: Rc<RefCell<FxHashMap<StrId, FxHashMap<StrId, StrId>>>>,
-    pub instantiated_classes: Rc<RefCell<FxHashMap<(StrId, StrId), StrId>>>,
-    pub instantiated_class_origins: Rc<RefCell<FxHashMap<StrId, (StrId, Vec<HirType<'a, 'bump>>)>>>,
+    pub instantiated_structs: Rc<RefCell<FxHashMap<(StrId, StrId), StrId>>>,
+    pub instantiated_struct_origins:
+        Rc<RefCell<FxHashMap<StrId, (StrId, Vec<HirType<'a, 'bump>>)>>>,
     /// Concrete type of `this` while lowering the current method's
     /// signature/body. Set/cleared per-method in `lower_impl_decl`.
     pub current_self_type: RefCell<Option<HirType<'a, 'bump>>>,
@@ -55,6 +56,11 @@ impl<'a, 'bump> LoweringCtx<'a, 'bump> {
 
     pub(super) fn resolve_type_path_name(&self, path: &[StrId], name: StrId) -> StrId {
         if path.is_empty() {
+            // TODO: probably add `builtin_interfaces` or something
+            let s = self.context.resolve_string(&name);
+            if matches!(s, "Drop" | "Copy" | "Clone") {
+                return name;
+            }
             if let Some(&target_module_idx) = self.imported_modules.borrow().get(&name) {
                 return self.mangle_via_module(target_module_idx, name);
             }
@@ -105,7 +111,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     ) -> Self {
         Self {
             ctx: LoweringCtx {
-                classes: registry.classes,
+                structs: registry.structs,
                 functions: registry.functions.clone(),
                 func_protos: RefCell::new(FxHashMap::default()),
                 interfaces: registry.interfaces,
@@ -120,8 +126,8 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 struct_interfaces: registry.struct_interfaces,
                 struct_methods: registry.struct_methods,
                 current_self_type: RefCell::new(None),
-                instantiated_classes: registry.instantiated_classes.clone(),
-                instantiated_class_origins: registry.instantiated_class_origins.clone(),
+                instantiated_structs: registry.instantiated_structs.clone(),
+                instantiated_struct_origins: registry.instantiated_struct_origins.clone(),
             },
             error_reporter: ErrorReporter::new(),
             _phantom: PhantomData,
