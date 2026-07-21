@@ -24,36 +24,32 @@ impl<T> ArrayList<T> {
     }
 
     func push(&mut this, value: T) {
-        println_int(1);
-        if (this.ptr == null) {
-            println_int(1293);
+        if (this.ptr == null || this.len == this.cap) {
             this.grow();
         }
-        if (this.len == this.cap) {
-            println_int(2);
-            this.grow();
-        }
-
-        println_int($sizeof<T>() as i32);
 
         this.ptr[this.len] = value;
-        println_int(67);
         this.len += 1;
     }
 
     func get(&this, index: usize): &T {
+        if (index >= this.len) {
+            panic "out of bounds";
+        }
         return &this.ptr[index];
     }
 
     func get_mut(&mut this, index: usize): &mut T {
+        if (index >= this.len) {
+            panic "out of bounds";
+        }
         return &mut this.ptr[index];
     }
 
     func grow(&mut this) {
-        println_int(3);
         let new_cap: usize =
             if (this.cap == 0) {
-                4
+                16
             } else {
                 this.cap * 2
             };
