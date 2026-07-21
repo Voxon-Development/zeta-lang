@@ -19,18 +19,46 @@ pub struct AstModule<'a, 'bump> {
 
 #[derive(Clone, Debug)]
 pub enum NodeKind {
-    Module { module_idx: usize },
-    TypeDecl { module_idx: usize, item_idx: usize },
-    FuncSig { module_idx: usize, item_idx: usize },
-    FuncBody { module_idx: usize, item_idx: usize },
-    ConstDecl { module_idx: usize, item_idx: usize },
-    TraitDecl { module_idx: usize, item_idx: usize },
-    TraitImpl { module_idx: usize, item_idx: usize },
+    Module {
+        module_idx: usize,
+    },
+    TypeDecl {
+        module_idx: usize,
+        item_idx: usize,
+    },
+    FuncSig {
+        module_idx: usize,
+        item_idx: usize,
+    },
+    FuncBody {
+        module_idx: usize,
+        item_idx: usize,
+    },
+    ConstDecl {
+        module_idx: usize,
+        item_idx: usize,
+    },
+    TraitDecl {
+        module_idx: usize,
+        item_idx: usize,
+    },
+    TraitImpl {
+        module_idx: usize,
+        item_idx: usize,
+    },
+    Method {
+        module_idx: usize,
+        item_idx: usize,
+        method_idx: usize,
+    },
 }
 
 impl NodeKind {
     pub fn is_func_body(&self) -> bool {
         matches!(self, NodeKind::FuncBody { .. })
+    }
+    pub fn is_method(&self) -> bool {
+        matches!(self, NodeKind::Method { .. })
     }
     pub fn is_type_decl(&self) -> bool {
         matches!(self, NodeKind::TypeDecl { .. })
@@ -43,7 +71,8 @@ impl NodeKind {
             | NodeKind::FuncBody { module_idx, .. }
             | NodeKind::ConstDecl { module_idx, .. }
             | NodeKind::TraitDecl { module_idx, .. }
-            | NodeKind::TraitImpl { module_idx, .. } => Some(*module_idx),
+            | NodeKind::TraitImpl { module_idx, .. }
+            | NodeKind::Method { module_idx, .. } => Some(*module_idx),
         }
     }
 }
@@ -130,6 +159,14 @@ pub struct DepGraph {
 
     /// Imports that could not be resolved during graph construction.
     pub unresolved_imports: Vec<UnresolvedImport>,
+
+    /// (module_idx, impl_item_idx, method_idx) -> NodeIdx
+    method_index: HashMap<(usize, usize, usize), NodeIdx>,
+    /// (declaring type name, method name) -> (module_idx, impl_item_idx, method_idx).
+    /// Global by design, methods aren't module-scoped for lookup the way
+    /// free functions are (a call site knows the receiver's type, not
+    /// which module declared the impl).
+    method_symbol_table: HashMap<(StrId, StrId), (usize, usize, usize)>,
 }
 
 impl DepGraph {
@@ -142,6 +179,8 @@ impl DepGraph {
             path_index: PathIndex::new(),
             module_paths: HashMap::default(),
             unresolved_imports: Vec::new(),
+            method_index: HashMap::default(),
+            method_symbol_table: HashMap::default(),
         }
     }
 
@@ -153,6 +192,14 @@ impl DepGraph {
             .iter()
             .filter(move |&(&(_, m), _)| m == module_idx)
             .map(|(&(name, _), &(_, _, tag))| (name, tag))
+    }
+
+    pub fn resolve_item_in_module(
+        &self,
+        module_idx: usize,
+        name: StrId,
+    ) -> Option<(usize, usize, &'static str)> {
+        self.symbol_table.get(&(name, module_idx)).copied()
     }
 
     fn remove_node(&mut self, idx: NodeIdx) {
@@ -181,12 +228,25 @@ impl DepGraph {
             .filter(|(m, _, tag)| *m == module_idx && *tag != "module")
             .copied()
             .collect();
-
         for key in keys {
             if let Some(node_idx) = self.item_index.remove(&key) {
                 self.remove_node(node_idx);
             }
         }
+
+        let method_keys: Vec<(usize, usize, usize)> = self
+            .method_index
+            .keys()
+            .filter(|(m, _, _)| *m == module_idx)
+            .copied()
+            .collect();
+        for key in method_keys {
+            if let Some(node_idx) = self.method_index.remove(&key) {
+                self.remove_node(node_idx);
+            }
+        }
+        self.method_symbol_table
+            .retain(|_, &mut (m, _, _)| m != module_idx);
 
         self.symbol_table.retain(|&(_, m), _| m != module_idx);
         self.unresolved_imports
@@ -302,6 +362,16 @@ impl DepGraph {
     /// path_index built from `package` declarations during graph construction.
     pub fn resolve_module_path(&self, path: &[StrId]) -> Option<usize> {
         self.path_index.resolve(path)
+    }
+
+    pub fn resolve_method(
+        &self,
+        target_type: StrId,
+        method_name: StrId,
+    ) -> Option<(usize, usize, usize)> {
+        self.method_symbol_table
+            .get(&(target_type, method_name))
+            .copied()
     }
 
     /// Resolve `name` as a function declared directly in `module_idx`,
@@ -472,14 +542,38 @@ impl DepGraph {
                 self.register_item_node(module_idx, item_idx, "trait", td);
             }
             Stmt::ImplDecl(i) => {
+                let target_name = i.target.struct_name();
                 let td = self.push_node(
                     NodeKind::TraitImpl {
                         module_idx,
                         item_idx,
                     },
-                    i.target.struct_name(),
+                    target_name,
                 );
                 self.register_item_node(module_idx, item_idx, "impl", td);
+
+                if let Some(methods) = i.methods {
+                    for (method_idx, method) in methods.iter().enumerate() {
+                        let method_node = self.push_node(
+                            NodeKind::Method {
+                                module_idx,
+                                item_idx,
+                                method_idx,
+                            },
+                            Some(method.name),
+                        );
+                        self.method_index
+                            .insert((module_idx, item_idx, method_idx), method_node);
+                        // Method depends on its own impl block (target type, generics, interface).
+                        self.add_edge(method_node, td);
+                        if let Some(target_name) = target_name {
+                            self.method_symbol_table.insert(
+                                (target_name, method.name),
+                                (module_idx, item_idx, method_idx),
+                            );
+                        }
+                    }
+                }
             }
             Stmt::Const(c) => {
                 let cd = self.push_node(
@@ -579,7 +673,7 @@ impl DepGraph {
 
             Stmt::ImplDecl(i) => {
                 if let Some(impl_node) = self.lookup_item_node(module_idx, item_idx, "impl") {
-                    self.walk_impl_decl(i, impl_node, module_idx, pool);
+                    self.walk_impl_decl(i, impl_node, module_idx, item_idx, pool);
                 }
             }
 
@@ -714,11 +808,10 @@ impl DepGraph {
         i: &ImplDecl<'a, 'bump>,
         from_node: NodeIdx,
         module_idx: usize,
+        item_idx: usize,
         pool: &StringPool,
     ) {
-        // The type being implemented
         self.add_ast_type_dep(from_node, &i.target, module_idx, pool);
-        // The interface being implemented, if any
         if let Some(iface) = &i.interface {
             self.add_ast_type_dep(from_node, iface, module_idx, pool);
         }
@@ -730,10 +823,15 @@ impl DepGraph {
             }
         }
         if let Some(methods) = i.methods {
-            for m in methods {
-                self.walk_func_signature(m, from_node, module_idx, pool);
+            for (method_idx, m) in methods.iter().enumerate() {
+                let method_node = self
+                    .method_index
+                    .get(&(module_idx, item_idx, method_idx))
+                    .copied()
+                    .unwrap_or(from_node);
+                self.walk_func_signature(m, method_node, module_idx, pool);
                 if let Some(body) = m.body {
-                    self.walk_block(body, from_node, module_idx, pool);
+                    self.walk_block(body, method_node, module_idx, pool);
                 }
             }
         }
@@ -1586,6 +1684,14 @@ impl DepGraph {
             } => {
                 format!("Impl(m{}:i{})", module_idx, item_idx)
             }
+            NodeKind::Method {
+                module_idx,
+                item_idx,
+                method_idx,
+            } => format!(
+                "Method(mo_idx{}:i{}:me_idx{})",
+                module_idx, item_idx, method_idx
+            ),
         };
         let hint_str = node
             .hint

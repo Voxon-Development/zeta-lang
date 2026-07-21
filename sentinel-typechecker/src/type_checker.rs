@@ -44,6 +44,11 @@ pub enum SymbolId {
         item_idx: usize,
         tag: &'static str,
     },
+    Method {
+        module_idx: usize,
+        item_idx: usize,
+        method_idx: usize,
+    },
 }
 
 struct ModuleImports {
@@ -109,6 +114,64 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             call_loans: FxHashMap::default(),
             next_opaque_id: 0,
         }
+    }
+
+    fn record_item_occurrence(
+        &mut self,
+        span: SourceSpan<'a>,
+        name: StrId,
+        ty: HirType<'a, 'bump>,
+        declaring_module_idx: usize,
+    ) {
+        let Some((m, item_idx, tag)) = self
+            .context
+            .dep_graph
+            .borrow()
+            .resolve_item_in_module(declaring_module_idx, name)
+        else {
+            return;
+        };
+        self.occurrences.push((
+            span,
+            name,
+            ty,
+            self.context.current_module_idx,
+            SymbolId::Item {
+                module_idx: m,
+                item_idx,
+                tag,
+            },
+            false,
+        ));
+    }
+
+    fn record_method_occurrence(
+        &mut self,
+        span: SourceSpan<'a>,
+        name: StrId,
+        ty: HirType<'a, 'bump>,
+        target_type: StrId,
+    ) {
+        let Some((module_idx, item_idx, method_idx)) = self
+            .context
+            .dep_graph
+            .borrow()
+            .resolve_method(target_type, name)
+        else {
+            return;
+        };
+        self.occurrences.push((
+            span,
+            name,
+            ty,
+            self.context.current_module_idx,
+            SymbolId::Method {
+                module_idx,
+                item_idx,
+                method_idx,
+            },
+            false,
+        ));
     }
 
     fn expr_references_local(&self, expr: &HirExpr<'a, 'bump>, local: StrId) -> bool {
@@ -1173,8 +1236,8 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 span,
                 type_args,
             } => match &callee {
-                HirExpr::Ident(func_name, _) => {
-                    self.set_span(*span);
+                HirExpr::Ident(func_name, ident_span) => {
+                    self.set_span(*ident_span);
                     let lookup_name = self.str_id_to_string(*func_name);
                     let func = match self.context.get_function(&lookup_name) {
                         Some(f) => f,
@@ -1183,6 +1246,12 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                             return HirType::Unknown;
                         }
                     };
+                    self.record_item_occurrence(
+                        *ident_span,
+                        *func_name,
+                        func.return_type.unwrap_or(HirType::Void),
+                        func.declaring_module_idx,
+                    );
 
                     self.recover(
                         self.check_visibility(
@@ -1278,7 +1347,12 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     ret_ty
                 }
 
-                HirExpr::FieldAccess { object, field, .. } => {
+                HirExpr::FieldAccess {
+                    object,
+                    field,
+                    span,
+                } => {
+                    self.set_span(*span);
                     let obj_type = self.check_expr(object);
                     let stripped = Self::strip_ref(&obj_type);
 
@@ -1347,10 +1421,10 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                         return method.return_type.unwrap_or(HirType::Void);
                     }
 
-                    let (type_name, _recv_type_args) = match stripped {
+                    let (struct_name_id, type_name, _recv_type_args) = match stripped {
                         HirType::Struct {
                             name, type_args, ..
-                        } => (name.to_string(), *type_args),
+                        } => (name, name.to_string(), *type_args),
                         _ => {
                             self.record(TypeErrorKind::Generic(format!(
                                 "cannot call method on non-struct type: {}",
@@ -1382,6 +1456,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     }
 
                     let ret_ty = func.return_type.unwrap_or(HirType::Void);
+                    self.record_method_occurrence(*span, *field, ret_ty, *struct_name_id);
 
                     let template = if self.return_type_may_alias(&ret_ty) {
                         Some(self.analyze_ref_template(&func))
@@ -1451,6 +1526,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     ret_ty
                 }
                 HirExpr::ModuleAccess(access) => {
+                    self.set_span(access.span);
                     let member_name = access.member.to_string();
 
                     // First: is access.path a single-segment local alias registered via
@@ -1566,10 +1642,24 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                             }
                         }
                     }
-                    func.return_type.unwrap_or(HirType::Void)
+                    let ret_ty = func.return_type.unwrap_or(HirType::Void);
+                    if let Some(midx) = resolved_module_idx {
+                        if free_func.is_some() {
+                            self.record_item_occurrence(access.span, access.member, ret_ty, midx);
+                        } else if let Some(target_type) = assoc_type_name {
+                            self.record_method_occurrence(
+                                access.span,
+                                access.member,
+                                ret_ty,
+                                target_type,
+                            );
+                        }
+                    }
+                    ret_ty
                 }
 
                 other => {
+                    self.set_span(*span);
                     let callee_type = self.check_expr(other);
                     match callee_type {
                         HirType::Lambda { return_type, .. } => *return_type,
@@ -1598,7 +1688,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 type_args,
             } => {
                 self.set_span(*span);
-                let HirExpr::Ident(struct_name_id, _) = name else {
+                let HirExpr::Ident(struct_name_id, name_span) = name else {
                     return HirType::Void;
                 };
                 let struct_name_str = self.str_id_to_string(*struct_name_id);
@@ -1708,11 +1798,15 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     )));
                 }
 
-                HirType::Struct {
+                let result_ty = HirType::Struct {
                     name: *struct_name_id,
                     field_types: self.context.bump.alloc_slice(&resolved_field_types),
                     type_args: type_args.unwrap_or(&[]),
+                };
+                if let Some(owner) = self.context.struct_owner(&struct_name_str) {
+                    self.record_item_occurrence(*name_span, *struct_name_id, result_ty, owner);
                 }
+                result_ty
             }
             HirExpr::InterfaceCall {
                 callee,
