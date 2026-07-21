@@ -33,9 +33,6 @@ pub enum Commands {
     /// Index documentation for Zed
     IndexDocs,
 
-    /// Print version information
-    Version,
-
     /// Type-check a project
     Check {
         /// Project directory
@@ -61,10 +58,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         Commands::IndexDocs => {
             docs::index()?;
-        }
-
-        Commands::Version => {
-            println!("Zeta version {}", env!("CARGO_PKG_VERSION"));
         }
 
         Commands::Check { path } => {

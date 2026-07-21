@@ -1,0 +1,11 @@
+[package]
+name = "zetaup"
+version = "0.2.0-alpha"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.5.53", features = ["derive"] }
+ureq = { version = "3", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+tar = "0.4"
+flate2 = "1.0"

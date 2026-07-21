@@ -12,8 +12,6 @@ use zeta_compiler_api::main_structs::CompilerError;
 #[global_allocator]
 static ALLOCATOR: SnMalloc = SnMalloc;
 
-const CURRENT_VERSION: &'static str = env!("CARGO_PKG_VERSION");
-
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
@@ -53,7 +51,6 @@ enum Commands {
         #[arg(last = true)]
         args: Vec<String>,
     },
-    Upgrade,
 }
 
 fn main() -> Result<(), CompilerError<'static>> {
@@ -76,16 +73,6 @@ fn main() -> Result<(), CompilerError<'static>> {
     };
 
     let verbose = cli.verbose;
-
-    if let Commands::Upgrade = cli.command {
-        if let Err(e) = run_upgrade(verbose) {
-            eprintln!("Upgrade failed: {e}");
-            std::process::exit(1);
-        }
-        let duration = start.elapsed();
-        println!("Operation completed in {:.2?}", duration);
-        return Ok(());
-    }
 
     let lib_override = cli.lib.clone();
 
@@ -115,7 +102,6 @@ fn main() -> Result<(), CompilerError<'static>> {
             // TODO: implement run
             Ok(())
         }
-        Commands::Upgrade => unreachable!("handled above"),
     };
 
     let duration = start.elapsed();
@@ -166,137 +152,4 @@ where
 
     compiler.emit(&out_dir, optimize, verbose, emit_obj)?;
     Ok(())
-}
-
-const GITHUB_REPO: &str = "Voxon-Development/zeta-lang";
-const COMPILER_ASSET_NAME: &str = "zeta-lang";
-const LSP_ASSET_NAME: &str = "zeta-lsp";
-
-#[derive(serde::Deserialize)]
-struct GhAsset {
-    name: String,
-    browser_download_url: String,
-}
-
-#[derive(serde::Deserialize)]
-struct GhRelease {
-    tag_name: String,
-    assets: Vec<GhAsset>,
-}
-
-fn run_upgrade(verbose: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
-    // GitHub's API requires a User-Agent header on every request or it 403s.
-    let release: GhRelease = ureq::get(&url)
-        .header("User-Agent", "zeta-compiler-upgrade")
-        .call()?
-        .body_mut()
-        .read_json::<GhRelease>()?;
-
-    let latest_version = release.tag_name.trim_start_matches('v');
-
-    if !is_newer(latest_version, CURRENT_VERSION) {
-        println!("Already up to date (v{CURRENT_VERSION}).");
-        return Ok(());
-    }
-    println!("New version available: v{latest_version} (current: v{CURRENT_VERSION})");
-
-    let compiler_asset = release
-        .assets
-        .iter()
-        .find(|a| a.name == COMPILER_ASSET_NAME)
-        .ok_or(format!(
-            "release v{latest_version} is missing asset `{COMPILER_ASSET_NAME}`"
-        ))?;
-    let lsp_asset = release.assets.iter().find(|a| a.name == LSP_ASSET_NAME);
-
-    let current_exe = std::env::current_exe()?;
-    let install_dir = current_exe
-        .parent()
-        .ok_or("running binary has no parent directory")?;
-
-    download_and_replace(
-        &compiler_asset.browser_download_url,
-        &install_dir.join("zeta-compiler"),
-        verbose,
-    )?;
-
-    match lsp_asset {
-        Some(lsp_asset) => {
-            download_and_replace(
-                &lsp_asset.browser_download_url,
-                &install_dir.join("zeta-lsp"),
-                verbose,
-            )?;
-        }
-        None if verbose => {
-            println!(
-                "Note: release v{latest_version} has no `{LSP_ASSET_NAME}` asset, skipping zeta-lsp."
-            );
-        }
-        None => {}
-    }
-
-    println!("Upgraded to v{latest_version}.");
-    Ok(())
-}
-
-fn download_and_replace(
-    url: &str,
-    dest: &PathBuf,
-    verbose: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    if verbose {
-        println!("Downloading {url}");
-    }
-
-    let mut reader = ureq::get(url)
-        .header("User-Agent", "zeta-compiler-upgrade")
-        .call()?
-        .into_body()
-        .into_reader();
-
-    let tmp_path = dest.with_extension("new");
-    {
-        let mut file = std::fs::File::create(&tmp_path)?;
-        std::io::copy(&mut reader, &mut file)?;
-    }
-
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = std::fs::metadata(&tmp_path)?.permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&tmp_path, perms)?;
-
-    std::fs::rename(&tmp_path, dest)?;
-
-    if verbose {
-        println!("Installed {}", dest.display());
-    }
-    Ok(())
-}
-
-fn parse_version(v: &str) -> (u64, u64, u64, Option<&str>) {
-    let (core, pre) = v.split_once('-').map_or((v, None), |(c, p)| (c, Some(p))); // alpha/beta
-    let mut parts = core.split('.').map(|p| p.parse::<u64>().unwrap_or(0));
-    (
-        parts.next().unwrap_or(0),
-        parts.next().unwrap_or(0),
-        parts.next().unwrap_or(0),
-        pre,
-    )
-}
-
-fn is_newer(latest: &str, current: &str) -> bool {
-    let (lmaj, lmin, lpatch, lpre) = parse_version(latest);
-    let (cmaj, cmin, cpatch, cpre) = parse_version(current);
-
-    if (lmaj, lmin, lpatch) != (cmaj, cmin, cpatch) {
-        return (lmaj, lmin, lpatch) > (cmaj, cmin, cpatch);
-    }
-    match (cpre, lpre) {
-        (Some(_), None) => true,
-        (None, Some(_)) => false,
-        (Some(a), Some(b)) => a != b,
-        (None, None) => false,
-    }
 }
