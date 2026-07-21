@@ -6,12 +6,13 @@ use snmalloc_rs::SnMalloc;
 use zeta_compiler_api::Compiler;
 
 use zeta_compiler_api::file_handling::compiler_lib_path;
+use zeta_compiler_api::file_loader::choose_file_loader;
 use zeta_compiler_api::main_structs::CompilerError;
 
 #[global_allocator]
 static ALLOCATOR: SnMalloc = SnMalloc;
 
-const CURRENT_VERSION: &'static str = "0.1.0-alpha";
+const CURRENT_VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -87,17 +88,6 @@ fn main() -> Result<(), CompilerError<'static>> {
     }
 
     let lib_override = cli.lib.clone();
-    match find_latest_version() {
-        Ok(latest_version) => {
-            if !is_newer(latest_version.as_str(), CURRENT_VERSION) {
-                println!("Already up to date (v{CURRENT_VERSION}).");
-            }
-            println!("New version available: v{latest_version} (current: v{CURRENT_VERSION})");
-        }
-        Err(_) => {
-            // Whatever, it's fine
-        }
-    }
 
     let result = match cli.command {
         Commands::Build {
@@ -140,18 +130,6 @@ fn main() -> Result<(), CompilerError<'static>> {
     }
 }
 
-fn find_latest_version() -> Result<String, Box<dyn std::error::Error>> {
-    let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
-    // GitHub's API requires a User-Agent header on every request or it 403s.
-    let release: GhRelease = ureq::get(&url)
-        .header("User-Agent", "zeta-compiler-upgrade")
-        .call()?
-        .body_mut()
-        .read_json::<GhRelease>()?;
-
-    Ok(release.tag_name.trim_start_matches('v').to_string())
-}
-
 fn run_compiler<'a, 'bump>(
     path: Option<PathBuf>,
     out_dir: PathBuf,
@@ -173,13 +151,14 @@ where
 
     let mut compiler = Compiler::new()?;
 
-    let stdlib_diags = compiler.load_directory(&stdlib_path, true)?;
+    let file_loader = choose_file_loader();
+    let stdlib_diags = compiler.load_directory(&file_loader, &stdlib_path, true)?;
     if stdlib_diags.has_errors() {
         stdlib_diags.report_all();
         return Err(CompilerError::ParserError(vec![]));
     }
 
-    let user_diags = compiler.load_directory(&source_path, false)?;
+    let user_diags = compiler.load_directory(&file_loader, &source_path, false)?;
     if user_diags.has_errors() {
         user_diags.report_all();
         return Err(CompilerError::TypeCheckError);
@@ -206,8 +185,6 @@ struct GhRelease {
 }
 
 fn run_upgrade(verbose: bool) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Current version: v{CURRENT_VERSION}");
-
     let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
     // GitHub's API requires a User-Agent header on every request or it 403s.
     let release: GhRelease = ureq::get(&url)

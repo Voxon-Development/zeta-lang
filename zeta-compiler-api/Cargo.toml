@@ -1,6 +1,6 @@
 [package]
 name = "zeta-compiler-api"
-version = "0.1.0"
+version = "0.2.0-alpha"
 edition = "2024"
 
 [dependencies]
@@ -12,3 +12,4 @@ engraver-assembly-emit = { path = "../engraver-assembly-emit" }
 ir = { path = "../ir" }
 sentinel-typechecker = { path = "../sentinel-typechecker" }
 walkdir = "2.5.0"
+io-uring = "0.7"

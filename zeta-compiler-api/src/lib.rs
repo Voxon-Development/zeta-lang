@@ -23,10 +23,14 @@ use zetaruntime::string_pool::StringPool;
 
 pub mod compilation_passes;
 pub mod file_handling;
+pub mod file_loader;
+pub mod io_uring_file_loader;
 pub mod link;
 pub mod main_structs;
+pub mod std_file_loader;
 
 use crate::compilation_passes::pass_hir_lowering;
+use crate::file_loader::FileLoader;
 use crate::main_structs::{CompilerError as BuildError, ModuleWithArena};
 
 pub struct Compiler<'a, 'bump> {
@@ -115,8 +119,7 @@ where
     }
 
     pub fn module_idx_for_path(&self, path: &Path) -> Option<usize> {
-        let stem = path.file_stem()?.to_str()?;
-        let name = StrId(self.pool.intern(stem));
+        let name = StrId(self.pool.intern(path.to_string_lossy().as_ref()));
         self.module_ids.get(&name).copied()
     }
 
@@ -132,16 +135,44 @@ where
         Some(self.modules.get(&module_idx)?.source.to_string())
     }
 
-    pub fn load_directory(
+    pub fn load_directory<L: FileLoader>(
         &mut self,
+        loader: &L,
         dir: &Path,
         is_stdlib: bool,
     ) -> Result<ErrorReporter<'a>, BuildError<'a>> {
         let files = crate::file_handling::collect_zeta_files(dir)?;
+
+        let sources = loader
+            .load_files(&files)
+            .map_err(|e| BuildError::FailedToReadFile(dir.to_path_buf(), e))?;
+
         let mut reporter = ErrorReporter::new();
-        for file in files {
-            reporter.merge(self.load_module_from_disk(&file, is_stdlib)?);
+
+        for file in sources {
+            reporter.merge(self.load_module(&file.path, file.source, is_stdlib)?);
         }
+
+        Ok(reporter)
+    }
+
+    fn load_module(
+        &mut self,
+        path: &Path,
+        source: String,
+        is_stdlib: bool,
+    ) -> Result<ErrorReporter<'a>, BuildError<'a>> {
+        let canonical_name = path
+            .to_str()
+            .ok_or_else(|| BuildError::InvalidFileName(Vec::new()))?;
+
+        let parsed = crate::file_handling::parse_single_file_from_source(
+            self.pool.clone(),
+            path.to_path_buf(),
+            source,
+        )?;
+        let reporter = self.ingest_parsed_module(canonical_name, parsed, is_stdlib);
+
         Ok(reporter)
     }
 
@@ -150,15 +181,13 @@ where
         path: &Path,
         is_stdlib: bool,
     ) -> Result<ErrorReporter<'a>, BuildError<'a>> {
-        let file_stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| BuildError::InvalidFileName(Vec::new()))?
-            .to_string();
+        let canonical_name = path
+            .to_str()
+            .ok_or_else(|| BuildError::InvalidFileName(Vec::new()))?;
 
         let parsed =
             crate::file_handling::parse_single_file(self.pool.clone(), path.to_path_buf())?;
-        let reporter = self.ingest_parsed_module(&file_stem, parsed, is_stdlib);
+        let reporter = self.ingest_parsed_module(canonical_name, parsed, is_stdlib);
 
         Ok(reporter)
     }
@@ -225,15 +254,14 @@ where
     }
 
     pub fn update_module(&mut self, path: &Path, source: String) -> ErrorReporter<'a> {
-        let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        let canonical_name = StrId(self.pool.intern(file_stem));
+        let canonical_name = StrId(self.pool.intern(&path.to_string_lossy()));
         let module_idx = self.module_idx_for(canonical_name);
 
         let mut reporter = self.make_reporter();
 
         let parsed = match crate::file_handling::parse_single_file_from_source(
             self.pool.clone(),
-            PathBuf::from(file_stem),
+            PathBuf::from(canonical_name.as_str()),
             source,
         ) {
             Ok(m) => m,
@@ -246,7 +274,7 @@ where
         for perr in &parsed.parser_diagnostics.errors {
             reporter.add_parser_error(perr.clone());
         }
-        reporter.add_source_file(file_stem.to_string(), parsed.source.to_string());
+        reporter.add_source_file(canonical_name.to_string(), parsed.source.to_string());
         if parsed.parser_diagnostics.has_errors() {
             return reporter;
         }
