@@ -786,6 +786,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "io-uring"
+version = "0.7.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9080b15e63775b9a2ac7dca720f7050a8b955e092ea0f6020a4a80f69998cdc0"
+dependencies = [
+ "bitflags 2.9.1",
+ "cfg-if",
+ "libc",
+]
+
+[[package]]
 name = "ir"
 version = "0.1.0"
 dependencies = [
@@ -1759,11 +1770,12 @@ dependencies = [
 
 [[package]]
 name = "zeta-compiler-api"
-version = "0.1.0"
+version = "0.2.0-alpha"
 dependencies = [
  "codex-dependency-graph",
  "emberforge-compiler",
  "engraver-assembly-emit",
+ "io-uring",
  "ir",
  "scribe-parser",
  "sentinel-typechecker",
@@ -1773,7 +1785,7 @@ dependencies = [
 
 [[package]]
 name = "zeta-lang"
-version = "0.1.0"
+version = "0.2.0-alpha"
 dependencies = [
  "clap",
  "serde",
@@ -1786,9 +1798,10 @@ dependencies = [
 
 [[package]]
 name = "zeta-lsp"
-version = "0.1.0"
+version = "0.2.0-alpha"
 dependencies = [
  "anyhow",
+ "clap",
  "ir",
  "lsp-server",
  "lsp-types",
