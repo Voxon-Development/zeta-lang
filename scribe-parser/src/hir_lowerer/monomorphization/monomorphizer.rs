@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::hir_lowerer::LoweringCtx;
-use crate::hir_lowerer::monomorphization::instantiate_class_for_types;
+use crate::hir_lowerer::monomorphization::instantiate_struct_for_types;
 
 use super::naming::suffix_for_subs;
 use super::type_substitution::substitute_type;
@@ -105,6 +105,49 @@ impl<'a, 'bump, 'ctx> Monomorphizer<'a, 'bump, 'ctx> {
             }
         }
 
+        // Force-instantiate `drop` for every generic struct instantiation that
+        // implements Drop. `drop` is normally only monomorphized when there's an
+        // explicit call site, but it's also invoked implicitly by generated drop
+        // glue in MIR, without forcing it here, the glue
+        // call site has nothing to point at and drop bodies silently vanish.
+        {
+            let drop_iface = StrId(self.context.intern("Drop"));
+            let drop_method_name = StrId(self.context.intern("drop"));
+
+            // Snapshot first: resolve_method_for_type -> instantiate_struct_for_types
+            // borrows instantiated_struct_origins internally, so we can't hold our
+            // own borrow across the call.
+            let origins: Vec<(StrId, Vec<HirType<'a, 'bump>>)> = self
+                .instantiated_struct_origins
+                .borrow()
+                .values()
+                .cloned()
+                .collect();
+
+            for (origin_name, origin_targs) in origins {
+                let implements_drop = self
+                    .ctx
+                    .struct_interfaces
+                    .borrow()
+                    .get(&origin_name)
+                    .map(|ifaces| ifaces.contains(&drop_iface))
+                    .unwrap_or(false);
+
+                if !implements_drop {
+                    continue;
+                }
+
+                let targs_slice = self.bump.alloc_slice_immutable(&origin_targs);
+                let generic_ty = HirType::Struct {
+                    name: origin_name,
+                    field_types: &[],
+                    type_args: targs_slice,
+                };
+
+                self.resolve_method_for_type(&generic_ty, drop_method_name);
+            }
+        }
+
         for new_name in self.instantiated_functions.borrow().values() {
             match self.functions.borrow().get(new_name) {
                 Some(func) => {
@@ -116,8 +159,8 @@ impl<'a, 'bump, 'ctx> Monomorphizer<'a, 'bump, 'ctx> {
             }
         }
 
-        for new_class_name in self.instantiated_structs.borrow().values() {
-            if let Some(new_struct) = self.ctx.classes.borrow().get(new_class_name) {
+        for new_struct_name in self.instantiated_structs.borrow().values() {
+            if let Some(new_struct) = self.ctx.structs.borrow().get(new_struct_name) {
                 new_items.push(Hir::Struct(
                     self.bump.alloc_value_immutable(new_struct.clone()),
                 ));
@@ -183,7 +226,7 @@ impl<'a, 'bump, 'ctx> Monomorphizer<'a, 'bump, 'ctx> {
                 .copied();
         }
 
-        let instantiated = instantiate_class_for_types(
+        let instantiated = instantiate_struct_for_types(
             self.ctx,
             &self.instantiated_structs,
             &self.instantiated_struct_origins,
@@ -468,8 +511,8 @@ impl<'a, 'bump, 'ctx> Monomorphizer<'a, 'bump, 'ctx> {
             return None;
         }
 
-        let (&class_name, module_path) = acc.path.split_last()?;
-        let target_key = self.ctx.resolve_type_path_name(module_path, class_name);
+        let (&struct_name, module_path) = acc.path.split_last()?;
+        let target_key = self.ctx.resolve_type_path_name(module_path, struct_name);
 
         let base_method_name = *self
             .ctx
@@ -494,9 +537,9 @@ impl<'a, 'bump, 'ctx> Monomorphizer<'a, 'bump, 'ctx> {
             .collect();
         let args_slice = self.bump.alloc_slice(&new_args);
 
-        // Resolve the concrete receiver class so monomorphize_function can rewrite
+        // Resolve the concrete receiver struct so monomorphize_function can rewrite
         // impl_target (mirrors resolve_method_for_type's current_this handling).
-        let concrete_recv_ty = instantiate_class_for_types(
+        let concrete_recv_ty = instantiate_struct_for_types(
             self.ctx,
             &self.instantiated_structs,
             &self.instantiated_struct_origins,
@@ -539,7 +582,7 @@ impl<'a, 'bump, 'ctx> Monomorphizer<'a, 'bump, 'ctx> {
         if type_args.is_empty() {
             return ty;
         }
-        let Some(new_struct) = instantiate_class_for_types(
+        let Some(new_struct) = instantiate_struct_for_types(
             self.ctx,
             &self.instantiated_structs,
             &self.instantiated_struct_origins,
@@ -752,7 +795,7 @@ impl<'a, 'bump, 'ctx> Monomorphizer<'a, 'bump, 'ctx> {
                         .map(|t| substitute_type(t, subs, self.bump.clone()))
                         .collect();
 
-                    if let Some(new_struct) = instantiate_class_for_types(
+                    if let Some(new_struct) = instantiate_struct_for_types(
                         self.ctx,
                         &self.instantiated_structs.clone(),
                         &&self.instantiated_struct_origins.clone(),
