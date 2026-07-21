@@ -9,12 +9,12 @@ use zetaruntime::string_pool::StringPool;
 pub fn mangle_method_name(
     dep_graph: &DepGraph,
     module_idx: usize,
-    class_name: StrId,
+    struct_name: StrId,
     method_name: StrId,
     context: Arc<StringPool>,
 ) -> StrId {
     let mut segments: Vec<StrId> = Vec::with_capacity(4);
-    segments.push(class_name);
+    segments.push(struct_name);
 
     if let Some(pkg) = dep_graph.get_module_package(module_idx) {
         let pkg_str = context.resolve_string(&pkg);

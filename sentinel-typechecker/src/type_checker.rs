@@ -1602,7 +1602,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     return HirType::Void;
                 };
                 let struct_name_str = self.str_id_to_string(*struct_name_id);
-                let Some(class) = self.context.get_struct(&struct_name_str) else {
+                let Some(ty_struct) = self.context.get_struct(&struct_name_str) else {
                     self.record(TypeErrorKind::UndefinedType(struct_name_str));
                     return HirType::Struct {
                         name: *struct_name_id,
@@ -1616,7 +1616,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     "struct",
                 );
 
-                let is_generic_decl = class.generics.is_some_and(|g| !g.is_empty());
+                let is_generic_decl = ty_struct.generics.is_some_and(|g| !g.is_empty());
 
                 let resolved_field_types: Vec<HirType<'a, 'bump>> = match (
                     is_generic_decl,
@@ -1628,10 +1628,10 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                             self.record(TypeErrorKind::Generic(format!(
                                 "struct `{}` expects {} type argument(s), found {}",
                                 struct_name_str,
-                                class.generics.map(|g| g.len()).unwrap_or(0),
+                                ty_struct.generics.map(|g| g.len()).unwrap_or(0),
                                 ta.len(),
                             )));
-                            class.fields.iter().map(|f| f.field_type).collect()
+                            ty_struct.fields.iter().map(|f| f.field_type).collect()
                         }
                     },
                     (true, None) => {
@@ -1639,23 +1639,23 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                             "struct `{}` is generic and requires explicit type arguments, e.g. `{}<Type> {{ .. }}`",
                             struct_name_str, struct_name_str,
                         )));
-                        class.fields.iter().map(|f| f.field_type).collect()
+                        ty_struct.fields.iter().map(|f| f.field_type).collect()
                     }
                     (false, Some(_)) => {
                         self.record(TypeErrorKind::Generic(format!(
                             "struct `{}` is not generic; no type arguments expected",
                             struct_name_str,
                         )));
-                        class.fields.iter().map(|f| f.field_type).collect()
+                        ty_struct.fields.iter().map(|f| f.field_type).collect()
                     }
-                    (false, None) => class.fields.iter().map(|f| f.field_type).collect(),
+                    (false, None) => ty_struct.fields.iter().map(|f| f.field_type).collect(),
                 };
 
                 let mut seen: std::collections::HashSet<StrId> = std::collections::HashSet::new();
 
                 for field_init in *args {
                     let field_name_str = self.str_id_to_string(field_init.name);
-                    let field_idx = class
+                    let field_idx = ty_struct
                         .fields
                         .iter()
                         .position(|f| self.str_id_to_string(f.name) == field_name_str);
@@ -1695,7 +1695,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     ));
                 }
 
-                let missing: Vec<&str> = class
+                let missing: Vec<&str> = ty_struct
                     .fields
                     .iter()
                     .filter(|f| !args.iter().any(|a| a.name == f.name))

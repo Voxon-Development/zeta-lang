@@ -9,12 +9,12 @@ use zetaruntime::string_pool::StringPool;
 pub fn mangle_method_name(
     dep_graph: &RefCell<DepGraph>,
     module_idx: usize,
-    class_name: StrId,
+    struct_name: StrId,
     method_name: StrId,
     context: Arc<StringPool>,
 ) -> StrId {
     let mut segments: Vec<StrId> = Vec::with_capacity(4);
-    segments.push(class_name);
+    segments.push(struct_name);
 
     if let Some(pkg) = dep_graph.borrow().get_module_package(module_idx) {
         let pkg_str = context.resolve_string(&pkg);
@@ -66,13 +66,13 @@ pub fn build_module_scoped_name(
 pub fn mangle_function_name(
     dep_graph: &DepGraph,
     module_idx: usize,
-    class_name: Option<StrId>,
+    struct_name: Option<StrId>,
     func_name: StrId,
     is_extern_c: bool,
     context: Arc<StringPool>,
 ) -> StrId {
     if is_extern_c {
-        return match class_name {
+        return match struct_name {
             Some(cls) => build_module_scoped_name(&[cls], func_name, None, context),
             None => func_name,
         };
@@ -90,7 +90,7 @@ pub fn mangle_function_name(
     };
 
     let mut segments: Vec<StrId> = Vec::with_capacity(pkg_segments.len() + 1);
-    if let Some(cls) = class_name {
+    if let Some(cls) = struct_name {
         segments.push(cls);
     }
     segments.extend(pkg_segments);

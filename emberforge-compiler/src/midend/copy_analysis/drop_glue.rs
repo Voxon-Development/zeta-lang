@@ -21,7 +21,7 @@ pub struct DropGlueRegistry {
 impl DropGlueRegistry {
     pub fn new<'a, 'bump>(registry: &GlobalRegistry<'a, 'bump>, context: Arc<StringPool>) -> Self {
         let drop_iface = StrId(context.intern("Drop"));
-        let struct_names: Vec<StrId> = registry.classes.borrow().keys().copied().collect();
+        let struct_names: Vec<StrId> = registry.structs.borrow().keys().copied().collect();
 
         let mut is_droppable: FxHashMap<StrId, bool> = FxHashMap::default();
         for &name in &struct_names {
@@ -49,8 +49,8 @@ impl DropGlueRegistry {
                 let computed = if implements_drop(name) {
                     true
                 } else {
-                    let classes = registry.classes.borrow();
-                    match classes.get(&name) {
+                    let structs = registry.structs.borrow();
+                    match structs.get(&name) {
                         Some(hir_struct) => hir_struct
                             .fields
                             .iter()
@@ -119,8 +119,8 @@ pub struct DropGlueBuilder;
 impl DropGlueBuilder {
     pub fn build_all<'a, 'bump>(
         glue_registry: &DropGlueRegistry,
-        classes: &HashMap<StrId, HirStruct<'a, 'bump>, FxHashBuilder>,
-        class_mangled_map: &HashMap<StrId, HashMap<StrId, StrId, FxHashBuilder>, FxHashBuilder>,
+        structs: &HashMap<StrId, HirStruct<'a, 'bump>, FxHashBuilder>,
+        struct_mangled_map: &HashMap<StrId, HashMap<StrId, StrId, FxHashBuilder>, FxHashBuilder>,
         context: Arc<StringPool>,
         struct_names_owned_by_this_module: &[StrId],
     ) -> Vec<(StrId, Function)> {
@@ -129,8 +129,8 @@ impl DropGlueBuilder {
             .filter_map(|&name| {
                 Self::build_one(
                     glue_registry,
-                    classes,
-                    class_mangled_map,
+                    structs,
+                    struct_mangled_map,
                     context.clone(),
                     name,
                 )
@@ -140,16 +140,16 @@ impl DropGlueBuilder {
 
     fn build_one<'a, 'bump>(
         glue_registry: &DropGlueRegistry,
-        classes: &HashMap<StrId, HirStruct<'a, 'bump>, FxHashBuilder>,
-        class_mangled_map: &HashMap<StrId, HashMap<StrId, StrId, FxHashBuilder>, FxHashBuilder>,
+        structs: &HashMap<StrId, HirStruct<'a, 'bump>, FxHashBuilder>,
+        struct_mangled_map: &HashMap<StrId, HashMap<StrId, StrId, FxHashBuilder>, FxHashBuilder>,
         context: Arc<StringPool>,
         struct_name: StrId,
     ) -> Option<(StrId, Function)> {
         let glue_name = glue_registry.glue_name_for(struct_name)?;
 
-        let hir_struct = classes.get(&struct_name).unwrap_or_else(|| {
+        let hir_struct = structs.get(&struct_name).unwrap_or_else(|| {
             panic!(
-                "droppable struct {} missing from module.classes",
+                "droppable struct {} missing from module.structs",
                 struct_name
             )
         });
@@ -182,7 +182,7 @@ impl DropGlueBuilder {
         let mut cbd = CurrentBlockData::new(&mut func, entry_bb, 1usize, 1usize, value_types);
 
         let drop_method_name = StrId(context.intern("drop"));
-        if let Some(mangled_drop) = class_mangled_map
+        if let Some(mangled_drop) = struct_mangled_map
             .get(&struct_name)
             .and_then(|m| m.get(&drop_method_name))
         {

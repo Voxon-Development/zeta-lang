@@ -14,13 +14,13 @@ pub struct DropScope {
     pub locals: Vec<DropLocal>,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub struct DropLocalState {
     pub moved_whole: bool,
     pub moved_fields: HashSet<StrId>,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub struct DropMoveState {
     pub locals: HashMap<StrId, DropLocalState>,
 }

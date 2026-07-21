@@ -26,7 +26,7 @@ pub fn suffix_for_subs(pool: Arc<StringPool>, subs: &HashMap<StrId, HirType>) ->
     StrId(pool.intern(s))
 }
 
-pub fn instantiate_class_name(
+pub fn instantiate_struct_name(
     concrete_args: &[HirType],
     base: &HirStruct,
     pool: Arc<StringPool>,

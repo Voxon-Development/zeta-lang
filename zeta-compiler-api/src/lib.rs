@@ -488,8 +488,8 @@ where
             lowerer.ctx.functions.clone(),
             &lowerer.ctx,
             self.registry.instantiated_functions.clone(),
-            self.registry.instantiated_classes.clone(),
-            self.registry.instantiated_class_origins.clone(),
+            self.registry.instantiated_structs.clone(),
+            self.registry.instantiated_struct_origins.clone(),
         );
         let monomorphized_module = monomorphizer.run(hoisted_module);
 

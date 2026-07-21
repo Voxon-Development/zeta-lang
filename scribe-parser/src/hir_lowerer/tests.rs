@@ -140,7 +140,7 @@ mod hir_lowerer_tests {
                     "y",
                     "Expected second variable named 'y'"
                 );
-                // The type might be inferred as a Class type instead of String
+                // The type might be inferred as a Struct type instead of String
                 match ty {
                     HirType::String => {
                         // Expected case
