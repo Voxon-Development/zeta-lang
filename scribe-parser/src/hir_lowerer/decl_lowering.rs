@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use super::context::HirLowerer;
 use super::utils::lower_visibility;
-use ir::ast::{FuncDecl, Generic, Param, ParamPassingKind, StructDecl};
+use ir::ast::{FuncDecl, Generic, InterfaceDecl, Param, ParamPassingKind, StructDecl};
 use ir::hir::{
     ConstStmt, HirEnum, HirEnumVariant, HirField, HirFunc, HirGeneric, HirImpl, HirInterface,
     HirParam, HirStmt, HirStruct, HirType, StrId, ThisPassingKind,
@@ -13,7 +13,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     pub(super) fn lower_func_body_from_proto(
         &mut self,
         func: FuncDecl<'a, 'bump>,
-        class_name: Option<StrId>,
+        struct_name: Option<StrId>,
     ) -> HirFunc<'a, 'bump> {
         let is_extern = matches!(
             func.function_metadata.extern_modifier,
@@ -24,7 +24,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         let lookup_name = if is_extern || is_main {
             unmangled_name
         } else {
-            self.mangle_function_name(class_name, unmangled_name)
+            self.mangle_function_name(self.ctx.module_idx, struct_name, unmangled_name)
         };
         let binding = self.ctx.functions.borrow();
         let proto = match binding.get(&lookup_name) {
@@ -65,7 +65,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             body,
             unmangled_name,
             declaring_module_idx: self.ctx.module_idx,
-            impl_target: class_name,
+            impl_target: struct_name,
         }
     }
 
@@ -159,22 +159,28 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 visibility: lower_visibility(&p.visibility),
                 generics: None,
             },
-            Param::This(_) => panic!("`this` parameter is not allowed in a class"),
+            Param::This(_) => panic!("`this` parameter is not allowed in a struct"),
         }
     }
 
-    pub(super) fn lower_interface_decl(
-        &mut self,
-        i: ir::ast::InterfaceDecl<'a, '_>,
-    ) -> HirInterface<'a, 'bump> {
-        let mangled_name = self.ctx.mangle_type_name(i.name);
+    pub fn lower_interface_decl(&mut self, i: InterfaceDecl<'a, 'bump>) -> HirInterface<'a, 'bump> {
+        let is_builtin = matches!(
+            self.ctx.context.resolve_string(&i.name),
+            "Drop" | "Copy" | "Clone"
+        );
+
+        let interface_name = if is_builtin && !self.ctx.interfaces.borrow().contains_key(&i.name) {
+            i.name
+        } else {
+            self.mangle_with_module_path(i.name)
+        };
 
         let methods_vec: Vec<HirFunc<'a, 'bump>> = i
             .methods
             .unwrap_or_default()
             .into_iter()
             // bare i.name here on purpose: mangle_function_name builds the full
-            // scoped name itself from class_name + this module's package.
+            // scoped name itself from struct_name + this module's package.
             .map(|f| self.lower_func_body_from_proto(*f, Some(i.name)))
             .collect();
         let methods = self.ctx.bump.alloc_slice(&methods_vec);
@@ -182,7 +188,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             self.lower_generics_slice(i.generics.unwrap_or_default());
 
         HirInterface {
-            name: mangled_name,
+            name: interface_name,
             visibility: lower_visibility(&i.visibility),
             methods: if methods.is_empty() {
                 None
@@ -206,7 +212,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
 
         // Register impl's own <T, U, ..> as in-scope before lowering target,
         // interface, or method signatures/bodies, so occurrences of T resolve
-        // as a bound param (see lower_type_inner) instead of an unknown class.
+        // as a bound param (see lower_type_inner) instead of an unknown struct.
         if let Some(gs) = generics {
             for g in gs {
                 self.add_generic_param(g.name);
@@ -238,7 +244,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         let self_ty = {
             let field_types: Vec<HirType<'a, 'bump>> = self
                 .ctx
-                .classes
+                .structs
                 .borrow()
                 .get(&target_key)
                 .map(|c| c.fields.iter().map(|f| f.field_type).collect())

@@ -64,14 +64,20 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         // can look up field types when processing function signatures below.
         for stmt in stmts {
             if let Stmt::StructDecl(struct_decl) = stmt {
-                let class = self.lower_struct_decl(**struct_decl);
-                self.ctx.classes.borrow_mut().insert(class.name, class);
+                let ty_struct = self.lower_struct_decl(**struct_decl);
+                self.ctx
+                    .structs
+                    .borrow_mut()
+                    .insert(ty_struct.name, ty_struct);
             }
             if let Stmt::Module(module_decl) = stmt {
                 for &body_stmt in module_decl.body {
                     if let Stmt::StructDecl(struct_decl) = body_stmt {
-                        let class = self.lower_struct_decl(*struct_decl);
-                        self.ctx.classes.borrow_mut().insert(class.name, class);
+                        let ty_struct = self.lower_struct_decl(*struct_decl);
+                        self.ctx
+                            .structs
+                            .borrow_mut()
+                            .insert(ty_struct.name, ty_struct);
                     }
                 }
             }
@@ -109,12 +115,14 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                         .expect("impl interface must be a named type");
                     let iface_key = self.ctx.resolve_type_path_name(iface_path, iface_name);
 
-                    self.ctx
-                        .struct_interfaces
-                        .borrow_mut()
-                        .entry(target_key)
-                        .or_insert_with(Vec::new)
-                        .push(iface_key);
+                    {
+                        self.ctx
+                            .struct_interfaces
+                            .borrow_mut()
+                            .entry(target_key)
+                            .or_insert_with(Vec::new)
+                            .push(iface_key);
+                    }
                 }
 
                 let Some(methods) = impl_decl.methods else {
@@ -149,7 +157,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     fn lower_func_as_proto(
         &mut self,
         f: &FuncDecl<'a, 'bump>,
-        class_name: Option<StrId>,
+        struct_name: Option<StrId>,
     ) -> HirFunc<'a, 'bump> {
         let mut proto: HirFuncProto = self.lower_func_proto(f);
         let is_extern = matches!(
@@ -158,7 +166,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         );
         let is_main = self.ctx.context.resolve_string(&proto.name) == "main";
         if !is_extern && !is_main {
-            proto.name = self.mangle_function_name(class_name, proto.name);
+            proto.name = self.mangle_function_name(self.ctx.module_idx, struct_name, proto.name);
         }
 
         let hir_func = HirFunc {
@@ -170,31 +178,39 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             generics: None,
             unmangled_name: proto.unmangled_name,
             declaring_module_idx: self.ctx.module_idx,
-            impl_target: class_name,
+            impl_target: struct_name,
         };
 
         self.ctx.functions.borrow_mut().insert(proto.name, hir_func);
         hir_func
     }
 
-    pub(super) fn mangle_function_name(&self, class_name: Option<StrId>, name: StrId) -> StrId {
+    pub(super) fn mangle_function_name(
+        &self,
+        declaring_module_idx: usize,
+        struct_name: Option<StrId>,
+        name: StrId,
+    ) -> StrId {
         let Some(pkg) = self
             .ctx
             .dep_graph
             .borrow()
-            .get_module_package(self.ctx.module_idx)
+            .get_module_package(declaring_module_idx)
         else {
-            return match class_name {
+            return match struct_name {
                 Some(cls) => build_module_scoped_name(&[cls], name, None, self.ctx.context.clone()),
                 None => name,
             };
         };
 
         let pkg_str = self.ctx.context.resolve_string(&pkg);
-        let mut segments: Vec<StrId> = Vec::new();
-        if let Some(cls) = class_name {
+
+        let mut segments = Vec::new();
+
+        if let Some(cls) = struct_name {
             segments.push(cls);
         }
+
         segments.extend(
             pkg_str
                 .split("::")
@@ -356,8 +372,8 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 )
             }
             Stmt::StructDecl(c) => {
-                let class = self.lower_struct_decl(*c);
-                Hir::Struct(self.ctx.bump.alloc_value(class))
+                let ty_struct = self.lower_struct_decl(*c);
+                Hir::Struct(self.ctx.bump.alloc_value(ty_struct))
             }
             Stmt::InterfaceDecl(i) => {
                 let interface = self.lower_interface_decl(*i);

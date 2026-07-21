@@ -1,3 +1,5 @@
+use crate::optimized_string_buffering::build_module_scoped_name;
+
 use super::context::HirLowerer;
 use super::utils::lower_cmp_operator;
 use ir::ast::{
@@ -422,9 +424,8 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
 
         if let HirExpr::Ident(func_name, ident_span) = &lowered_callee {
             if !self.ctx.variable_types.borrow().contains_key(func_name) {
-                let mangled = self.mangle_function_name(None, *func_name);
-                if self.ctx.functions.borrow().contains_key(&mangled) {
-                    lowered_callee = HirExpr::Ident(mangled, *ident_span);
+                if let Some(func) = self.resolve_function(*func_name) {
+                    lowered_callee = HirExpr::Ident(func.name, *ident_span);
                 }
             }
         }
@@ -491,11 +492,11 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
     }
 
     pub(super) fn find_interface_method(&self, object: &HirExpr, method: StrId) -> Option<StrId> {
-        let class_name: StrId = match object {
+        let struct_name: StrId = match object {
             HirExpr::Ident(var, _span) => {
                 if self.ctx.variable_types.borrow().get(var).is_some() {
                     Some(*var)
-                } else if self.ctx.classes.borrow().contains_key(var) {
+                } else if self.ctx.structs.borrow().contains_key(var) {
                     Some(*var)
                 } else {
                     None
@@ -505,7 +506,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         }?;
 
         let struct_interfaces = self.ctx.struct_interfaces.borrow();
-        let iface_names = struct_interfaces.get(&class_name)?;
+        let iface_names = struct_interfaces.get(&struct_name)?;
 
         for iface_name in iface_names {
             let if_binding = self.ctx.interfaces.borrow();
@@ -519,6 +520,52 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 return Some(*iface_name);
             }
         }
+        None
+    }
+
+    pub fn resolve_function<'ctx>(
+        &'ctx self,
+        name: StrId,
+    ) -> Option<std::cell::Ref<'ctx, HirFunc<'a, 'bump>>> {
+        {
+            let funcs = self.ctx.functions.borrow();
+            if funcs.contains_key(&name) {
+                return Some(std::cell::Ref::map(funcs, |m| m.get(&name).unwrap()));
+            }
+        }
+
+        // Try current module.
+        let mangled = self.mangle_function_name(self.ctx.module_idx, None, name);
+        {
+            let funcs = self.ctx.functions.borrow();
+            if funcs.contains_key(&mangled) {
+                return Some(std::cell::Ref::map(funcs, |m| m.get(&mangled).unwrap()));
+            }
+        }
+
+        // Try imported modules.
+        let imports = self.ctx.imported_modules.borrow();
+
+        for module_idx in imports.values().copied() {
+            let Some(pkg) = self.ctx.dep_graph.borrow().get_module_package(module_idx) else {
+                continue;
+            };
+
+            let pkg_str = self.ctx.context.resolve_string(&pkg);
+
+            let segments: Vec<StrId> = pkg_str
+                .split("::")
+                .map(|s| StrId(self.ctx.context.intern(s)))
+                .collect();
+
+            let mangled = build_module_scoped_name(&segments, name, None, self.ctx.context.clone());
+
+            let funcs = self.ctx.functions.borrow();
+            if funcs.contains_key(&mangled) {
+                return Some(std::cell::Ref::map(funcs, |m| m.get(&mangled).unwrap()));
+            }
+        }
+
         None
     }
 
@@ -586,13 +633,15 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             Op::Gte => Operator::GreaterThanOrEqual,
             Op::Lte => Operator::LessThanOrEqual,
             Op::BitNot => Operator::BitNot,
-            Op::LogicalNot => Operator::LogicalNot,
+            Op::LogicalNot => Operator::LogicalOr,
             Op::Range => Operator::Add, // Placeholder: Range will be handled specially
             Op::RangeExcl => Operator::Add, // Placeholder: RangeExcl will be handled specially
             Op::DerefUnsafe => Operator::DerefUnsafe,
             Op::Deref => Operator::Deref,
             Op::Ref => Operator::Ref,
             Op::RefMut => Operator::RefMut,
+            Op::LogicalAnd => Operator::LogicalAnd,
+            Op::LogicalOr => Operator::LogicalOr,
         }
     }
 
@@ -633,7 +682,9 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                     | Operator::GreaterThan
                     | Operator::LessThan
                     | Operator::GreaterThanOrEqual
-                    | Operator::LessThanOrEqual => HirType::Boolean,
+                    | Operator::LessThanOrEqual
+                    | Operator::LogicalAnd
+                    | Operator::LogicalOr => HirType::Boolean,
 
                     _ => lt,
                 }
@@ -675,9 +726,9 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                     unreachable!()
                 };
                 let field_slice: &mut [HirType<'a, 'bump>] =
-                    if let Some(class) = self.ctx.classes.borrow().get(&n) {
+                    if let Some(ty_struct) = self.ctx.structs.borrow().get(&n) {
                         let field_types: Vec<HirType<'a, 'bump>> =
-                            class.fields.iter().map(|f| f.field_type).collect();
+                            ty_struct.fields.iter().map(|f| f.field_type).collect();
                         self.ctx.bump.alloc_slice(&field_types)
                     } else {
                         &mut []
@@ -715,9 +766,9 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         let obj_ty = self.infer_type(object);
         match obj_ty {
             HirType::Struct { name, .. } => {
-                let borrow = self.ctx.classes.borrow();
-                let class = borrow.get(&name).unwrap();
-                class
+                let borrow = self.ctx.structs.borrow();
+                let ty_struct = borrow.get(&name).unwrap();
+                ty_struct
                     .fields
                     .iter()
                     .find(|f| f.name == field)
@@ -1046,10 +1097,10 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                     type_args.iter().map(|t| self.lower_type(t)).collect();
                 let type_args_slice = self.ctx.bump.alloc_slice_immutable(&lowered_type_args);
 
-                let binding = self.ctx.classes.borrow();
-                if let Some(class) = binding.get(&resolved_name) {
+                let binding = self.ctx.structs.borrow();
+                if let Some(ty_struct) = binding.get(&resolved_name) {
                     let field_types: Vec<HirType<'a, 'bump>> =
-                        class.fields.iter().map(|f| f.field_type).collect();
+                        ty_struct.fields.iter().map(|f| f.field_type).collect();
                     let field_slice = self.ctx.bump.alloc_slice_immutable(&field_types);
                     return HirType::Struct {
                         name: resolved_name,
