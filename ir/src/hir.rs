@@ -745,7 +745,7 @@ where
             HirType::String => write!(f, "string"),
             HirType::Struct {
                 name,
-                field_types: args,
+                type_args: args,
                 ..
             } => Self::write_args(f, name, args),
             HirType::DynInterface(name, args) => Self::write_args(f, name, args),
