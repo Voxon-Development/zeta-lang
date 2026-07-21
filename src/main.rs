@@ -169,8 +169,8 @@ where
 }
 
 const GITHUB_REPO: &str = "Voxon-Development/zeta-lang";
-const COMPILER_ASSET_NAME: &str = "zeta-compiler-x86_64-unknown-linux-gnu";
-const LSP_ASSET_NAME: &str = "zeta-lsp-x86_64-unknown-linux-gnu";
+const COMPILER_ASSET_NAME: &str = "zeta-lang";
+const LSP_ASSET_NAME: &str = "zeta-lsp";
 
 #[derive(serde::Deserialize)]
 struct GhAsset {
