@@ -37,7 +37,7 @@ otherwise add it yourself):
 
 ```bash
 mkdir -p ~/.local/bin
-cp target/release/zeta-compiler ~/.local/bin/
+cp target/release/zeta-lang ~/.local/bin/
 cp target/release/zeta-lsp ~/.local/bin/
 
 export PATH="$HOME/.local/bin:$PATH"
@@ -46,17 +46,17 @@ export PATH="$HOME/.local/bin:$PATH"
 Verify:
 
 ```bash
-zetac --version
+zeta-lang --version
 zeta-lsp --version
 ```
 
 ### 3. Keeping up to date
 
-Once installed this way, you can upgrade in place without re-cloning or
+Once installed this way, you can upgrade in place without re-cloning, manually reinstalling or
 re-running `cargo build`:
 
 ```bash
-zetac upgrade
+zeta-lang upgrade
 ```
 
 This checks the latest GitHub release against your installed version and,
