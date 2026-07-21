@@ -24,10 +24,10 @@ where
     interface_id_map: HashMap<StrId, usize, FxHashBuilder>,
     interface_method_slots: HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
 
-    class_mangled_map: HashMap<StrId, HashMap<StrId, StrId, FxHashBuilder>, FxHashBuilder>,
-    class_vtable_slots: HashMap<StrId, Vec<StrId>, FxHashBuilder>,
-    class_method_slots: HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
-    class_field_offsets: HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
+    struct_mangled_map: HashMap<StrId, HashMap<StrId, StrId, FxHashBuilder>, FxHashBuilder>,
+    struct_vtable_slots: HashMap<StrId, Vec<StrId>, FxHashBuilder>,
+    struct_method_slots: HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
+    struct_field_offsets: HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
 
     phantom_data: PhantomData<&'cx ()>,
 
@@ -77,10 +77,10 @@ where
             interface_methods: HashMap::with_hasher(FxHashBuilder),
             interface_id_map: HashMap::with_hasher(FxHashBuilder),
             interface_method_slots: HashMap::with_hasher(FxHashBuilder),
-            class_mangled_map: HashMap::with_hasher(FxHashBuilder),
-            class_vtable_slots: HashMap::with_hasher(FxHashBuilder),
-            class_method_slots: HashMap::with_hasher(FxHashBuilder),
-            class_field_offsets: HashMap::with_hasher(FxHashBuilder),
+            struct_mangled_map: HashMap::with_hasher(FxHashBuilder),
+            struct_vtable_slots: HashMap::with_hasher(FxHashBuilder),
+            struct_method_slots: HashMap::with_hasher(FxHashBuilder),
+            struct_field_offsets: HashMap::with_hasher(FxHashBuilder),
             enum_variant_tags,
             struct_interfaces: HashMap::with_hasher(FxHashBuilder),
             phantom_data: PhantomData,
@@ -127,8 +127,8 @@ where
 
         for &idx in compilation_order {
             for item in hir_modules[idx].items {
-                if let Hir::Struct(class) = item {
-                    self.register_class(*class);
+                if let Hir::Struct(ty_struct) = item {
+                    self.register_struct(*ty_struct);
                 }
             }
         }
@@ -137,12 +137,12 @@ where
             for item in hir_modules[idx].items {
                 match item {
                     Hir::Func(func) => match func.impl_target {
-                        Some(class_name) => {
-                            self.class_mangled_map
-                                .entry(class_name)
+                        Some(struct_name) => {
+                            self.struct_mangled_map
+                                .entry(struct_name)
                                 .or_insert_with(|| HashMap::with_hasher(FxHashBuilder))
                                 .insert(func.unmangled_name, func.name);
-                            self.register_method_signature(func, class_name);
+                            self.register_method_signature(func, struct_name);
                         }
                         None => {
                             let f = Function::from_signature(func);
@@ -152,7 +152,7 @@ where
                     Hir::Impl(impl_block) => {
                         if let Some(methods) = impl_block.methods {
                             for method in methods {
-                                self.class_mangled_map
+                                self.struct_mangled_map
                                     .entry(impl_block.target)
                                     .or_insert_with(|| HashMap::with_hasher(FxHashBuilder))
                                     .insert(method.unmangled_name, method.name);
@@ -163,6 +163,33 @@ where
                     _ => {}
                 }
             }
+        }
+
+        for &idx in compilation_order {
+            for item in hir_modules[idx].items {
+                if let Hir::Struct(ty_struct) = item {
+                    self.build_struct_vtable(ty_struct);
+                }
+            }
+        }
+
+        let owned_structs: Vec<StrId> = compilation_order
+            .iter()
+            .flat_map(|&idx| {
+                hir_modules[idx].items.iter().filter_map(|item| match item {
+                    Hir::Struct(s) => Some(s.name),
+                    _ => None,
+                })
+            })
+            .collect();
+        for (name, func) in DropGlueBuilder::build_all(
+            self.glue_registry,
+            &self.module.structs,
+            &self.struct_mangled_map,
+            self.context.clone(),
+            &owned_structs,
+        ) {
+            self.module.functions.insert(name, func);
         }
 
         for &idx in compilation_order {
@@ -182,43 +209,16 @@ where
             }
         }
 
-        for &idx in compilation_order {
-            for item in hir_modules[idx].items {
-                if let Hir::Struct(ty_struct) = item {
-                    self.build_class_vtable(ty_struct);
-                }
-            }
-        }
-
-        let owned_structs: Vec<StrId> = compilation_order
-            .iter()
-            .flat_map(|&idx| {
-                hir_modules[idx].items.iter().filter_map(|item| match item {
-                    Hir::Struct(s) => Some(s.name),
-                    _ => None,
-                })
-            })
-            .collect();
-        for (name, func) in DropGlueBuilder::build_all(
-            self.glue_registry,
-            &self.module.classes,
-            &self.class_mangled_map,
-            self.context.clone(),
-            &owned_structs,
-        ) {
-            self.module.functions.insert(name, func);
-        }
-
         self.module
     }
 
-    fn register_method_signature(&mut self, hir_method: &HirFunc<'a, 'bump>, class_name: StrId) {
-        if !self.class_field_offsets.contains_key(&class_name) {
+    fn register_method_signature(&mut self, hir_method: &HirFunc<'a, 'bump>, struct_name: StrId) {
+        if !self.struct_field_offsets.contains_key(&struct_name) {
             eprintln!(
-                "[register_method_signature] WARNING: method {} has impl_target={} but class_field_offsets has no entry. known classes: {:?}",
+                "[register_method_signature] WARNING: method {} has impl_target={} but struct_field_offsets has no entry. known structs: {:?}",
                 hir_method.name,
-                class_name,
-                self.class_field_offsets.keys().collect::<Vec<_>>()
+                struct_name,
+                self.struct_field_offsets.keys().collect::<Vec<_>>()
             );
         }
 
@@ -227,16 +227,16 @@ where
         self.module.functions.insert(func.name, func);
     }
 
-    fn register_class(&mut self, hir_class: &HirStruct<'a, 'bump>) {
-        self.compute_field_offsets(hir_class);
+    fn register_struct(&mut self, hir_struct: &HirStruct<'a, 'bump>) {
+        self.compute_field_offsets(hir_struct);
 
-        self.class_mangled_map
-            .entry(hir_class.name)
+        self.struct_mangled_map
+            .entry(hir_struct.name)
             .or_insert_with(|| HashMap::with_hasher(FxHashBuilder));
 
         self.module
-            .classes
-            .insert(hir_class.name, hir_class.clone());
+            .structs
+            .insert(hir_struct.name, hir_struct.clone());
     }
 
     fn lower_interface(&mut self, hir_iface: &HirInterface<'a, 'bump>) {
@@ -280,11 +280,11 @@ where
             .insert(hir_iface.name, hir_iface.clone());
     }
 
-    fn compute_field_offsets(&mut self, hir_class: &HirStruct<'a, 'bump>) {
+    fn compute_field_offsets(&mut self, hir_struct: &HirStruct<'a, 'bump>) {
         let mut offsets = HashMap::with_hasher(FxHashBuilder);
         let mut current_offset = 0usize;
 
-        for f in hir_class.fields.iter() {
+        for f in hir_struct.fields.iter() {
             let field_ssa_ty = lower_type_hir(&f.field_type);
             let align =
                 ir::layout::alignof_ssa(&field_ssa_ty, ir::layout::TargetInfo { ptr_bytes: 8 })
@@ -302,18 +302,18 @@ where
             current_offset += size;
         }
 
-        self.class_field_offsets.insert(hir_class.name, offsets);
+        self.struct_field_offsets.insert(hir_struct.name, offsets);
     }
 
-    fn build_class_vtable(&mut self, hir_class: &HirStruct<'a, 'bump>) {
-        let Some(interfaces) = self.struct_interfaces.get(&hir_class.name).cloned() else {
+    fn build_struct_vtable(&mut self, hir_struct: &HirStruct<'a, 'bump>) {
+        let Some(interfaces) = self.struct_interfaces.get(&hir_struct.name).cloned() else {
             return;
         };
 
-        let class_methods = self
-            .class_mangled_map
-            .get(&hir_class.name)
-            .unwrap_or_else(|| panic!("Missing mangled method map for class {}", hir_class.name));
+        let struct_methods = self
+            .struct_mangled_map
+            .get(&hir_struct.name)
+            .unwrap_or_else(|| panic!("Missing mangled method map for struct {}", hir_struct.name));
 
         for iface_name in &interfaces {
             let Some(iface_methods) = self.interface_methods.get(iface_name) else {
@@ -322,8 +322,8 @@ where
 
             let hir_iface = self.module.interfaces.get(iface_name).unwrap_or_else(|| {
                 panic!(
-                    "Class {} implements unknown interface {}",
-                    hir_class.name, iface_name
+                    "Struct {} implements unknown interface {}",
+                    hir_struct.name, iface_name
                 )
             });
             let unmangled_names: Vec<StrId> = hir_iface
@@ -339,12 +339,12 @@ where
             for (slot, (method_name, _, _)) in iface_methods.iter().enumerate() {
                 let unmangled_name = unmangled_names.get(slot).copied().unwrap_or(*method_name);
 
-                let mangled = class_methods
+                let mangled = struct_methods
                     .get(&unmangled_name)
                     .unwrap_or_else(|| {
                         panic!(
-                            "Class {} implements interface {} but does not provide method {}",
-                            hir_class.name, iface_name, unmangled_name
+                            "Struct {} implements interface {} but does not provide method {}",
+                            hir_struct.name, iface_name, unmangled_name
                         )
                     })
                     .clone();
@@ -353,16 +353,16 @@ where
                 slot_map.insert(method_name.clone(), slot);
             }
 
-            self.class_vtable_slots.insert(
+            self.struct_vtable_slots.insert(
                 StrId(self.context.intern(&format!(
                     "{}_{}",
-                    self.context.resolve_string(&hir_class.name),
+                    self.context.resolve_string(&hir_struct.name),
                     self.context.resolve_string(iface_name)
                 ))),
                 vtable_slots,
             );
 
-            self.class_method_slots.insert(hir_class.name, slot_map);
+            self.struct_method_slots.insert(hir_struct.name, slot_map);
         }
     }
 
@@ -378,13 +378,13 @@ where
             hir_fn,
             &self.module.functions,
             &self.module.functions,
-            &self.class_field_offsets,
-            &self.class_method_slots,
-            &self.class_mangled_map,
-            &self.class_vtable_slots,
+            &self.struct_field_offsets,
+            &self.struct_method_slots,
+            &self.struct_mangled_map,
+            &self.struct_vtable_slots,
             &self.interface_id_map,
             &self.interface_method_slots,
-            &self.module.classes,
+            &self.module.structs,
             &self.enum_variant_tags,
             self.context.clone(),
             &self.extern_c_names,
