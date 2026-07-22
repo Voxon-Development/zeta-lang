@@ -76,7 +76,7 @@ func learn_flow_control() {
     borrow_checking_and_move_semantics();
 }
 
-type Stringer interface {
+interface Stringer {
   	func to_string(): str;
 }
 
