@@ -1,15 +1,12 @@
 ```rs
 // Single line comment
 // A package clause starts every source file.
-// main is a special name declaring an executable rather than a library.
 package my::app;
 
 import zeta::utils::array_list;
 import zeta::utils::mallocator.RawMallocator;
 import zeta::utils::mallocator.Mallocator;
 
-// A function definition. Main is special. It is the entry point for the
-// executable program. Love it or hate it, Go uses brace brackets.
 func main() {
   	// No stdout for now
     // It'd look like this
