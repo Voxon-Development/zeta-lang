@@ -153,7 +153,10 @@ func borrow_checking_and_move_semantics() {
 
     // Some values own heap memory.
     //
-    // ArrayList owns its allocation, so it is a move-only type.
+    // ArrayList owns its allocation and it is a heap allocated list that can grow dynamically, and it is a move-only type.
+    // This is more useful sometimes than an array because it grows itself elegantly, but heap allocating has a higher overhead.
+    // You use an ArrayList most of the time, but you should be cautious when writing high performance hot code with this though (due to the heap allocations)
+    // or if you want an array that never grows for correctness/performance reasons.
     let list: ArrayList<i32> = ArrayList.new();
 
     // This does NOT copy the ArrayList.
@@ -187,8 +190,51 @@ func borrow_checking_and_move_semantics() {
     error_with_borrow_checking_and_move_semantics();
 }
 
+func borrow_checking_and_move_semantics_with_arrays() {
+    // Arrays are values that directly contain their elements.
+    //
+    // This array lives entirely on the stack because its size is known
+    // at compile time.
+    let mut arr: [4]i64 = [1, 2, 3, 4];
+
+    // A shared borrow allows reading the array without taking ownership.
+    let a: &[4]i64 = &arr;
+    let b: &[4]i64 = &arr;
+
+    // Multiple shared borrows may exist simultaneously and use it
+    let first: &i64 = &a[0];
+    let second: &i64 = &b[1];
+
+    // A mutable borrow allows modifying the array.
+    //
+    // Like all borrows in Zeta, conflicts are checked when the borrows
+    // are used, not when they are created.
+    let c: &mut [4]i64 = &mut arr;
+
+    // `a` and `b` are never used again, so this is accepted.
+    c[0] = 42;
+
+    // Multiple mutable borrows may also exist.
+    let mut other: [4]i64 = [10, 20, 30, 40];
+
+    let left: &mut [4]i64 = &mut other;
+    let right: &mut [4]i64 = &mut other;
+
+    // Since `left` mutates a thing in the array,
+    // `right` may safely modify different things in the same array.
+    left[0] = 15;
+    right[1] = 25;
+
+    // Both variables remain valid because every element was copied.
+    let x: i64 = arr[0];
+    let y: i64 = copied[0];
+
+    // Modifying one array does not affect the other.
+    arr[0] = 100;
+}
+
 func error_with_borrow_checking_and_move_semantics() {
-    let mut pair = Pair {
+    let mut pair: Pair = Pair {
         x: 1,
         y: 2,
     };
@@ -200,8 +246,9 @@ func error_with_borrow_checking_and_move_semantics() {
     // `read` and `write` are both used here.
     read.get_x();
     write.set_x(10);
+    read.get_x();
 
-    let mut pair2 = Pair {
+    let mut pair2: Pair = Pair {
         x: 5,
         y: 6,
     };
@@ -243,7 +290,7 @@ func error_with_borrow_checking_and_move_semantics() {
 
     // ERROR:
     // Cannot move while mutably borrowed.
-    let moved_pair := pair3;
+    let moved_pair: Pair = pair3;
     borrow2.set_x(10);
 }
 ```
