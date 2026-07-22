@@ -86,7 +86,7 @@ struct Pair {
     y: i32
 }
 
-impl Stringer for Pair {
+impl Pair by Stringer {
     func to_string(): str {
         return ...; // If you're new to programming, know ... means a placeholder, it is not a real value.
     }
