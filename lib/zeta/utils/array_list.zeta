@@ -2,77 +2,85 @@ package zeta::utils::array_list;
 
 import zeta::libc;
 
-extern(C) func println_int(num: i32);
-
-struct ArrayList<T> {
-    ptr: [*]mut T,
-    len: usize,
-    cap: usize,
+struct ArrayList<T, A: Allocator> {
+    data: ^this.alloc []T,
+    alloc: A,
 }
 
-impl<T> ArrayList<T> {
-    func new(): ArrayList<T> {
-        return ArrayList<T> {
-            ptr: null,
-            len: 0,
-            cap: 0
+impl<T, A: Allocator> ArrayList<T, A> {
+    func new(alloc: A): ArrayList<T, A> {
+        return ArrayList<T, A> {
+            data: alloc.calloc<T>(16),
+            alloc,
+        };
+    }
+
+    func with_capacity(capacity: usize, alloc: A): ArrayList<T, A> {
+        return ArrayList<T, A> {
+            data: alloc.calloc<T>(capacity),
+            alloc,
         };
     }
 
     func len(&this): usize {
-        return this.len;
+        return this.data.len;
+    }
+
+    func cap(&this): usize {
+        return this.data.cap;
     }
 
     func push(&mut this, value: T) {
-        if (this.ptr == null || this.len == this.cap) {
+        if (this.data.len == this.data.cap) {
             this.grow();
         }
 
-        this.ptr[this.len] = value;
-        this.len += 1;
+        this.data[this.data.len] = value;
+        this.data.len += 1;
     }
 
     func get(&this, index: usize): &T {
-        if (index >= this.len) {
-            panic "out of bounds";
-        }
-        return &this.ptr[index];
+        return &this.data[index];
     }
 
     func get_mut(&mut this, index: usize): &mut T {
-        if (index >= this.len) {
-            panic "out of bounds";
-        }
-        return &mut this.ptr[index];
+        return &mut this.data[index];
+    }
+
+    func try_get(&this, index: usize): ?&T {
+        return if (index >= this.data.len) {
+            null
+        } else {
+            &this.data[index]
+        };
+    }
+
+    func try_get_mut(&mut this, index: usize): ?&mut T {
+        return if (index >= this.data.len) {
+            null
+        } else {
+            &mut this.data[index]
+        };
+    }
+
+    unsafe func get_unchecked(&this, index: usize): &T {
+        let ptr: *const T = this.data as *const T;
+        return &ptr[index];
+    }
+
+    unsafe func get_unchecked_mut(&mut this, index: usize): &mut T {
+        let ptr: *mut T = this.data as *mut T;
+        return &mut ptr[index];
     }
 
     func grow(&mut this) {
         let new_cap: usize =
-            if (this.cap == 0) {
+            if (this.data.cap == 0) {
                 16
             } else {
-                this.cap * 2
+                this.data.cap * 2
             };
 
-        let new_ptr: [*]mut T = libc.malloc(new_cap * $sizeof<T>()) as [*]mut T;
-
-        for (let mut i: usize = 0; i < this.len; i += 1) {
-            new_ptr[i] = this.ptr[i];
-        }
-
-        if (this.ptr != null) {
-            free(this.ptr as [*]mut void);
-        }
-
-        this.ptr = new_ptr;
-        this.cap = new_cap;
-    }
-}
-
-impl<T> ArrayList<T> by Drop {
-    func drop(mut this) {
-        if (this.ptr != null) {
-            libc.free(this.ptr as [*]mut void);
-        }
+        this.data = this.alloc.realloc(this.data, new_cap);
     }
 }

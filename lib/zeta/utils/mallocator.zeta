@@ -1,0 +1,133 @@
+package zeta::utils::mallocator;
+
+import zeta::libc;
+
+struct RawMallocator {}
+
+impl RawMallocator by RawAllocator {
+    unsafe func alloc_raw(
+        &this,
+        size: usize,
+        align: usize
+    ): [*]mut u8 {
+        return libc.malloc(size) as [*]mut u8;
+    }
+
+    unsafe func calloc_raw(
+        &this,
+        count: usize,
+        size: usize,
+        align: usize
+    ): [*]mut u8 {
+        return libc.calloc(count, size) as [*]mut u8;
+    }
+
+    unsafe func realloc_raw(
+        &this,
+        ptr: [*]mut u8,
+        old_size: usize,
+        new_size: usize,
+        align: usize
+    ): [*]mut u8 {
+        return libc.realloc(ptr as [*]mut void, new_size) as [*]mut u8;
+    }
+
+    unsafe func free_raw(
+        &this,
+        ptr: [*]mut u8,
+        size: usize,
+        align: usize
+    ) {
+        libc.free(ptr as [*]mut void);
+    }
+}
+
+struct Mallocator {}
+
+impl Mallocator by Allocator {
+    func alloc<T>(&this): ^T {
+        let ptr: [*]mut u8 = this.alloc_raw(
+            $sizeof<T>(),
+            $alignof<T>()
+        );
+
+        return $own(ptr as [*]mut T, this);
+    }
+
+    func calloc<T>(&this, count: usize): ^[]T {
+        let ptr: [*]mut u8 = this.calloc_raw(count, $sizeof<T>(), $alignof<T>());
+        return $own(ptr as [*]mut T, this, 0, count);
+    }
+
+    func realloc<T>(&this, value: ^[]T, new_capacity: usize): ^[]T {
+        let ptr: [*]mut u8 = this.realloc_raw(
+            value as [*]mut u8,
+            value.cap * $sizeof<T>(),
+            new_capacity * $sizeof<T>(),
+            $alignof<T>()
+        );
+        return $own(ptr as [*]mut T, this, value.len, new_capacity);
+    }
+
+    func new<T>(&this, value: T): ^T {
+        let ptr: ^T = this.alloc<T>();
+        *ptr = value;
+        return ptr;
+    }
+
+    func free<T>(&this, value: ^T) {
+        this.free_raw(
+            value as [*]mut u8,
+            $sizeof<T>(),
+            $alignof<T>()
+        );
+    }
+
+    func free_slice<T>(
+        &this,
+        value: ^[]T,
+        capacity: usize
+    ) {
+        this.free_raw(
+            value as [*]mut u8,
+            capacity * $sizeof<T>(),
+            $alignof<T>()
+        );
+    }
+
+    unsafe func alloc_raw(
+        &this,
+        size: usize,
+        align: usize
+    ): [*]mut u8 {
+        return libc.malloc(size) as [*]mut u8;
+    }
+
+    unsafe func calloc_raw(
+        &this,
+        count: usize,
+        size: usize,
+        align: usize
+    ): [*]mut u8 {
+        return libc.calloc(count, size) as [*]mut u8;
+    }
+
+    unsafe func realloc_raw(
+        &this,
+        ptr: [*]mut u8,
+        old_size: usize,
+        new_size: usize,
+        align: usize
+    ): [*]mut u8 {
+        return libc.realloc(ptr as [*]mut void, new_size) as [*]mut u8;
+    }
+
+    unsafe func free_raw(
+        &this,
+        ptr: [*]mut u8,
+        size: usize,
+        align: usize
+    ) {
+        libc.free(ptr as [*]mut void);
+    }
+}

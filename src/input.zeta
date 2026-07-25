@@ -1,6 +1,10 @@
 package zeta::input;
 
 import zeta::utils::array_list.ArrayList;
+import zeta::utils::mallocator.Mallocator;
+import zeta::utils::mallocator.RawMallocator;
+
+extern(C) func println_int(num: i64);
 
 public struct Inner {
     tag: i64
@@ -11,8 +15,15 @@ public struct Outer {
     count: i64
 }
 
+impl Outer by Drop {
+    func drop(mut this) {
+        println_int(1);
+    }
+}
+
 func main(): i64 {
-    let mut list: ArrayList<Outer> = ArrayList.new();
+    let alloc: Mallocator = Mallocator {};
+    let mut list: ArrayList<Outer, Mallocator> = ArrayList.with_capacity(3, alloc);
 
     list.push(Outer {
         inner: Inner { tag: 10 },
@@ -34,7 +45,9 @@ func main(): i64 {
     let third: &mut Outer = list.get_mut(i + 1);
     second.inner.tag = 123;
     second.count = 456;
+    println_int(second.inner.tag);
     third.inner.tag = 789;
     third.count = 999;
+
     return 0;
 }

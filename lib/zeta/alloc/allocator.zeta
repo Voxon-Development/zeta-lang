@@ -1,0 +1,75 @@
+public interface Allocator {
+    func alloc<T>(&this): ^T;
+
+    func calloc<T>(&this, count: usize): ^[]T;
+
+    func realloc<T>(
+        &this,
+        value: ^[]T,
+        new_len: usize
+    ): ^[]T;
+
+    func new<T>(&this, value: T): ^T;
+
+    func free<T>(&this, value: ^T);
+
+    func free_slice<T>(&this, value: ^[]T);
+
+    unsafe func alloc_raw(
+        &this,
+        size: usize,
+        align: usize
+    ): [*]mut u8;
+
+    unsafe func calloc_raw(
+        &this,
+        count: usize,
+        size: usize,
+        align: usize
+    ): [*]mut u8;
+
+    unsafe func realloc_raw(
+        &this,
+        ptr: [*]mut u8,
+        old_size: usize,
+        new_size: usize,
+        align: usize
+    ): [*]mut u8;
+
+    unsafe func free_raw(
+        &this,
+        ptr: [*]mut u8,
+        size: usize,
+        align: usize
+    );
+}
+
+public interface RawAllocator {
+    unsafe func alloc_raw(
+        &this,
+        size: usize,
+        align: usize
+    ): [*]mut u8;
+
+    unsafe func calloc_raw(
+        &this,
+        count: usize,
+        size: usize,
+        align: usize
+    ): [*]mut u8;
+
+    unsafe func realloc_raw(
+        &this,
+        ptr: [*]mut u8,
+        old_size: usize,
+        new_size: usize,
+        align: usize
+    ): [*]mut u8;
+
+    unsafe func free_raw(
+        &this,
+        ptr: [*]mut u8,
+        size: usize,
+        align: usize
+    );
+}
