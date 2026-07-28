@@ -59,7 +59,7 @@ You are now ready to use Zeta.
 
 ---
 
-# Updating Zeta
+## Updating Zeta
 
 Zeta includes a toolchain updater that keeps the compiler, language server, and standard library synchronized.
 
