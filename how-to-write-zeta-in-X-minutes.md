@@ -28,7 +28,7 @@ func main() {
 // Functions have parameters in parentheses.
 // If there are no parameters, empty parentheses are still required.
 func beyond_hello() {
-  	let x: int = 3;     // Variable assignment.
+  	let x: i32 = 3;     // Variable assignment.
   	// "Short" declarations use := to infer the type, declare, and assign.
   	y := 4;
   	learn_types();
