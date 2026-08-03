@@ -2,8 +2,8 @@ use crate::errors::error::{DiagnosticError, ParseErrorKind};
 use crate::hir::StrId;
 use crate::span::SourceSpan;
 use std::fmt;
-use std::ops::Index;
-use zetaruntime::bump::GrowableBump;
+use std::sync::Arc;
+use zetaruntime::arena::GrowableAtomicBump;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Token<'a> {
@@ -13,22 +13,13 @@ pub struct Token<'a> {
 }
 
 #[derive(Clone, Copy)]
-pub struct Tokens<'a> {
-    pub slice: &'a [Token<'a>],
+pub struct Tokens<'a, 'bump> {
+    pub slice: &'bump [Token<'a>],
 }
 
-impl<'a> Index<usize> for Tokens<'a> {
-    type Output = Token<'a>;
-
-    #[inline]
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.slice[index]
-    }
-}
-
-impl<'a> Tokens<'a> {
-    pub fn new(bump: &'a GrowableBump, tokens: Vec<Token<'a>>) -> Self {
-        let slice = bump.alloc_slice_copy(&tokens);
+impl<'a, 'bump> Tokens<'a, 'bump> {
+    pub fn new(bump: Arc<GrowableAtomicBump<'bump>>, tokens: Vec<Token<'a>>) -> Self {
+        let slice = bump.alloc_slice_immutable(&tokens);
         Self { slice }
     }
 
@@ -44,14 +35,14 @@ impl<'a> Tokens<'a> {
 }
 
 #[derive(Clone)]
-pub struct Cursor<'a> {
-    tokens: &'a Tokens<'a>,
+pub struct Cursor<'a, 'bump> {
+    tokens: &'bump Tokens<'a, 'bump>,
     index: usize,
 }
 
-impl<'a> Cursor<'a> {
+impl<'a, 'bump> Cursor<'a, 'bump> {
     #[inline]
-    pub fn new(tokens: &'a Tokens<'a>, index: usize) -> Self {
+    pub fn new(tokens: &'bump Tokens<'a, 'bump>, index: usize) -> Self {
         Self { tokens, index }
     }
 
@@ -65,7 +56,7 @@ impl<'a> Cursor<'a> {
     pub fn peek(&self) -> TokenKind {
         let mut idx = self.index;
         while idx < self.tokens.len() {
-            match self.tokens[idx].kind {
+            match self.tokens.get(idx).kind {
                 TokenKind::LineComment | TokenKind::DocComment => idx += 1,
                 kind => return kind,
             }
@@ -78,9 +69,9 @@ impl<'a> Cursor<'a> {
     pub fn peek_token(&self) -> Token<'a> {
         let mut idx = self.index;
         while idx < self.tokens.len() {
-            match self.tokens[idx].kind {
+            match self.tokens.get(idx).kind {
                 TokenKind::LineComment | TokenKind::DocComment => idx += 1,
-                _ => return self.tokens[idx],
+                _ => return self.tokens.get(idx),
             }
         }
         Token {
@@ -98,7 +89,7 @@ impl<'a> Cursor<'a> {
         let mut idx = self.index;
         let mut skipped = 0;
         while idx < self.tokens.len() {
-            match self.tokens[idx].kind {
+            match self.tokens.get(idx).kind {
                 TokenKind::LineComment | TokenKind::DocComment => idx += 1,
                 kind => {
                     if skipped == n {
@@ -112,12 +103,55 @@ impl<'a> Cursor<'a> {
         TokenKind::EOF
     }
 
+    #[inline]
+    pub fn expect_string(&mut self) -> Result<(StrId, SourceSpan<'a>), DiagnosticError<'a>> {
+        let tok = self.peek_token();
+
+        match tok.kind {
+            TokenKind::String => {
+                let text = match tok.text {
+                    Some(t) => t,
+                    _ => {
+                        return Err(DiagnosticError {
+                            kind: ParseErrorKind::EmptyString,
+                            span: tok.span,
+                            context: vec![],
+                            notes: vec![],
+                        });
+                    }
+                };
+
+                self.advance();
+                Ok((text, tok.span))
+            }
+
+            TokenKind::EOF => Err(DiagnosticError {
+                kind: ParseErrorKind::UnexpectedEOF {
+                    expected: Some(TokenKind::String),
+                },
+                span: tok.span,
+                context: vec![],
+                notes: vec![],
+            }),
+
+            _ => Err(DiagnosticError {
+                kind: ParseErrorKind::UnexpectedToken {
+                    expected: TokenKind::String,
+                    found: tok.kind,
+                },
+                span: tok.span,
+                context: vec![],
+                notes: vec![],
+            }),
+        }
+    }
+
     /// Advance past the current non-comment token and any trailing comments.
     #[inline]
     pub fn advance(&mut self) {
         // First, skip any comments we're currently sitting on
         while self.index < self.tokens.len() {
-            match self.tokens[self.index].kind {
+            match self.tokens.get(self.index).kind {
                 TokenKind::LineComment | TokenKind::DocComment => self.index += 1,
                 _ => break,
             }
@@ -128,7 +162,7 @@ impl<'a> Cursor<'a> {
         }
         // Skip any comments that follow
         while self.index < self.tokens.len() {
-            match self.tokens[self.index].kind {
+            match self.tokens.get(self.index).kind {
                 TokenKind::LineComment | TokenKind::DocComment => self.index += 1,
                 _ => break,
             }
@@ -324,7 +358,6 @@ pub enum TokenKind {
     Effect,
     Permits,
     Statem,
-    Trait,
     Where,
     Uses,
     Requires,
@@ -342,7 +375,6 @@ pub enum TokenKind {
     Reified,
     Undefined,
     As,
-    Panic,
 
     // ===== Types =====
     U8,
@@ -360,8 +392,10 @@ pub enum TokenKind {
     Usize,
     Isize,
     Char,
+    CharLiteral,
     Str,
     Boolean,
+    Never,
 
     // ===== Punctuation =====
     LParen,     // (
@@ -381,7 +415,8 @@ pub enum TokenKind {
     DotDot,     // ..
     DotDotLt,   // ..<
     ColonColon, // ::
-    Dollar,
+    Dollar,     // $
+    Octal,      // "o" or "O" when used in a number.
 
     // ===== Operators =====
     Assign,            // =
@@ -456,6 +491,7 @@ impl TokenKind {
                 | TokenKind::Char
                 | TokenKind::Str
                 | TokenKind::Boolean
+                | TokenKind::Never
         )
     }
 }
@@ -464,12 +500,12 @@ impl fmt::Display for TokenKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use TokenKind::*;
         let s = match self {
-            Ident => "ident",
+            Ident => "identifier",
             Number => "number",
             Decimal => "decimal",
             Hexadecimal => "hexadecimal",
             Binary => "binary",
-            String => "string",
+            String => "str",
             BooleanTrue => "true",
             BooleanFalse => "false",
             Null => "null",
@@ -505,7 +541,6 @@ impl fmt::Display for TokenKind {
             Effect => "effect",
             Permits => "permits",
             Statem => "statem",
-            Trait => "trait",
             Where => "where",
             Uses => "uses",
             Requires => "requires",
@@ -530,6 +565,7 @@ impl fmt::Display for TokenKind {
             Usize => "usize",
             Isize => "isize",
             Char => "char",
+            CharLiteral => "character literal",
             Str => "str",
             Boolean => "boolean",
 
@@ -608,8 +644,9 @@ impl fmt::Display for TokenKind {
             Catch => "catch",
             Undefined => "undefined",
             Public => "public",
+            Never => "never",
             Dollar => "$",
-            Panic => "panic",
+            Octal => "o",
         };
         f.write_str(s)
     }
