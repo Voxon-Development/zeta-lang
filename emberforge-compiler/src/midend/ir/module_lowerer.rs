@@ -1,15 +1,19 @@
 use crate::midend::copy_analysis::drop_glue::{DropGlueBuilder, DropGlueRegistry};
 use crate::midend::ir::lowerer::FunctionLowerer;
 use codex_dependency_graph::DepGraph;
-use ir::hir::{Hir, HirFunc, HirInterface, HirModule, HirParam, HirStruct, StrId, ThisPassingKind};
+use ir::hir::{
+    Hir, HirEnum, HirFunc, HirInterface, HirModule, HirParam, HirStruct, StrId, ThisPassingKind,
+};
 use ir::ir_conversion::lower_type_hir;
 use ir::ir_hasher::{FxHashBuilder, HashSet};
-use ir::ssa_ir::{Function, Module, SsaType};
+use ir::ssa_ir::{AllocatorKind, Function, Module, SsaType};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
+use zetaruntime::bump::GrowableBump;
+use zetaruntime::intern_fmt;
 use zetaruntime::string_pool::StringPool;
 
 pub struct MirModuleLowerer<'a, 'cx, 'bump, 'g>
@@ -33,6 +37,7 @@ where
 
     context: Arc<StringPool>,
     extern_c_names: Rc<HashSet<StrId>>,
+    enums: HashMap<StrId, HirEnum<'a, 'bump>, FxHashBuilder>,
 
     enum_variant_tags: HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
     struct_interfaces: HashMap<StrId, Vec<StrId>, FxHashBuilder>,
@@ -40,6 +45,10 @@ where
     pub module_idx: usize,
     g_phantom_data: PhantomData<&'g ()>,
     glue_registry: &'a DropGlueRegistry,
+    allocator_kind: HashMap<StrId, AllocatorKind, FxHashBuilder>,
+    bump: GrowableBump<'bump>,
+    interface_default_methods:
+        HashMap<StrId, HashMap<StrId, HirFunc<'a, 'bump>, FxHashBuilder>, FxHashBuilder>,
 }
 
 impl<'a, 'cx, 'bump, 'g> MirModuleLowerer<'a, 'cx, 'bump, 'g>
@@ -81,8 +90,10 @@ where
             struct_vtable_slots: HashMap::with_hasher(FxHashBuilder),
             struct_method_slots: HashMap::with_hasher(FxHashBuilder),
             struct_field_offsets: HashMap::with_hasher(FxHashBuilder),
+            interface_default_methods: HashMap::with_hasher(FxHashBuilder),
             enum_variant_tags,
             struct_interfaces: HashMap::with_hasher(FxHashBuilder),
+            enums: HashMap::with_hasher(FxHashBuilder),
             phantom_data: PhantomData,
             context,
             extern_c_names,
@@ -90,11 +101,14 @@ where
             dep_graph,
             module_idx,
             g_phantom_data: PhantomData,
+            allocator_kind: HashMap::with_hasher(FxHashBuilder),
             glue_registry,
+            bump: GrowableBump::new(4096, 8),
         }
     }
 
     fn register_enum(&mut self, hir_enum: &ir::hir::HirEnum<'a, 'bump>) {
+        self.enums.insert(hir_enum.name, *hir_enum);
         let mut tags = HashMap::with_hasher(FxHashBuilder);
         for (i, variant) in hir_enum.variants.iter().enumerate() {
             tags.insert(variant.name, i);
@@ -125,6 +139,8 @@ where
             }
         }
 
+        self.compute_allocator_kinds();
+
         for &idx in compilation_order {
             for item in hir_modules[idx].items {
                 if let Hir::Struct(ty_struct) = item {
@@ -142,11 +158,19 @@ where
                                 .entry(struct_name)
                                 .or_insert_with(|| HashMap::with_hasher(FxHashBuilder))
                                 .insert(func.unmangled_name, func.name);
-                            self.register_method_signature(func, struct_name);
+                            if func.generics.is_none() {
+                                self.register_method_signature(func);
+                            }
                         }
                         None => {
-                            let f = Function::from_signature(func);
-                            self.module.functions.insert(f.name, f);
+                            if func.generics.is_none() {
+                                let f = Function::from_signature(
+                                    func,
+                                    &self.module.structs,
+                                    &self.context,
+                                );
+                                self.module.functions.insert(f.name, f);
+                            }
                         }
                     },
                     Hir::Impl(impl_block) => {
@@ -156,7 +180,9 @@ where
                                     .entry(impl_block.target)
                                     .or_insert_with(|| HashMap::with_hasher(FxHashBuilder))
                                     .insert(method.unmangled_name, method.name);
-                                self.register_method_signature(method, impl_block.target);
+                                if method.generics.is_none() {
+                                    self.register_method_signature(method);
+                                }
                             }
                         }
                     }
@@ -186,6 +212,8 @@ where
             self.glue_registry,
             &self.module.structs,
             &self.struct_mangled_map,
+            &self.struct_field_offsets,
+            &self.allocator_kind,
             self.context.clone(),
             &owned_structs,
         ) {
@@ -196,11 +224,26 @@ where
             self.module_idx = idx;
             for item in hir_modules[idx].items {
                 match item {
-                    Hir::Func(func) => self.lower_function_body(func),
+                    Hir::Func(func) => {
+                        if func.generics.is_none() {
+                            self.lower_function_body(func);
+                        }
+                    }
+                    Hir::Interface(iface) => {
+                        if let Some(methods) = iface.methods {
+                            for m in methods.iter() {
+                                if m.generics.is_none() && m.body.is_some() {
+                                    self.lower_function_body(m);
+                                }
+                            }
+                        }
+                    }
                     Hir::Impl(impl_block) => {
                         if let Some(methods) = impl_block.methods {
                             for method in methods {
-                                self.lower_function_body(method);
+                                if method.generics.is_none() {
+                                    self.lower_function_body(method);
+                                }
                             }
                         }
                     }
@@ -212,18 +255,23 @@ where
         self.module
     }
 
-    fn register_method_signature(&mut self, hir_method: &HirFunc<'a, 'bump>, struct_name: StrId) {
-        if !self.struct_field_offsets.contains_key(&struct_name) {
-            eprintln!(
-                "[register_method_signature] WARNING: method {} has impl_target={} but struct_field_offsets has no entry. known structs: {:?}",
-                hir_method.name,
-                struct_name,
-                self.struct_field_offsets.keys().collect::<Vec<_>>()
-            );
+    fn compute_allocator_kinds(&mut self) {
+        let allocator_iface = StrId(self.context.intern("Allocator"));
+        let raw_allocator_iface = StrId(self.context.intern("RawAllocator"));
+
+        for (&struct_name, ifaces) in self.struct_interfaces.iter() {
+            if ifaces.contains(&allocator_iface) {
+                self.allocator_kind
+                    .insert(struct_name, AllocatorKind::Owning);
+            } else if ifaces.contains(&raw_allocator_iface) {
+                self.allocator_kind
+                    .insert(struct_name, AllocatorKind::RawOnly);
+            }
         }
+    }
 
-        let func = Function::from_signature(hir_method);
-
+    fn register_method_signature(&mut self, hir_method: &HirFunc<'a, 'bump>) {
+        let func = Function::from_signature(hir_method, &self.module.structs, &self.context);
         self.module.functions.insert(func.name, func);
     }
 
@@ -244,8 +292,13 @@ where
         self.interface_id_map.insert(hir_iface.name, iface_id);
         let mut methods = Vec::new();
         let mut slot_map = HashMap::with_hasher(FxHashBuilder);
+        let mut defaults = HashMap::with_hasher(FxHashBuilder);
         if let Some(hir_methods) = hir_iface.methods {
-            for (i, m) in hir_methods.iter().enumerate() {
+            for m in hir_methods.iter() {
+                if m.generics.is_some() {
+                    continue;
+                }
+                let slot = methods.len();
                 let param_types: Vec<SsaType> = m
                     .params
                     .unwrap_or_default()
@@ -268,13 +321,21 @@ where
                     .map(|t| lower_type_hir(t))
                     .unwrap_or(SsaType::Void);
                 methods.push((m.name.clone(), param_types, ret));
-                slot_map.insert(m.name.clone(), i);
+                slot_map.insert(m.name.clone(), slot);
+
+                if m.body.is_some() {
+                    let func = Function::from_signature(m, &self.module.structs, &self.context);
+                    self.module.functions.insert(func.name, func);
+                    defaults.insert(m.unmangled_name, *m);
+                }
             }
         }
 
         self.interface_methods
             .insert(hir_iface.name.clone(), methods);
         self.interface_method_slots.insert(hir_iface.name, slot_map);
+        self.interface_default_methods
+            .insert(hir_iface.name, defaults);
         self.module
             .interfaces
             .insert(hir_iface.name, hir_iface.clone());
@@ -286,44 +347,45 @@ where
 
         for f in hir_struct.fields.iter() {
             let field_ssa_ty = lower_type_hir(&f.field_type);
-            let align =
-                ir::layout::alignof_ssa(&field_ssa_ty, ir::layout::TargetInfo { ptr_bytes: 8 })
+            let layout =
+                ir::layout::layout_of_ssa(&field_ssa_ty, ir::layout::TargetInfo { ptr_bytes: 8 })
                     .unwrap_or_else(|e| {
                         panic!("failed to compute alignment for field {}: {:?}", f.name, e)
                     });
 
-            current_offset = ir::layout::round_up_to_align(current_offset, align);
+            current_offset = ir::layout::round_up_to_align(current_offset, layout.align);
             offsets.insert(f.name, current_offset);
 
-            let size =
-                ir::layout::sizeof_ssa(&field_ssa_ty, ir::layout::TargetInfo { ptr_bytes: 8 })
-                    .ok()
-                    .unwrap_or_else(|| panic!("failed to compute size for field {}", f.name));
-            current_offset += size;
+            current_offset += layout.size;
         }
 
         self.struct_field_offsets.insert(hir_struct.name, offsets);
     }
 
     fn build_struct_vtable(&mut self, hir_struct: &HirStruct<'a, 'bump>) {
-        let Some(interfaces) = self.struct_interfaces.get(&hir_struct.name).cloned() else {
+        self.build_vtable_for_target(hir_struct.name);
+    }
+
+    fn build_vtable_for_target(&mut self, target_name: StrId) {
+        let Some(interfaces) = self.struct_interfaces.get(&target_name).cloned() else {
             return;
         };
 
-        let struct_methods = self
+        let target_methods = self
             .struct_mangled_map
-            .get(&hir_struct.name)
-            .unwrap_or_else(|| panic!("Missing mangled method map for struct {}", hir_struct.name));
+            .get(&target_name)
+            .unwrap_or_else(|| {
+                panic!("Missing mangled method map for impl target {}", target_name)
+            });
 
         for iface_name in &interfaces {
             let Some(iface_methods) = self.interface_methods.get(iface_name) else {
                 continue;
             };
-
             let hir_iface = self.module.interfaces.get(iface_name).unwrap_or_else(|| {
                 panic!(
-                    "Struct {} implements unknown interface {}",
-                    hir_struct.name, iface_name
+                    "Target {} implements unknown interface {}",
+                    target_name, iface_name
                 )
             });
             let unmangled_names: Vec<StrId> = hir_iface
@@ -335,34 +397,47 @@ where
 
             let mut vtable_slots = Vec::new();
             let mut slot_map = HashMap::with_hasher(FxHashBuilder);
-
             for (slot, (method_name, _, _)) in iface_methods.iter().enumerate() {
                 let unmangled_name = unmangled_names.get(slot).copied().unwrap_or(*method_name);
-
-                let mangled = struct_methods
+                let mangled = target_methods
                     .get(&unmangled_name)
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "Struct {} implements interface {} but does not provide method {}",
-                            hir_struct.name, iface_name, unmangled_name
-                        )
+                    .copied()
+                    .or_else(|| {
+                        self.interface_default_methods
+                            .get(iface_name)
+                            .and_then(|defaults| defaults.get(&unmangled_name))
+                            .map(|f| f.name)
                     })
-                    .clone();
-
+                    .unwrap_or_else(|| {
+                        println!(
+                            "interface default methods {:#?}",
+                            self.interface_default_methods
+                        );
+                        println!();
+                        println!(
+                            "interface default methods for {iface_name}: {:#?}",
+                            self.interface_default_methods.get(iface_name)
+                        );
+                        panic!(
+                            "Target {} implements interface {} but does not provide method {}, \
+                             and the interface has no default body for it",
+                            target_name, iface_name, unmangled_name
+                        )
+                    });
                 vtable_slots.push(mangled);
                 slot_map.insert(method_name.clone(), slot);
             }
 
             self.struct_vtable_slots.insert(
-                StrId(self.context.intern(&format!(
+                StrId(intern_fmt!(
+                    self.context,
                     "{}_{}",
-                    self.context.resolve_string(&hir_struct.name),
+                    self.context.resolve_string(&target_name),
                     self.context.resolve_string(iface_name)
-                ))),
+                )),
                 vtable_slots,
             );
-
-            self.struct_method_slots.insert(hir_struct.name, slot_map);
+            self.struct_method_slots.insert(target_name, slot_map);
         }
     }
 
@@ -391,7 +466,10 @@ where
             self.dep_graph,
             self.module_idx,
             self.glue_registry,
+            &self.allocator_kind,
             &self.interface_methods,
+            &self.bump,
+            &self.enums,
         )
         .unwrap();
         fl.lower_body(hir_fn.body);

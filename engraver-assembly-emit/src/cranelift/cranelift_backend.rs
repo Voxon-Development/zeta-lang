@@ -1,6 +1,9 @@
 use crate::backend::Backend;
 use crate::cranelift::{clif_type, cranelift_intrinsics};
 use cranelift_codegen::ir::AbiParam;
+use cranelift_codegen::ir::Block as ClifBlock;
+use cranelift_codegen::ir::Block;
+use cranelift_codegen::ir::BlockArg;
 use cranelift_codegen::ir::Function as ClifFunction;
 use cranelift_codegen::ir::InstBuilder;
 use cranelift_codegen::ir::MemFlags;
@@ -8,9 +11,6 @@ use cranelift_codegen::ir::Signature;
 use cranelift_codegen::ir::Type;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types;
-use cranelift_codegen::ir::{Block as ClifBlock, StackSlotKind};
-use cranelift_codegen::ir::{Block, TrapCode};
-use cranelift_codegen::ir::{BlockArg, StackSlotData};
 use cranelift_codegen::isa;
 use cranelift_codegen::settings::Configurable;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
@@ -40,7 +40,6 @@ pub struct CraneliftBackend {
     module: ObjectModule,
     string_data: HashMap<VmString, ZetaDataId>,
     interp_func: FuncId,
-    write_func: FuncId,
     enum_new: FuncId,
     enum_tag: FuncId,
     func_ids: HashMap<StrId, FuncId, FxHashBuilder>,
@@ -51,6 +50,7 @@ pub struct CraneliftBackend {
     main_emitted: bool,
     func_ret_types: HashMap<StrId, SsaType, FxHashBuilder>,
     current_sret_var: Option<Variable>,
+    cpu_relax_func: FuncId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,7 +105,8 @@ impl CraneliftBackend {
             .unwrap();
 
         let mut sig_enum_new = Signature::new(module.isa().default_call_conv());
-        sig_enum_new.params.push(AbiParam::new(types::I64));
+        sig_enum_new.params.push(AbiParam::new(types::I64)); // tag
+        sig_enum_new.params.push(AbiParam::new(types::I64)); // payload size, new
         sig_enum_new.returns.push(AbiParam::new(types::I64));
         let enum_new = module
             .declare_function("__enum_new", Linkage::Import, &sig_enum_new)
@@ -118,20 +119,15 @@ impl CraneliftBackend {
             .declare_function("__enum_tag", Linkage::Import, &sig_enum_tag)
             .unwrap();
 
-        let mut sig_write = Signature::new(module.isa().default_call_conv());
-        sig_write.params.push(AbiParam::new(types::I32)); // fd
-        sig_write.params.push(AbiParam::new(types::I64)); // buf ptr
-        sig_write.params.push(AbiParam::new(types::I64)); // count
-        sig_write.returns.push(AbiParam::new(types::I64)); // ssize_t
-        let write_func = module
-            .declare_function("write", Linkage::Import, &sig_write)
+        let sig_cpu_relax = Signature::new(module.isa().default_call_conv());
+        let cpu_relax_func = module
+            .declare_function("__zeta_cpu_relax", Linkage::Import, &sig_cpu_relax)
             .unwrap();
 
         CraneliftBackend {
             module,
             string_data: HashMap::new(),
             interp_func,
-            write_func,
             enum_new,
             enum_tag,
             func_ids: HashMap::with_hasher(FxHashBuilder),
@@ -142,14 +138,18 @@ impl CraneliftBackend {
             main_emitted: false,
             func_ret_types: HashMap::with_hasher(FxHashBuilder),
             current_sret_var: None,
+            cpu_relax_func,
         }
     }
 
     fn is_aggregate_ty(ty: &SsaType) -> bool {
-        matches!(
-            ty,
-            SsaType::User(_, _) | SsaType::Array(_, _) | SsaType::Tuple(_)
-        )
+        match ty {
+            SsaType::User(_, _) => true,
+            SsaType::Array(_, _) => true,
+            SsaType::Tuple(_) => true,
+            SsaType::Owned(inner) => matches!(inner.as_ref(), SsaType::Slice(_)),
+            _ => false,
+        }
     }
 
     fn make_and_declare_var(
@@ -171,45 +171,6 @@ impl CraneliftBackend {
         func: &Function,
     ) {
         match inst {
-            // TODO: Replace with runtime panic implementation once runtime
-            // support for stack traces and cross-platform I/O exists.
-            Instruction::Panic { message } => {
-                let msg_val = match message {
-                    Operand::Value(v) => {
-                        builder.use_var(*var_map.get(v).expect("Panic: message undefined"))
-                    }
-                    _ => panic!("Panic: message must be a Value"),
-                };
-
-                // [len: 8 bytes][utf8 bytes...]
-                let flags = MemFlags::new();
-                let len = builder.ins().load(types::I64, flags, msg_val, 0);
-                let data_ptr = builder.ins().iadd_imm(msg_val, 8);
-
-                let fd = builder.ins().iconst(types::I32, 2); // stderr
-                let write_ref = self
-                    .module
-                    .declare_func_in_func(self.write_func, &mut builder.func);
-
-                // Write the panic message.
-                builder.ins().call(write_ref, &[fd, data_ptr, len]);
-
-                // Write a trailing '\n'.
-                let newline = builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot,
-                    1,
-                    1,
-                ));
-
-                let nl_ptr = builder.ins().stack_addr(types::I64, newline, 0);
-                let nl = builder.ins().iconst(types::I8, b'\n' as i64);
-                builder.ins().store(MemFlags::new(), nl, nl_ptr, 0);
-
-                let one = builder.ins().iconst(types::I64, 1);
-                builder.ins().call(write_ref, &[fd, nl_ptr, one]);
-
-                builder.ins().trap(TrapCode::user(1).unwrap());
-            }
             Instruction::Undef { dest, ty } => {
                 let clif_ty = clif_type(ty);
                 let var = builder.declare_var(clif_ty);
@@ -320,7 +281,9 @@ impl CraneliftBackend {
                     BinOp::LogicalAnd => unreachable!(),
                     BinOp::LogicalOr => unreachable!(),
                 };
-                let ty = func.value_types.get(dest).unwrap();
+                let ty = func.value_types.get(dest).unwrap_or_else(|| {
+                    panic!("Could not find a value type for {dest:?}, op: {op:?}, {left:?}, {right:?} cranelift backend info: \ncurrent_sret_var: {:?} \nfunc_param_types: {:#?} \nfunc_ret_types: {:#?}", self.current_sret_var, self.func_param_types, self.func_ret_types)
+                });
                 let clif_ty = clif_type(ty);
 
                 let var = builder.declare_var(clif_ty);
@@ -1114,7 +1077,7 @@ impl CraneliftBackend {
                 dest,
                 op,
                 query_ty,
-                args: _,
+                args,
             } => {
                 use ir::ssa_ir::IntrinsicOp;
                 match op {
@@ -1152,6 +1115,66 @@ impl CraneliftBackend {
                     }
 
                     IntrinsicOp::AssertAlign => {} // Lowered differently
+                    IntrinsicOp::AtomicCasU32 => {
+                        let resolve = |a: &Operand,
+                                       builder: &mut FunctionBuilder|
+                         -> cranelift_codegen::ir::Value {
+                            match a {
+                                Operand::Value(v) => builder.use_var(
+                                    *var_map.get(v).expect("atomic_cas_u32 operand undefined"),
+                                ),
+                                Operand::ConstInt(i) => builder.ins().iconst(types::I32, *i),
+                                _ => unimplemented!(),
+                            }
+                        };
+                        let ptr = resolve(&args[0], builder);
+                        let expected = resolve(&args[1], builder);
+                        let new = resolve(&args[2], builder);
+                        let old = builder
+                            .ins()
+                            .atomic_cas(MemFlags::new(), ptr, expected, new);
+                        let var = builder.declare_var(types::I32);
+                        builder.def_var(var, old);
+                        if let Some(d) = dest {
+                            var_map.insert(*d, var);
+                        }
+                    }
+
+                    IntrinsicOp::AtomicLoadU32 => {
+                        let ptr = match &args[0] {
+                            Operand::Value(v) => builder
+                                .use_var(*var_map.get(v).expect("atomic_load_u32 ptr undefined")),
+                            _ => unimplemented!(),
+                        };
+                        let val = builder.ins().atomic_load(types::I32, MemFlags::new(), ptr);
+                        let var = builder.declare_var(types::I32);
+                        builder.def_var(var, val);
+                        if let Some(d) = dest {
+                            var_map.insert(*d, var);
+                        }
+                    }
+
+                    IntrinsicOp::AtomicStoreU32 => {
+                        let ptr = match &args[0] {
+                            Operand::Value(v) => builder
+                                .use_var(*var_map.get(v).expect("atomic_store_u32 ptr undefined")),
+                            _ => unimplemented!(),
+                        };
+                        let val = match &args[1] {
+                            Operand::Value(v) => builder
+                                .use_var(*var_map.get(v).expect("atomic_store_u32 val undefined")),
+                            Operand::ConstInt(i) => builder.ins().iconst(types::I32, *i),
+                            _ => unimplemented!(),
+                        };
+                        builder.ins().atomic_store(MemFlags::new(), val, ptr);
+                    }
+
+                    IntrinsicOp::CpuRelax => {
+                        let relax_ref = self
+                            .module
+                            .declare_func_in_func(self.cpu_relax_func, &mut builder.func);
+                        builder.ins().call(relax_ref, &[]);
+                    }
                 }
             }
         }
@@ -1453,7 +1476,7 @@ impl Backend for CraneliftBackend {
                         SsaType::Nullable(_)
                         | SsaType::Pointer(_)
                         | SsaType::User(_, _)
-                        | SsaType::Enum(_)
+                        | SsaType::Enum(..)
                         | SsaType::Null => {
                             let z = builder.ins().iconst(types::I64, 0);
                             builder.ins().return_(&[z]);
@@ -1701,4 +1724,37 @@ impl CraneliftBackend {
             builder.ins().brif(cmp, *target_blk, &[], current_blk, &[]);
         }
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __zeta_streq(a: *const u8, b: *const u8) -> i64 {
+    unsafe {
+        let a_len = *(a as *const u64) as usize;
+        let b_len = *(b as *const u64) as usize;
+        if a_len != b_len {
+            return 0;
+        }
+        let a_bytes = std::slice::from_raw_parts(a.add(8), a_len);
+        let b_bytes = std::slice::from_raw_parts(b.add(8), b_len);
+        (a_bytes == b_bytes) as i64
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __enum_new(tag: i64, size: i64) -> *mut u8 {
+    unsafe {
+        let total = 8 + size as usize;
+        let layout = std::alloc::Layout::from_size_align(total, 8).unwrap();
+        let ptr = std::alloc::alloc(layout);
+        if ptr.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        *(ptr as *mut i64) = tag;
+        ptr
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __enum_tag(obj: *const u8) -> i64 {
+    unsafe { *(obj as *const i64) }
 }

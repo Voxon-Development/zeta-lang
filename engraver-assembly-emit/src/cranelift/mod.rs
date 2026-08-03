@@ -25,7 +25,7 @@ fn clif_type(ty: &SsaType) -> Type {
         SsaType::String => clif_type(&SsaType::Pointer(Box::new(SsaType::I8))),
         SsaType::Void => unimplemented!(),
         SsaType::User(_, _) => types::I64, // User types passed by reference
-        SsaType::Enum(_) => types::I64,    // Tagged union, passed by reference
+        SsaType::Enum(..) => types::I64,   // Tagged union, passed by reference
         SsaType::Tuple(_) => types::I64,   // Tuples passed by reference
         SsaType::Pointer(_) => types::I64, // Pointers are 64-bit
         SsaType::Dyn => types::I64,        // Trait object (fat pointer)
@@ -35,5 +35,6 @@ fn clif_type(ty: &SsaType) -> Type {
         SsaType::Interface(_str_id) => todo!(),
         SsaType::Nullable(_ssa_type) => types::I64, // pointer
         SsaType::Array(_, _) => types::I64,         // pointer
+        SsaType::Owned(_) => types::I64,            // Pointers are 64-bit
     }
 }

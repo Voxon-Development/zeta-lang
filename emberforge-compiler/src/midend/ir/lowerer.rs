@@ -1,21 +1,25 @@
+use crate::midend::copy_analysis::drop_emitter::{DropEmitter, FnAllocatorResolver};
 use crate::midend::copy_analysis::drop_glue::DropGlueRegistry;
 use crate::midend::copy_analysis::drop_tracking::{DropLocal, DropMoveState, DropScope};
 use crate::midend::ir::block_data::CurrentBlockData;
 use crate::midend::ir::expr_lowerer::MirExprLowerer;
 use codex_dependency_graph::DepGraph;
 use ir::hir::{
-    DropKind, HirErrorHandlerPattern, HirExpr, HirFunc, HirParam, HirStmt, HirStruct, HirType,
-    StrId,
+    self, DropKind, HirEnum, HirErrorHandlerPattern, HirExpr, HirFunc, HirParam, HirStmt,
+    HirStruct, HirType, IntrinsicKind, ProvenanceAnnotation, StrId,
 };
 use ir::ir_conversion::lower_type_hir;
 use ir::ir_hasher::{FxHashBuilder, HashSet};
 use ir::layout::{TargetInfo, alignof_ssa, layout_of_ssa, round_up_to_align};
-use ir::ssa_ir::{BasicBlock, BinOp, BlockId, Function, Instruction, Operand, SsaType, Value};
+use ir::ssa_ir::{
+    AllocatorKind, BasicBlock, BinOp, BlockId, Function, Instruction, Operand, SsaType, Value,
+};
 use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
+use zetaruntime::bump::GrowableBump;
 use zetaruntime::string_pool::StringPool;
 
 /// Bookkeeping for one enclosing loop, needed so `break`/`continue` (which
@@ -24,7 +28,7 @@ use zetaruntime::string_pool::StringPool;
 /// phi-dest-value)` triples identifying placeholder `Instruction::Phi`s
 /// created by `open_join`, still waiting for more incoming edges.
 struct LoopCtx {
-    /// Where `continue` jumps to (the loop header for `while`; the
+    /// Where `continue` jumps to (the loop header for `while` or the
     /// increment block for `for`).
     continue_target: BlockId,
     /// The block whose phis a `continue` must contribute an edge to (same
@@ -51,18 +55,21 @@ pub struct FunctionLowerer<'f, 'a, 'bump> {
     struct_vtable_slots: &'a HashMap<StrId, Vec<StrId>, FxHashBuilder>,
     interface_id_map: &'a HashMap<StrId, usize, FxHashBuilder>,
     interface_method_slots: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
-    structs: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
+    structs: &'a HashMap<StrId, HirStruct<'a, 'bump>, FxHashBuilder>,
     enum_variant_tags: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
+    enums: &'a HashMap<StrId, HirEnum<'a, 'bump>, FxHashBuilder>,
     context: Arc<StringPool>,
     extern_c_names: &'a HashSet<StrId>,
     pub dep_graph: &'a RefCell<DepGraph>,
     pub module_idx: usize,
     return_type: Option<HirType<'a, 'bump>>,
     global_funcs: &'a HashMap<StrId, Function, FxHashBuilder>,
-    scope_stack: Vec<DropScope>,
-    drop_state: DropMoveState,
+    scope_stack: Vec<DropScope<'a, 'bump>>,
+    drop_state: DropMoveState<'a, 'bump>,
     glue_registry: &'a DropGlueRegistry,
+    allocator_kind: &'a HashMap<StrId, AllocatorKind, FxHashBuilder>,
     pub interface_methods: &'a HashMap<StrId, Vec<(StrId, Vec<SsaType>, SsaType)>, FxHashBuilder>,
+    bump: &'bump GrowableBump<'bump>,
 }
 
 impl<'f, 'a, 'bump> FunctionLowerer<'f, 'a, 'bump>
@@ -92,14 +99,17 @@ where
             HashMap<StrId, usize, FxHashBuilder>,
             FxHashBuilder,
         >,
-        structs: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
+        structs: &'a HashMap<StrId, HirStruct<'a, 'bump>, FxHashBuilder>,
         enum_variant_tags: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
         context: Arc<StringPool>,
         extern_c_names: &'a HashSet<StrId>,
         dep_graph: &'a RefCell<DepGraph>,
         module_idx: usize,
         glue_registry: &'a DropGlueRegistry,
+        allocator_kind: &'a HashMap<StrId, AllocatorKind, FxHashBuilder>,
         interface_methods: &'a HashMap<StrId, Vec<(StrId, Vec<SsaType>, SsaType)>, FxHashBuilder>,
+        bump: &'bump GrowableBump<'bump>,
+        enums: &'a HashMap<StrId, HirEnum<'a, 'bump>, FxHashBuilder>,
     ) -> Result<Self, std::alloc::AllocError> {
         Self::new_internal(
             function,
@@ -119,7 +129,10 @@ where
             dep_graph,
             module_idx,
             glue_registry,
+            allocator_kind,
             interface_methods,
+            bump,
+            enums,
         )
     }
 
@@ -146,14 +159,17 @@ where
             HashMap<StrId, usize, FxHashBuilder>,
             FxHashBuilder,
         >,
-        structs: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
+        structs: &'a HashMap<StrId, HirStruct<'a, 'bump>, FxHashBuilder>,
         enum_variant_tags: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
         context: Arc<StringPool>,
         extern_c_names: &'a HashSet<StrId>,
         dep_graph: &'a RefCell<DepGraph>,
         module_idx: usize,
         glue_registry: &'a DropGlueRegistry,
+        allocator_kind: &'a HashMap<StrId, AllocatorKind, FxHashBuilder>,
         interface_methods: &'a HashMap<StrId, Vec<(StrId, Vec<SsaType>, SsaType)>, FxHashBuilder>,
+        bump: &'bump GrowableBump<'bump>,
+        enums: &'a HashMap<StrId, HirEnum<'a, 'bump>, FxHashBuilder>,
     ) -> Result<Self, std::alloc::AllocError> {
         Self::new_internal(
             function,
@@ -173,7 +189,10 @@ where
             dep_graph,
             module_idx,
             glue_registry,
+            allocator_kind,
             interface_methods,
+            bump,
+            enums,
         )
     }
 
@@ -200,14 +219,17 @@ where
             HashMap<StrId, usize, FxHashBuilder>,
             FxHashBuilder,
         >,
-        structs: &'a HashMap<StrId, HirStruct<'a, 'a>, FxHashBuilder>,
+        structs: &'a HashMap<StrId, HirStruct<'a, 'bump>, FxHashBuilder>,
         enum_variant_tags: &'a HashMap<StrId, HashMap<StrId, usize, FxHashBuilder>, FxHashBuilder>,
         context: Arc<StringPool>,
         extern_c_names: &'a HashSet<StrId>,
         dep_graph: &'a RefCell<DepGraph>,
         module_idx: usize,
         glue_registry: &'a DropGlueRegistry,
+        allocator_kind: &'a HashMap<StrId, AllocatorKind, FxHashBuilder>,
         interface_methods: &'a HashMap<StrId, Vec<(StrId, Vec<SsaType>, SsaType)>, FxHashBuilder>,
+        bump: &'bump GrowableBump<'bump>,
+        enums: &'a HashMap<StrId, HirEnum<'a, 'bump>, FxHashBuilder>,
     ) -> Result<Self, std::alloc::AllocError> {
         let mut var_map = HashMap::with_hasher(FxHashBuilder);
         let mut value_types = HashMap::with_hasher(FxHashBuilder);
@@ -274,7 +296,10 @@ where
             scope_stack: vec![DropScope { locals: Vec::new() }],
             drop_state: DropMoveState::default(),
             glue_registry,
+            allocator_kind,
             interface_methods,
+            bump,
+            enums,
         })
     }
 
@@ -294,10 +319,6 @@ where
         }
     }
 
-    /// Lower a sequence of statements in order, stopping as soon as the
-    /// current block has been terminated (e.g. by a `return`/`break`/
-    /// `continue`) since anything after that point is unreachable and must
-    /// not be appended to an already-terminated basic block.
     fn lower_stmt_seq(&mut self, stmts: &[HirStmt<'a, 'bump>]) {
         for stmt in stmts {
             if self.block_terminated() {
@@ -307,29 +328,15 @@ where
         }
     }
 
-    /// Whether the current basic block already ends in a terminator
-    /// instruction (`Ret`, `Jump`, or `Branch`). Once a block is terminated,
-    /// no further instructions may be appended to it.
     fn block_terminated(&mut self) -> bool {
         matches!(
             self.current_block_data.bb().instructions.last(),
-            Some(
-                Instruction::Ret { .. }
-                    | Instruction::Jump { .. }
-                    | Instruction::Branch { .. }
-                    | Instruction::Panic { .. }
-            )
+            Some(Instruction::Ret { .. } | Instruction::Jump { .. } | Instruction::Branch { .. })
         )
     }
 
     pub(super) fn lower_stmt(&mut self, stmt: &HirStmt<'a, 'bump>) {
         match stmt {
-            HirStmt::Panic { message, span: _ } => {
-                let msg_val = self.allow_lowering_expr(message);
-                self.emit(Instruction::Panic {
-                    message: Operand::Value(msg_val),
-                });
-            }
             HirStmt::Expr(expr) => {
                 let _ = self.allow_lowering_expr(expr);
             }
@@ -384,10 +391,23 @@ where
                             kind: DropKind::Type(*struct_name),
                         });
                     }
-                } else if let HirType::OwnedPointer(ty) = ty {
+                } else if let HirType::OwnedPointer { allocator, .. } = ty {
+                    let drop_kind = if allocator.is_some() {
+                        ty.drop_kind()
+                    } else {
+                        self.recover_owned_pointer_drop_kind(ty, value)
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "owned-pointer local `{}` has no allocator annotation on its \
+                                 declared type, and its initializer isn't a `$own(..)` call \
+                                 the allocator can be recovered from",
+                                    name
+                                )
+                            })
+                    };
                     self.scope_stack.last_mut().unwrap().locals.push(DropLocal {
                         name: *name,
-                        kind: ty.drop_kind(),
+                        kind: drop_kind,
                     });
                 }
             }
@@ -451,6 +471,141 @@ where
                 });
             }
             _ => unimplemented!("Statement {:?} not yet lowered", stmt),
+        }
+    }
+
+    fn recover_owned_pointer_drop_kind(
+        &self,
+        declared_ty: &HirType<'a, 'bump>,
+        value: &HirExpr<'a, 'bump>,
+    ) -> Option<DropKind<'a, 'bump>> {
+        let HirType::OwnedPointer {
+            inner,
+            allocator: decl_alloc,
+        } = declared_ty
+        else {
+            return None;
+        };
+
+        let allocator = if let Some(alloc) = decl_alloc {
+            alloc.clone()
+        } else if let Some(alloc) = self.infer_allocator_from_expr(value) {
+            alloc
+        } else {
+            return None;
+        };
+
+        Some(DropKind::OwnedPointer {
+            pointee: Box::new(inner.drop_kind()),
+            pointee_ty: **inner,
+            allocator,
+        })
+    }
+
+    fn infer_allocator_from_expr(
+        &self,
+        expr: &HirExpr<'a, 'bump>,
+    ) -> Option<hir::ProvenanceAnnotation<'bump>> {
+        match expr {
+            HirExpr::Intrinsic {
+                kind: IntrinsicKind::Own,
+                args,
+                ..
+            } => {
+                if args.len() == 3 {
+                    if let Some(prov) = self.infer_provenance(&args[1]) {
+                        return Some(prov);
+                    }
+                } else if args.len() == 2 {
+                    if let Some(prov) = self.infer_provenance(&args[1]) {
+                        return Some(prov);
+                    }
+                }
+                self.infer_provenance(&HirExpr::This {
+                    span: Default::default(),
+                })
+            }
+
+            HirExpr::Call { callee, .. } => {
+                match callee {
+                    HirExpr::FieldAccess { object, .. } | HirExpr::Get { object, .. } => {
+                        if let Some(prov) = self.infer_provenance(object) {
+                            return Some(prov);
+                        }
+                    }
+                    _ => {}
+                }
+                self.infer_provenance(&HirExpr::This {
+                    span: Default::default(),
+                })
+            }
+
+            HirExpr::Ident(name, _) => {
+                for scope in self.scope_stack.iter().rev() {
+                    for local in scope.locals.iter().rev() {
+                        if local.name == *name {
+                            if let DropKind::OwnedPointer { allocator, .. } = &local.kind {
+                                return Some(allocator.clone());
+                            }
+                        }
+                    }
+                }
+                self.infer_provenance(&HirExpr::This {
+                    span: Default::default(),
+                })
+            }
+
+            HirExpr::Cast { expr: inner, .. }
+            | HirExpr::Deref { expr: inner, .. }
+            | HirExpr::Ref { expr: inner, .. } => self.infer_allocator_from_expr(inner),
+
+            _ => self.infer_provenance(&HirExpr::This {
+                span: Default::default(),
+            }),
+        }
+    }
+
+    fn infer_provenance(&self, expr: &HirExpr<'a, 'bump>) -> Option<ProvenanceAnnotation<'bump>> {
+        let mut segments = Vec::new();
+        let root = self.infer_provenance_root(expr, &mut segments)?;
+        segments.reverse();
+        Some(ProvenanceAnnotation {
+            root,
+            path: self.bump.alloc_slice_copy(&segments),
+        })
+    }
+
+    fn infer_provenance_root(
+        &self,
+        expr: &HirExpr<'a, 'bump>,
+        segments: &mut Vec<hir::ProvenancePathSegment>,
+    ) -> Option<hir::ProvenanceRoot> {
+        match expr {
+            HirExpr::Ident(name, _) => Some(hir::ProvenanceRoot::Var(*name)),
+            HirExpr::This { .. } => Some(hir::ProvenanceRoot::ThisRoot),
+
+            HirExpr::FieldAccess { object, field, .. } | HirExpr::Get { object, field, .. } => {
+                segments.push(hir::ProvenancePathSegment::Field(*field));
+                self.infer_provenance_root(object, segments)
+            }
+
+            HirExpr::Deref { expr: inner, .. } => {
+                segments.push(hir::ProvenancePathSegment::Deref);
+                self.infer_provenance_root(inner, segments)
+            }
+
+            HirExpr::ModuleAccess(access) => {
+                let module_idx = self.dep_graph.borrow().resolve_module_path(access.path)?;
+                self.dep_graph
+                    .borrow()
+                    .resolve_global_const(module_idx, access.member)?;
+                Some(hir::ProvenanceRoot::Global {
+                    module_idx,
+                    name: access.member,
+                })
+            }
+
+            _ => None,
         }
     }
 
@@ -528,8 +683,8 @@ where
     fn merge_var_maps(&mut self, branches: Vec<(BlockId, HashMap<StrId, Value, FxHashBuilder>)>) {
         match branches.len() {
             0 => {
-                // Join point is unreachable (every incoming branch diverged);
-                // leave `var_map` as-is, nothing will ever read it here.
+                // Join point is unreachable (every incoming branch diverged)
+                // nothing will ever read it here.
             }
             1 => {
                 self.var_map = branches.into_iter().next().unwrap().1;
@@ -829,7 +984,7 @@ where
             .value_type(raw_val)
             .expect("catch target must have a known SsaType")
             .clone();
-        let SsaType::Enum(variant_types) = &enum_ty else {
+        let SsaType::Enum(_, variant_types) = &enum_ty else {
             panic!(
                 "`catch` used on non-enum SsaType {:?}, thrown values must be SsaType::Enum",
                 enum_ty
@@ -844,7 +999,7 @@ where
             max_variant.align = max_variant.align.max(l.align);
         }
         let union_size = round_up_to_align(max_variant.size, max_variant.align);
-        let tag_offset = round_up_to_align(union_size, 1); // tag align is 1, per layout_of_ssa
+        let tag_offset = round_up_to_align(union_size, 1);
         let payload_offset = 0usize; // union fields all start at 0
 
         let tag_val = self.current_block_data.fresh_value();
@@ -1100,6 +1255,7 @@ where
             self.scope_stack.as_slice(),
             &mut self.drop_state,
             self.interface_methods,
+            self.enums,
         );
         el.lower_expr(value)
     }
@@ -1134,7 +1290,7 @@ where
         }
     }
 
-    pub(crate) fn local_is_droppable(&self, name: StrId) -> Option<DropKind> {
+    pub(crate) fn local_is_droppable(&self, name: StrId) -> Option<DropKind<'a, 'bump>> {
         self.scope_stack
             .iter()
             .rev()
@@ -1143,20 +1299,28 @@ where
             .map(|l| l.kind.clone())
     }
 
-    fn emit_scope_drops(&mut self, scope: &DropScope) {
+    fn emit_scope_drops(&mut self, scope: &DropScope<'a, 'bump>) {
         for local in scope.locals.iter().rev() {
             if self.drop_state.is_whole_moved(local.name) {
                 continue;
             }
-
             let Some(&val) = self.var_map.get(&local.name) else {
                 continue;
             };
+            self.emit_drop_for_kind(&local.kind, val, Some(local.name));
+        }
+    }
 
-            match &local.kind {
-                DropKind::Type(struct_name) => {
-                    let partial_move = self.drop_state.has_any_field_moves(local.name);
-
+    fn emit_drop_for_kind(
+        &mut self,
+        kind: &DropKind<'a, 'bump>,
+        val: Value,
+        local_name: Option<StrId>,
+    ) {
+        match kind {
+            DropKind::Type(struct_name) => match local_name {
+                Some(name) => {
+                    let partial_move = self.drop_state.has_any_field_moves(name);
                     if !partial_move {
                         if let Some(glue) = self.glue_registry.glue_name_for(*struct_name) {
                             self.emit(Instruction::Call {
@@ -1164,68 +1328,250 @@ where
                                 func: Operand::FunctionRef(glue),
                                 args: SmallVec::from_slice_copy(&[Operand::Value(val)]),
                             });
-                            continue;
+                            return;
                         }
                     }
-
-                    // Partial move (or no generated glue): recursively drop remaining fields.
-                    let Some(hir_struct) = self.structs.get(struct_name) else {
-                        continue;
-                    };
-                    let Some(offsets) = self.struct_field_offsets.get(struct_name) else {
-                        continue;
-                    };
-
-                    for field in hir_struct.fields.iter().rev() {
-                        if self.drop_state.is_field_moved(local.name, field.name) {
-                            continue;
-                        }
-
-                        let HirType::Struct {
-                            name: field_struct_name,
-                            ..
-                        } = &field.field_type
-                        else {
-                            continue;
-                        };
-
-                        let Some(field_glue) = self.glue_registry.glue_name_for(*field_struct_name)
-                        else {
-                            continue;
-                        };
-
-                        let Some(&offset) = offsets.get(&field.name) else {
-                            continue;
-                        };
-
-                        let field_ptr = self.current_block_data.fresh_value();
-                        self.current_block_data.value_types.insert(
-                            field_ptr,
-                            SsaType::Pointer(Box::new(SsaType::User(*field_struct_name, vec![]))),
-                        );
-
-                        self.emit(Instruction::FieldAddr {
-                            dest: field_ptr,
-                            base: Operand::Value(val),
-                            offset,
-                        });
-
-                        self.emit(Instruction::Call {
-                            dest: None,
-                            func: Operand::FunctionRef(field_glue),
-                            args: SmallVec::from_slice_copy(&[Operand::Value(field_ptr)]),
-                        });
-                    }
+                    let mut emitter = DropEmitter::new(
+                        &mut self.current_block_data,
+                        self.context.clone(),
+                        self.struct_mangled_map,
+                        self.struct_field_offsets,
+                        self.structs,
+                        self.allocator_kind,
+                        self.glue_registry,
+                    );
+                    emitter.emit_partial_struct_field_drops(
+                        name,
+                        *struct_name,
+                        val,
+                        &self.drop_state,
+                    );
                 }
-
-                DropKind::OwnedPointer(_) => {
-                    // TODO:
-                    // 1. If pointee_struct is Some(..), call its drop glue.
-                    // 2. Then call the allocator/deallocator for the owned pointer.
+                None => {
+                    let glue = self
+                        .glue_registry
+                        .glue_name_for(*struct_name)
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "no drop glue registered for struct `{}`; every droppable \
+                             struct should have glue built by DropGlueBuilder::build_all",
+                                struct_name
+                            )
+                        });
+                    self.emit(Instruction::Call {
+                        dest: None,
+                        func: Operand::FunctionRef(glue),
+                        args: SmallVec::from_slice_copy(&[Operand::Value(val)]),
+                    });
                 }
-                DropKind::Undroppable => {}
+            },
+
+            DropKind::OwnedPointer {
+                pointee,
+                pointee_ty,
+                allocator,
+            } => {
+                let mut resolver = FnAllocatorResolver {
+                    var_map: &self.var_map,
+                    context: self.context.clone(),
+                    dep_graph: self.dep_graph,
+                };
+                let mut emitter = DropEmitter::new(
+                    &mut self.current_block_data,
+                    self.context.clone(),
+                    self.struct_mangled_map,
+                    self.struct_field_offsets,
+                    self.structs,
+                    self.allocator_kind,
+                    self.glue_registry,
+                );
+                emitter.emit_owned_pointer_drop(
+                    local_name,
+                    pointee,
+                    pointee_ty,
+                    allocator,
+                    val,
+                    true,
+                    Some(&self.drop_state),
+                    &mut resolver,
+                );
+            }
+
+            DropKind::Undroppable => {}
+
+            DropKind::Slice {
+                element,
+                element_ty,
+            } => {
+                self.emit_slice_element_drops((**element).clone(), *element_ty, val);
             }
         }
+    }
+
+    fn emit_slice_element_drops(
+        &mut self,
+        element_kind: DropKind<'a, 'bump>,
+        element_ty: HirType<'a, 'bump>,
+        slice_val: Value,
+    ) {
+        if matches!(element_kind, DropKind::Undroppable) {
+            return;
+        }
+
+        let elem_ssa_ty = lower_type_hir(&element_ty);
+
+        let ptr_v = self.current_block_data.fresh_value();
+        self.emit(Instruction::LoadField {
+            dest: ptr_v,
+            base: Operand::Value(slice_val),
+            offset: 0,
+        });
+        self.current_block_data
+            .value_types
+            .insert(ptr_v, SsaType::Pointer(Box::new(elem_ssa_ty.clone())));
+
+        let len_v = self.current_block_data.fresh_value();
+        self.emit(Instruction::LoadField {
+            dest: len_v,
+            base: Operand::Value(slice_val),
+            offset: 8,
+        });
+        self.current_block_data
+            .value_types
+            .insert(len_v, SsaType::Usize);
+
+        let idx_init = self.current_block_data.fresh_value();
+        self.emit(Instruction::Const {
+            dest: idx_init,
+            ty: SsaType::Usize,
+            value: Operand::ConstInt(0),
+        });
+        self.current_block_data
+            .value_types
+            .insert(idx_init, SsaType::Usize);
+
+        let pre_bb = self.current_block_data.current_block;
+        let cond_bb = self.current_block_data.new_block();
+        let body_bb = self.current_block_data.new_block();
+        let after_bb = self.current_block_data.new_block();
+
+        self.emit(Instruction::Jump { target: cond_bb });
+
+        // Header: phi merges the initial index and the back-edge from the body.
+        self.current_block_data.switch_to(cond_bb);
+        let idx_phi = self.current_block_data.fresh_value();
+        self.current_block_data
+            .value_types
+            .insert(idx_phi, SsaType::Usize);
+        let phi_idx = self.current_block_data.bb().instructions.len();
+        self.emit(Instruction::Phi {
+            dest: idx_phi,
+            incoming: SmallVec::new(),
+        });
+        if let Instruction::Phi { incoming, .. } =
+            &mut self.current_block_data.bb().instructions[phi_idx]
+        {
+            incoming.push((pre_bb, idx_init));
+        }
+
+        let cont = self.current_block_data.fresh_value();
+        self.emit(Instruction::Binary {
+            dest: cont,
+            op: BinOp::Lt,
+            left: Operand::Value(idx_phi),
+            right: Operand::Value(len_v),
+        });
+        self.current_block_data
+            .value_types
+            .insert(cont, SsaType::Bool);
+        self.emit(Instruction::Branch {
+            cond: Operand::Value(cont),
+            then_bb: body_bb,
+            else_bb: after_bb,
+        });
+
+        // Body: load element[idx], drop it, increment, loop.
+        self.current_block_data.switch_to(body_bb);
+        let elem_size =
+            ir::layout::sizeof_ssa(&elem_ssa_ty, ir::layout::TargetInfo { ptr_bytes: 8 })
+                .expect("slice element type has no known size") as i64;
+        let size_v = self.current_block_data.fresh_value();
+        self.emit(Instruction::Const {
+            dest: size_v,
+            ty: SsaType::I64,
+            value: Operand::ConstInt(elem_size),
+        });
+        self.current_block_data
+            .value_types
+            .insert(size_v, SsaType::I64);
+
+        let offset_v = self.current_block_data.fresh_value();
+        self.emit(Instruction::Binary {
+            dest: offset_v,
+            op: BinOp::Mul,
+            left: Operand::Value(idx_phi),
+            right: Operand::Value(size_v),
+        });
+        self.current_block_data
+            .value_types
+            .insert(offset_v, SsaType::I64);
+
+        let elem_addr = self.current_block_data.fresh_value();
+        self.emit(Instruction::Binary {
+            dest: elem_addr,
+            op: BinOp::Add,
+            left: Operand::Value(ptr_v),
+            right: Operand::Value(offset_v),
+        });
+        self.current_block_data
+            .value_types
+            .insert(elem_addr, SsaType::Pointer(Box::new(elem_ssa_ty.clone())));
+
+        let elem_val = self.current_block_data.fresh_value();
+        self.emit(Instruction::Load {
+            dest: elem_val,
+            ptr: Operand::Value(elem_addr),
+        });
+        self.current_block_data
+            .value_types
+            .insert(elem_val, elem_ssa_ty.clone());
+
+        self.emit_drop_for_kind(&element_kind, elem_val, None);
+
+        let one = self.current_block_data.fresh_value();
+        self.emit(Instruction::Const {
+            dest: one,
+            ty: SsaType::Usize,
+            value: Operand::ConstInt(1),
+        });
+        self.current_block_data
+            .value_types
+            .insert(one, SsaType::Usize);
+        let next_idx = self.current_block_data.fresh_value();
+        self.emit(Instruction::Binary {
+            dest: next_idx,
+            op: BinOp::Add,
+            left: Operand::Value(idx_phi),
+            right: Operand::Value(one),
+        });
+        self.current_block_data
+            .value_types
+            .insert(next_idx, SsaType::Usize);
+
+        let body_end = self.current_block_data.current_block;
+        self.emit(Instruction::Jump { target: cond_bb });
+        let cond_block = self
+            .current_block_data
+            .func
+            .blocks
+            .iter_mut()
+            .find(|b| b.id == cond_bb)
+            .expect("slice-drop loop header missing");
+        if let Instruction::Phi { incoming, .. } = &mut cond_block.instructions[phi_idx] {
+            incoming.push((body_end, next_idx));
+        }
+
+        self.current_block_data.switch_to(after_bb);
     }
 
     /// `Return` unwinds every enclosing scope, innermost first.
