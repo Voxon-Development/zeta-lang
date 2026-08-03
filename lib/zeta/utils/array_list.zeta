@@ -67,12 +67,12 @@ impl<T, A: Allocator> ArrayList<T, A> {
 
     unsafe func get_unchecked(&this, index: usize): &T {
         let ptr: *const T = this.data as *const T;
-        return &*ptr[index];
+        unsafe { return &*ptr[index] };
     }
 
     unsafe func get_unchecked_mut(&mut this, index: usize): &mut T {
         let ptr: *mut T = this.data as *mut T;
-        return &mut *ptr[index];
+        unsafe { return &mut *ptr[index] };
     }
 
     func grow(&mut this) {
