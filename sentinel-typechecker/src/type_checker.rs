@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -6,18 +7,20 @@ use crate::move_state::MoveState;
 use crate::type_context::TypeContext;
 use codex_dependency_graph::DepGraph;
 use ir::analysis_context::CopyAnalysisCtx;
-use ir::ast::MutabilityState;
+use ir::ast::{FuncSafety, MutabilityState};
+use ir::auto_imports::AutoImportRegistry;
 use ir::borrow_checker::{
     BorrowChecker, BorrowError, BorrowKind, Bound, IndexContainer, IndexTemplate, Interval, LoanId,
-    PlaceId, RefTemplate, TemplateBase, TemplateProjection,
+    MemoryRelation, PlaceId, ReadTemplate, RefTemplate, TemplateBase, TemplateProjection,
 };
 use ir::errors::type_error::{TypeCheckResult, TypeError, TypeErrorKind};
 use ir::hir::{
-    Hir, HirExpr, HirFunc, HirModule, HirParam, HirStmt, HirType, IntrinsicKind, Operator,
-    ProvenanceAnnotation, ProvenancePathSegment, ProvenanceRoot, StrId, ThisPassingKind,
-    Visibility,
+    Hir, HirErrorHandlerPattern, HirExpr, HirFunc, HirMatchArm, HirModule, HirParam, HirPattern,
+    HirStmt, HirType, InterpolationPart, IntrinsicKind, Operator, ProvenanceAnnotation,
+    ProvenancePathSegment, ProvenanceRoot, StrId, ThisPassingKind, Visibility,
 };
 use ir::ir_hasher::{FxHashMap, HashSet};
+use ir::nll_cfg::{Cfg, CfgBuilder, PointId};
 use ir::span::SourceSpan;
 use zetaruntime::bump::GrowableBump;
 use zetaruntime::string_pool::StringPool;
@@ -51,12 +54,29 @@ pub enum SymbolId {
     },
 }
 
+#[derive(Clone, Copy)]
+enum BareImportKind {
+    Struct,
+    Enum,
+}
+
+impl BareImportKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            BareImportKind::Struct => "struct",
+            BareImportKind::Enum => "enum",
+        }
+    }
+}
+
 struct ModuleImports {
     /// `import foo::bar.Baz;`, Baz becomes usable bare in this module.
     named: FxHashMap<StrId, usize>, // item name -> resolved declaring module_idx
     /// `import foo::bar;`, foo::bar::whatever() becomes usable qualified,
     /// but nothing from it becomes usable bare.
     modules: std::collections::HashSet<usize>,
+    module_aliases: FxHashMap<StrId, usize>,
+    wildcard: Vec<usize>,
 }
 
 pub struct TypeChecker<'a, 'bump> {
@@ -69,6 +89,7 @@ pub struct TypeChecker<'a, 'bump> {
     this_id: StrId,
     suppress_errors: bool,
     ref_templates: FxHashMap<StrId, RefTemplate>,
+    read_templates: FxHashMap<StrId, Vec<ReadTemplate>>,
     next_symbol_id: u32,
     occurrences: Vec<(
         SourceSpan<'a>,
@@ -80,11 +101,20 @@ pub struct TypeChecker<'a, 'bump> {
     )>,
     imports_by_module: FxHashMap<usize, ModuleImports>,
     functions_by_module: FxHashMap<usize, HashSet<StrId>>,
+    structs_by_module: FxHashMap<usize, HashSet<StrId>>,
+    enums_by_module: FxHashMap<usize, HashSet<StrId>>,
     generic_instance_args: FxHashMap<usize, Vec<HirType<'a, 'bump>>>,
     loan_owners: FxHashMap<LoanId, StrId>,
     local_provenance_place: FxHashMap<StrId, PlaceId>,
     call_loans: FxHashMap<usize, LoanId>,
     next_opaque_id: u32,
+    unsafe_depth: usize,
+    auto_imports: Rc<RefCell<AutoImportRegistry>>,
+    cfg: Cfg,
+    stmt_points: FxHashMap<usize, PointId>,
+    stmt_after_points: FxHashMap<usize, PointId>,
+    point_locals_used: FxHashMap<PointId, HashSet<StrId>>,
+    current_point: PointId,
 }
 
 impl<'a, 'bump> TypeChecker<'a, 'bump> {
@@ -93,6 +123,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         bump: &'bump GrowableBump<'bump>,
         copy_analysis: Rc<RefCell<CopyAnalysisCtx<'a, 'bump>>>,
         string_pool: Arc<StringPool>,
+        auto_imports: Rc<RefCell<AutoImportRegistry>>,
     ) -> Self {
         Self {
             this_id: StrId(string_pool.intern("this")),
@@ -104,15 +135,424 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             borrow_checker: BorrowChecker::new(),
             suppress_errors: false,
             ref_templates: FxHashMap::default(),
+            read_templates: FxHashMap::default(),
             next_symbol_id: 0,
             occurrences: Vec::new(),
             functions_by_module: FxHashMap::default(),
             imports_by_module: FxHashMap::default(),
+            enums_by_module: FxHashMap::default(),
+            structs_by_module: FxHashMap::default(),
             generic_instance_args: FxHashMap::default(),
             loan_owners: FxHashMap::default(),
             local_provenance_place: FxHashMap::default(),
             call_loans: FxHashMap::default(),
             next_opaque_id: 0,
+            unsafe_depth: 0,
+            auto_imports,
+            cfg: Cfg::default(),
+            stmt_points: HashMap::default(),
+            stmt_after_points: HashMap::default(),
+            point_locals_used: HashMap::default(),
+            current_point: PointId::default(),
+        }
+    }
+
+    fn check_unsafe_call(&mut self, func: &HirFunc<'a, 'bump>, display_name: &str) {
+        if matches!(func.function_metadata.func_safety, FuncSafety::Unsafe) && !self.in_unsafe() {
+            self.record(TypeErrorKind::Generic(format!(
+                "call to unsafe function `{}` requires an `unsafe` block",
+                display_name
+            )));
+        }
+    }
+
+    fn analyze_read_templates(&mut self, func: &HirFunc<'a, 'bump>) -> Vec<ReadTemplate> {
+        if let Some(t) = self.read_templates.get(&func.name) {
+            return t.clone();
+        }
+        let templates = Self::build_read_templates(func);
+        self.read_templates.insert(func.name, templates.clone());
+        templates
+    }
+
+    fn build_read_templates(func: &HirFunc<'a, 'bump>) -> Vec<ReadTemplate> {
+        let Some(params) = func.params else {
+            return Vec::new();
+        };
+
+        let mut param_index: FxHashMap<StrId, usize> = FxHashMap::default();
+        let mut has_this = false;
+        let mut normal_idx = 0usize;
+        for p in params.iter() {
+            match p {
+                HirParam::Normal { name, .. } => {
+                    param_index.insert(*name, normal_idx);
+                    normal_idx += 1;
+                }
+                HirParam::This { .. } => has_this = true,
+            }
+        }
+
+        let mut templates = vec![ReadTemplate::Paths(Vec::new()); normal_idx];
+        if let Some(body) = func.body {
+            Self::collect_param_reads_stmt(&body, &param_index, has_this, &mut templates);
+        }
+        templates
+    }
+
+    fn record_param_read(
+        base: TemplateBase,
+        projections: Vec<TemplateProjection>,
+        templates: &mut [ReadTemplate],
+    ) {
+        let TemplateBase::Param(i) = base else {
+            return; // TemplateBase::This: nothing to do for parameter tracking
+        };
+        let Some(slot) = templates.get_mut(i) else {
+            return;
+        };
+        if projections.is_empty() {
+            *slot = ReadTemplate::Opaque;
+        } else if let ReadTemplate::Paths(paths) = slot {
+            paths.push(projections);
+        }
+        // already Opaque: stays Opaque
+    }
+
+    fn collect_param_reads_expr(
+        expr: &HirExpr<'a, 'bump>,
+        param_index: &FxHashMap<StrId, usize>,
+        has_this: bool,
+        templates: &mut [ReadTemplate],
+    ) {
+        if let Some((base, projections)) = Self::expr_to_template(expr, param_index, has_this) {
+            Self::record_param_read(base, projections, templates);
+            return;
+        }
+
+        match expr {
+            HirExpr::Match { expr, arms, .. } => {
+                Self::collect_param_reads_expr(expr, param_index, has_this, templates);
+                for arm in arms.iter() {
+                    if let Some(guard) = arm.guard {
+                        Self::collect_param_reads_expr(guard, param_index, has_this, templates);
+                    }
+                    Self::collect_param_reads_stmt(arm.body, param_index, has_this, templates);
+                }
+            }
+            HirExpr::Block { body, .. } => {
+                for s in body.iter() {
+                    Self::collect_param_reads_stmt(s, param_index, has_this, templates);
+                }
+            }
+            HirExpr::Range { start, end, .. } => {
+                Self::collect_param_reads_expr(start, param_index, has_this, templates);
+                Self::collect_param_reads_expr(end, param_index, has_this, templates);
+            }
+            HirExpr::Slice {
+                object, start, end, ..
+            } => {
+                Self::collect_param_reads_expr(object, param_index, has_this, templates);
+                Self::collect_param_reads_expr(start, param_index, has_this, templates);
+                Self::collect_param_reads_expr(end, param_index, has_this, templates);
+            }
+            HirExpr::Tuple(exprs, _)
+            | HirExpr::ArrayLiteral {
+                elements: exprs, ..
+            } => {
+                for e in exprs.iter() {
+                    Self::collect_param_reads_expr(e, param_index, has_this, templates);
+                }
+            }
+            HirExpr::Binary { left, right, .. } | HirExpr::Comparison { left, right, .. } => {
+                Self::collect_param_reads_expr(left, param_index, has_this, templates);
+                Self::collect_param_reads_expr(right, param_index, has_this, templates);
+            }
+            HirExpr::Call { callee, args, .. } | HirExpr::InterfaceCall { callee, args, .. } => {
+                Self::collect_param_reads_expr(callee, param_index, has_this, templates);
+                for a in args.iter() {
+                    Self::collect_param_reads_expr(a, param_index, has_this, templates);
+                }
+            }
+            HirExpr::FieldAccess { object, .. } | HirExpr::Get { object, .. } => {
+                Self::collect_param_reads_expr(object, param_index, has_this, templates);
+            }
+            HirExpr::Assignment { target, value, .. } => {
+                Self::collect_param_reads_expr(target, param_index, has_this, templates);
+                Self::collect_param_reads_expr(value, param_index, has_this, templates);
+            }
+            HirExpr::StructInit { args, .. } => {
+                for f in args.iter() {
+                    Self::collect_param_reads_expr(&f.value, param_index, has_this, templates);
+                }
+            }
+            HirExpr::EnumInit { args, .. } => {
+                for a in args.iter() {
+                    Self::collect_param_reads_expr(a, param_index, has_this, templates);
+                }
+            }
+            HirExpr::ExprList { list, .. } => {
+                for e in list.iter() {
+                    Self::collect_param_reads_expr(e, param_index, has_this, templates);
+                }
+            }
+            HirExpr::Deref { expr, .. }
+            | HirExpr::Cast { expr, .. }
+            | HirExpr::Ref { expr, .. } => {
+                Self::collect_param_reads_expr(expr, param_index, has_this, templates);
+            }
+            HirExpr::Index { object, index, .. } => {
+                Self::collect_param_reads_expr(object, param_index, has_this, templates);
+                Self::collect_param_reads_expr(index, param_index, has_this, templates);
+            }
+            HirExpr::InterpolatedString(parts) => {
+                for p in parts.iter() {
+                    if let InterpolationPart::Expr(e) = p {
+                        Self::collect_param_reads_expr(e, param_index, has_this, templates);
+                    }
+                }
+            }
+            HirExpr::If { if_stmt, .. } => {
+                Self::collect_param_reads_stmt(if_stmt, param_index, has_this, templates);
+            }
+            HirExpr::Intrinsic { args, .. } => {
+                for a in args.iter() {
+                    Self::collect_param_reads_expr(a, param_index, has_this, templates);
+                }
+            }
+            HirExpr::Lambda { .. } => {
+                // TODO: not descending
+                // into closure bodies means a captured parameter used
+                // inside one is silently treated as unread rather than
+                // Opaque.
+            }
+            // Ident/This/ModuleAccess/GenericIdent/literals/Undefined/
+            // UnknownIntrinsic: either already handled by the
+            // expr_to_template attempt above, or carry no sub-expressions.
+            _ => {}
+        }
+    }
+
+    fn collect_param_reads_stmt(
+        stmt: &HirStmt<'a, 'bump>,
+        param_index: &FxHashMap<StrId, usize>,
+        has_this: bool,
+        templates: &mut [ReadTemplate],
+    ) {
+        match stmt {
+            HirStmt::Let {
+                value,
+                else_block,
+                catch_pattern,
+                ..
+            } => {
+                Self::collect_param_reads_expr(value, param_index, has_this, templates);
+                if let Some(b) = else_block {
+                    Self::collect_param_reads_stmt(b, param_index, has_this, templates);
+                }
+                if let Some(pattern) = catch_pattern {
+                    match pattern {
+                        HirErrorHandlerPattern::Single { body, .. } => {
+                            for s in body.iter() {
+                                Self::collect_param_reads_stmt(s, param_index, has_this, templates);
+                            }
+                        }
+                        HirErrorHandlerPattern::Multiple { branches } => {
+                            for branch in branches.iter() {
+                                for s in branch.body.iter() {
+                                    Self::collect_param_reads_stmt(
+                                        s,
+                                        param_index,
+                                        has_this,
+                                        templates,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            HirStmt::Const(c) => {
+                Self::collect_param_reads_expr(&c.value, param_index, has_this, templates)
+            }
+            HirStmt::Return(Some(e)) | HirStmt::Break(Some(e), _) => {
+                Self::collect_param_reads_expr(e, param_index, has_this, templates)
+            }
+            HirStmt::Return(None)
+            | HirStmt::Break(None, _)
+            | HirStmt::Continue(_)
+            | HirStmt::Import(..)
+            | HirStmt::Package(..) => {}
+            HirStmt::Expr(e) => Self::collect_param_reads_expr(e, param_index, has_this, templates),
+            HirStmt::If {
+                cond,
+                then_block,
+                else_block,
+            } => {
+                Self::collect_param_reads_expr(cond, param_index, has_this, templates);
+                for s in then_block.iter() {
+                    Self::collect_param_reads_stmt(s, param_index, has_this, templates);
+                }
+                if let Some(e) = else_block {
+                    Self::collect_param_reads_stmt(e, param_index, has_this, templates);
+                }
+            }
+            HirStmt::While { cond, body } => {
+                Self::collect_param_reads_expr(cond, param_index, has_this, templates);
+                Self::collect_param_reads_stmt(body, param_index, has_this, templates);
+            }
+            HirStmt::For {
+                init,
+                condition,
+                increment,
+                body,
+            } => {
+                if let Some(i) = init {
+                    Self::collect_param_reads_stmt(i, param_index, has_this, templates);
+                }
+                if let Some(c) = condition {
+                    Self::collect_param_reads_expr(c, param_index, has_this, templates);
+                }
+                if let Some(inc) = increment {
+                    Self::collect_param_reads_expr(inc, param_index, has_this, templates);
+                }
+                Self::collect_param_reads_stmt(body, param_index, has_this, templates);
+            }
+            HirStmt::Block { body } => {
+                for s in body.iter() {
+                    Self::collect_param_reads_stmt(s, param_index, has_this, templates);
+                }
+            }
+            HirStmt::Match { expr, arms } => {
+                Self::collect_param_reads_expr(expr, param_index, has_this, templates);
+                for arm in arms.iter() {
+                    if let Some(g) = arm.guard {
+                        Self::collect_param_reads_expr(g, param_index, has_this, templates);
+                    }
+                    Self::collect_param_reads_stmt(arm.body, param_index, has_this, templates);
+                }
+            }
+            HirStmt::UnsafeBlock { body } | HirStmt::Defer(body) => {
+                Self::collect_param_reads_stmt(body, param_index, has_this, templates)
+            }
+        }
+    }
+
+    fn resolve_template_place_from(
+        &mut self,
+        mut place: PlaceId,
+        projections: &[TemplateProjection],
+        call_args: &[HirExpr<'a, 'bump>],
+    ) -> PlaceId {
+        for proj in projections {
+            place = match proj {
+                TemplateProjection::Field(f) => self.borrow_checker.project_field(place, *f),
+                TemplateProjection::Deref => self.borrow_checker.project_deref(place),
+                TemplateProjection::Index(idx_template) => {
+                    let bound = match idx_template {
+                        IndexTemplate::Const(c) => Bound::Const(*c),
+                        IndexTemplate::Param(j) => match call_args.get(*j) {
+                            Some(a) => self.expr_to_bound(a),
+                            None => return place,
+                        },
+                        IndexTemplate::Opaque => return place,
+                    };
+                    let interval = Interval {
+                        lower: bound.clone(),
+                        upper: bound,
+                    };
+                    self.borrow_checker
+                        .project_index(place, interval, IndexContainer::Primitive)
+                }
+            };
+        }
+        place
+    }
+
+    /// Checks a `&expr` argument being passed to a parameter with the given
+    /// read-template against whatever loans the caller currently holds on
+    /// the same root. See param_read_templates.md for the two branches'
+    /// rationale.
+    fn check_call_arg_read_effects(
+        &mut self,
+        inner: &HirExpr<'a, 'bump>,
+        read_template: &ReadTemplate,
+        call_args: &[HirExpr<'a, 'bump>],
+    ) {
+        let Some(base_place) = self.resolve_place(inner) else {
+            return;
+        };
+        let Some(&root) = self.borrow_checker.place_roots.get(&base_place) else {
+            return;
+        };
+        let Some(loan_ids) = self.borrow_checker.root_loans.get(&root).cloned() else {
+            return;
+        };
+        if loan_ids.is_empty() {
+            return;
+        }
+
+        match read_template {
+            ReadTemplate::Opaque => {
+                for loan_id in &loan_ids {
+                    let Some(loan) = self.borrow_checker.active_loans.get(loan_id) else {
+                        continue;
+                    };
+                    if loan.kind != BorrowKind::Mutable {
+                        continue;
+                    }
+                    if let Ok(MemoryRelation::Overlap) =
+                        self.borrow_checker.overlaps(base_place, loan.place)
+                    {
+                        self.record(TypeErrorKind::Generic(
+                            "cannot pass this reference here: it may alias a value that's still \
+                             mutably borrowed, and this call's effect on it isn't provably disjoint \
+                             (the callee's parameter usage couldn't be bounded)"
+                                .to_string(),
+                        ));
+                    }
+                }
+            }
+            ReadTemplate::Paths(paths) => {
+                for projections in paths {
+                    let read_place =
+                        self.resolve_template_place_from(base_place, projections, call_args);
+                    for loan_id in &loan_ids {
+                        let Some(loan) = self.borrow_checker.active_loans.get(loan_id) else {
+                            continue;
+                        };
+                        if loan.kind != BorrowKind::Mutable {
+                            continue;
+                        }
+                        if let Ok(MemoryRelation::Overlap) =
+                            self.borrow_checker.overlaps(read_place, loan.place)
+                        {
+                            self.record(TypeErrorKind::Generic(
+                                "cannot pass this reference here: the callee reads a part of it \
+                                 that's still mutably borrowed"
+                                    .to_string(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn in_unsafe(&self) -> bool {
+        self.unsafe_depth != 0
+    }
+
+    fn check_borrow_use_shell(
+        &mut self,
+        expr: &HirExpr<'a, 'bump>,
+        place: PlaceId,
+        kind: BorrowKind,
+    ) {
+        if let Err(e) = self.borrow_checker.check_use_shell(place, kind) {
+            let provenance = self.infer_provenance(expr);
+            let msg = self.describe_borrow_error(&e, provenance.as_ref());
+            self.record(TypeErrorKind::Generic(msg));
         }
     }
 
@@ -176,6 +616,22 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
 
     fn expr_references_local(&self, expr: &HirExpr<'a, 'bump>, local: StrId) -> bool {
         match expr {
+            HirExpr::Match { expr, arms, .. } => {
+                self.expr_references_local(expr, local)
+                    || arms.iter().any(|arm| {
+                        arm.guard.is_some_and(|g| self.expr_references_local(g, local))
+                            || self.stmt_references_local(arm.body, local)
+                    })
+            }
+            HirExpr::Block { body, .. } => body.iter().any(|s| self.stmt_references_local(s, local)),
+            HirExpr::Range { start, end, .. } => {
+                self.expr_references_local(start, local) || self.expr_references_local(end, local)
+            }
+            HirExpr::Slice { object, start, end, .. } => {
+                self.expr_references_local(object, local)
+                    || self.expr_references_local(start, local)
+                    || self.expr_references_local(end, local)
+            }
             HirExpr::Ident(name, _) => *name == local,
             HirExpr::Tuple(exprs, _) | HirExpr::ArrayLiteral { elements: exprs, .. } =>
                 exprs.iter().any(|e| self.expr_references_local(e, local)),
@@ -211,7 +667,6 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
 
     fn stmt_references_local(&self, stmt: &HirStmt<'a, 'bump>, local: StrId) -> bool {
         match stmt {
-            HirStmt::Panic { message, .. } => self.expr_references_local(message, local),
             HirStmt::Let {
                 value, else_block, ..
             } => {
@@ -405,9 +860,9 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
 
             HirType::Nullable(inner) => match **inner {
                 // Pointer-shaped: all-zero bits legitimately means "null". Safe to zero-init.
-                HirType::SafePointer(_)
-                | HirType::UnsafePointer(_)
-                | HirType::OwnedPointer(_)
+                HirType::SafePointer { .. }
+                | HirType::UnsafePointer { .. }
+                | HirType::OwnedPointer { .. }
                 | HirType::Ref { .. } => true,
                 // Non-pointer nullable (e.g. i32?) needs a discriminant/tag, not just zero
                 // bits
@@ -433,6 +888,10 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 Hir::Struct(s) => {
                     let name = s.name.to_string();
                     self.context.add_struct(module_idx, name.clone(), **s);
+                    self.structs_by_module
+                        .entry(module_idx)
+                        .or_default()
+                        .insert(s.name);
                 }
                 Hir::Impl(i) => {
                     let target = i.target.to_string();
@@ -451,10 +910,19 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 Hir::Enum(e) => {
                     let name = e.name.to_string();
                     self.context.add_enum(module_idx, name, **e);
+                    self.enums_by_module
+                        .entry(module_idx)
+                        .or_default()
+                        .insert(e.name);
                 }
                 Hir::Func(f) => {
-                    let name = f.name.to_string();
-                    self.context.add_function(module_idx, name, **f);
+                    let mangled_name = f.name.to_string();
+                    let unmangled_name = f.unmangled_name.to_string();
+                    self.context
+                        .add_function(module_idx, unmangled_name.clone(), **f);
+                    if mangled_name != unmangled_name {
+                        self.context.add_function(module_idx, mangled_name, **f);
+                    }
                     self.functions_by_module
                         .entry(module_idx)
                         .or_default()
@@ -467,6 +935,8 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         let mut imports = ModuleImports {
             named: FxHashMap::default(),
             modules: std::collections::HashSet::new(),
+            module_aliases: std::collections::HashMap::default(),
+            wildcard: Vec::new(),
         };
         for import_path in module.imports {
             let Some(target_module) = self
@@ -483,7 +953,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     .join("::");
                 self.record(TypeErrorKind::Generic(format!(
                     "cannot resolve imported module `{}`",
-                    path_str,
+                    path_str
                 )));
                 continue;
             };
@@ -493,11 +963,75 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 }
                 None => {
                     imports.modules.insert(target_module);
+                    if let Some(&last_seg) = import_path.path.iter().last() {
+                        imports.module_aliases.insert(last_seg, target_module);
+                    }
                 }
             }
         }
-        self.imports_by_module.insert(module_idx, imports);
 
+        // Auto-imports: (1) bare item names, (2) module-level short aliases.
+        // Both are checked for ambiguity between different auto-imported
+        // packages, an explicit `import` always wins and needs no check.
+        let mut alias_targets: FxHashMap<StrId, usize> = FxHashMap::default();
+        for auto_path in self.auto_imports.borrow().paths() {
+            let segments: Vec<StrId> = auto_path
+                .iter()
+                .map(|s| StrId(self.context.string_pool.intern(s)))
+                .collect();
+            let Some(target_module) = self
+                .context
+                .dep_graph
+                .borrow()
+                .resolve_module_path(segments.as_slice())
+            else {
+                continue;
+            };
+            if target_module != module_idx && !imports.wildcard.contains(&target_module) {
+                imports.wildcard.push(target_module);
+            }
+
+            if let Some(&last) = segments.last() {
+                match alias_targets.get(&last) {
+                    Some(&existing) if existing != target_module => {
+                        let existing_pkg = self
+                            .context
+                            .dep_graph
+                            .borrow()
+                            .get_module_package(existing)
+                            .map(|p| p.to_string())
+                            .unwrap_or_default();
+                        let new_pkg = self
+                            .context
+                            .dep_graph
+                            .borrow()
+                            .get_module_package(target_module)
+                            .map(|p| p.to_string())
+                            .unwrap_or_default();
+
+                        // The fastest and most efficient way to avoid a borrow checker issue is to inline `self.record` :P
+                        // Unlike Zeta, Rust cannot prove that this is safe and is too conservative.
+                        // Don't use rust, use zeta!
+                        if self.suppress_errors {
+                            return;
+                        }
+                        self.errors.push(
+                            TypeErrorKind::Generic(format!(
+                                "auto-imported packages `{}` and `{}` both alias to `{}`; \
+                             add an explicit `import` to disambiguate",
+                                existing_pkg, new_pkg, last,
+                            ))
+                            .at(self.current_span),
+                        );
+                    }
+                    _ => {
+                        alias_targets.insert(last, target_module);
+                    }
+                }
+            }
+        }
+
+        self.imports_by_module.insert(module_idx, imports);
         self.context.current_module_idx = prev_module_idx;
     }
 
@@ -548,6 +1082,35 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 {
                     return;
                 }
+            }
+
+            let candidates: Vec<usize> = imports
+                .wildcard
+                .iter()
+                .copied()
+                .filter(|m| {
+                    self.functions_by_module
+                        .get(m)
+                        .is_some_and(|s| s.contains(&name))
+                })
+                .collect();
+
+            if candidates.len() == 1 {
+                return;
+            }
+            if candidates.len() > 1 {
+                let candidate_pkgs: Vec<String> = candidates
+                    .iter()
+                    .filter_map(|&m| self.context.dep_graph.borrow().get_module_package(m))
+                    .map(|p| p.to_string())
+                    .collect();
+                self.record(TypeErrorKind::Generic(format!(
+                    "`{}` is ambiguous: it is auto-imported from multiple packages ({}); \
+                     add an explicit `import` to disambiguate",
+                    name_str,
+                    candidate_pkgs.join(", "),
+                )));
+                return;
             }
         }
 
@@ -627,6 +1190,13 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         func_context.current_return_type = func.return_type;
 
         if let Some(body) = func.body {
+            let (cfg, points) = CfgBuilder::new().build(&body);
+            self.cfg = cfg;
+            self.stmt_points = points.stmt_points;
+            self.stmt_after_points = points.stmt_after_points;
+            self.point_locals_used = FxHashMap::default();
+            self.current_point = self.cfg.entry.unwrap_or_default();
+
             let old_context = std::mem::replace(&mut self.context, func_context);
             self.check_stmt(&body);
             self.context = old_context;
@@ -637,20 +1207,19 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         self.borrow_checker.end_scope();
     }
 
+    fn stmt_key(stmt: &HirStmt<'a, 'bump>) -> usize {
+        stmt as *const HirStmt<'a, 'bump> as usize
+    }
+
+    fn set_point(&mut self, stmt: &HirStmt<'a, 'bump>) {
+        if let Some(&point) = self.stmt_points.get(&Self::stmt_key(stmt)) {
+            self.current_point = point;
+        }
+    }
+
     fn check_stmt(&mut self, stmt: &HirStmt<'a, 'bump>) -> Option<HirType<'a, 'bump>> {
+        self.set_point(stmt);
         match stmt {
-            HirStmt::Panic { message, span } => {
-                self.set_span(*span);
-                let msg_type = self.check_expr(message);
-                self.check_and_record_value_use(message, &msg_type);
-                if !matches!(msg_type, HirType::String) {
-                    self.record(TypeErrorKind::TypeMismatch {
-                        expected: "str".to_string(),
-                        found: self.type_to_string(&msg_type),
-                    });
-                }
-                None
-            }
             HirStmt::Let {
                 name,
                 ty,
@@ -662,8 +1231,9 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 catch_pattern: _,
             } => {
                 let var_name = self.str_id_to_string(*name);
+                let is_wildcard = var_name == "_";
 
-                if self.context.variables.contains_key(&var_name) {
+                if !is_wildcard && self.context.variables.contains_key(&var_name) {
                     self.record(TypeErrorKind::VariableAlreadyExists {
                         var_name: var_name.clone(),
                     });
@@ -714,7 +1284,10 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     true,
                 ));
 
-                if matches!(ty, HirType::SafePointer(_) | HirType::UnsafePointer(_)) {
+                if matches!(
+                    ty,
+                    HirType::SafePointer { .. } | HirType::UnsafePointer { .. }
+                ) {
                     if let Some(place) = self.resolve_place(value) {
                         if let Some(&(base, ref offset)) = self.borrow_checker.pointee_of(place) {
                             let declared = *self.borrow_checker.local_place(*name).unwrap();
@@ -766,10 +1339,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 }
                 None
             }
-            HirStmt::Expr(e) => {
-                self.check_expr(e);
-                None
-            }
+            HirStmt::Expr(e) => Some(self.check_expr(e)),
             HirStmt::If {
                 cond,
                 then_block,
@@ -913,27 +1483,24 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     })
                     .collect();
 
+                let mut value = None;
                 for (i, stmt) in body.iter().enumerate() {
                     let old_context = std::mem::replace(&mut self.context, block_context);
-                    self.check_stmt(stmt);
+                    value = self.check_stmt(stmt);
                     block_context = self.context.clone();
                     self.context = old_context;
 
-                    // NLL: end any loan owned by a local declared in THIS block if
-                    // nothing left in this block reads through it. Conservative for
-                    // nested blocks/loops, a single use anywhere inside a nested
-                    // while/if keeps the loan alive for that whole nested statement,
-                    // not just its actual last read within it (that precision needs a
-                    // real CFG, someone pls contribute).
-                    let remaining = &body[(i + 1)..];
+                    let after_point = self.stmt_after_points.get(&Self::stmt_key(stmt)).copied();
+
                     let dead_loans: Vec<LoanId> = self
                         .loan_owners
                         .iter()
                         .filter(|(_, owner)| local_names.contains(owner))
-                        .filter(|(_, &owner)| {
-                            !remaining
+                        .filter(|(_, &owner)| match after_point {
+                            Some(p) => !self.local_used_after(p, owner),
+                            None => !body[(i + 1)..]
                                 .iter()
-                                .any(|s| self.stmt_references_local(s, owner))
+                                .any(|s| self.stmt_references_local(s, owner)),
                         })
                         .map(|(&loan_id, _)| loan_id)
                         .collect();
@@ -947,7 +1514,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 // sweep anything that reached scope-end without an early kill
                 self.loan_owners
                     .retain(|_, owner| !local_names.contains(owner));
-                None
+                value
             }
             HirStmt::Break(expr, span) => {
                 self.set_span(*span);
@@ -982,7 +1549,9 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 None
             }
             HirStmt::Match { expr, arms } => {
-                self.check_expr(expr);
+                let scrutinee_ty = self.check_expr(expr);
+
+                self.check_match_exhaustiveness(&scrutinee_ty, arms);
 
                 let move_state_before = self.move_state.clone();
                 let mut arm_move_states: Vec<MoveState> = Vec::with_capacity(arms.len());
@@ -993,6 +1562,9 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
 
                     let arm_context = self.context.create_child_scope();
                     let old_context = std::mem::replace(&mut self.context, arm_context);
+
+                    self.check_pattern_against_type(&arm.pattern, &scrutinee_ty);
+                    self.register_pattern_bindings(&arm.pattern, &scrutinee_ty);
 
                     if let Some(guard) = arm.guard {
                         let guard_type = self.check_expr(guard);
@@ -1020,7 +1592,9 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 None
             }
             HirStmt::UnsafeBlock { body } => {
+                self.unsafe_depth += 1;
                 self.check_stmt(body);
+                self.unsafe_depth -= 1;
                 None
             }
             HirStmt::Defer(hir_stmt) => {
@@ -1128,6 +1702,10 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                         (SymbolId::Local(LocalSymbolId(u32::MAX)), HirType::Unknown)
                     }
                 };
+                self.point_locals_used
+                    .entry(self.current_point)
+                    .or_default()
+                    .insert(*name);
                 self.occurrences.push((
                     *span,
                     *name,
@@ -1166,6 +1744,46 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 self.set_span(*span);
 
                 match kind {
+                    IntrinsicKind::Reinterpret => {
+                        if type_args.len() != 1 {
+                            self.record(TypeErrorKind::Generic(format!(
+                                "$reinterpret expects exactly 1 type argument, found {}",
+                                type_args.len()
+                            )));
+                            return HirType::Unknown;
+                        }
+                        if args.len() != 1 {
+                            self.record(TypeErrorKind::InvalidFunctionCall {
+                                expected_args: 1,
+                                found_args: args.len(),
+                            });
+                            return HirType::Unknown;
+                        }
+                        let target_ty = type_args[0];
+                        let source_ty = self.check_expr(&args[0]);
+                        self.check_and_record_value_use(&args[0], &source_ty);
+                        if !self.in_unsafe() {
+                            self.record(TypeErrorKind::Generic(
+                            "$reinterpret requires an unsafe block: it reinterprets a value's bit \
+                             representation as a different type with no conversion or validation"
+                                .to_string(),
+                        ));
+                        }
+                        target_ty
+                    }
+                    IntrinsicKind::Unreachable => {
+                        if !type_args.is_empty() {
+                            self.record(TypeErrorKind::Generic(
+                                "$unreachable takes no type arguments".to_string(),
+                            ));
+                        }
+                        if !args.is_empty() {
+                            self.record(TypeErrorKind::Generic(
+                                "$unreachable takes no value arguments".to_string(),
+                            ));
+                        }
+                        HirType::Never
+                    }
                     IntrinsicKind::SizeOf | IntrinsicKind::AlignOf | IntrinsicKind::TypeName => {
                         if type_args.len() != 1 {
                             self.record(TypeErrorKind::Generic(format!(
@@ -1184,6 +1802,157 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                             _ => unreachable!(),
                         }
                     }
+                    IntrinsicKind::Own => {
+                        if !type_args.is_empty() {
+                            self.record(TypeErrorKind::Generic(
+                                "$own takes no type arguments".to_string(),
+                            ));
+                        }
+                        if args.is_empty() || args.len() > 4 {
+                            self.record(TypeErrorKind::Generic(format!(
+                                "$own expects 1 argument (ptr), 2 (ptr, allocator or len), 3 (ptr, allocator, len), \
+                                 or 4 (ptr, allocator, len, cap) for owned slices, found {}",
+                                args.len()
+                            )));
+                            return HirType::Unknown;
+                        }
+
+                        let ptr_ty = self.check_expr(&args[0]);
+                        self.check_and_record_value_use(&args[0], &ptr_ty);
+                        let pointee = match Self::strip_ref(&ptr_ty) {
+                            HirType::SafePointer { inner, .. }
+                            | HirType::UnsafePointer { inner, .. } => *inner,
+                            _ => {
+                                self.record(TypeErrorKind::Generic(format!(
+                                    "$own expects a `*T` or `[*]T`, found `{}`",
+                                    self.type_to_string(&ptr_ty)
+                                )));
+                                return HirType::Unknown;
+                            }
+                        };
+
+                        let (alloc_arg, len_arg, cap_arg) = if args.len() == 4 {
+                            (Some(&args[1]), Some(&args[2]), Some(&args[3]))
+                        } else if args.len() == 3 {
+                            (Some(&args[1]), Some(&args[2]), None)
+                        } else if args.len() == 2 {
+                            let arg1_ty = self.check_expr(&args[1]);
+                            if self.is_integer(&arg1_ty) {
+                                (None, Some(&args[1]), None)
+                            } else {
+                                (Some(&args[1]), None, None)
+                            }
+                        } else {
+                            (None, None, None)
+                        };
+
+                        let allocator = if let Some(alloc_expr) = alloc_arg {
+                            let alloc_ty = self.check_expr(alloc_expr);
+                            self.check_and_record_value_use(alloc_expr, &alloc_ty);
+                            let Some(allocator) = self.infer_provenance(alloc_expr) else {
+                                self.record(TypeErrorKind::Generic(
+                                    "$own's allocator argument must be a place with stable provenance (a global, `this`, a param, or a projection through them)".to_string(),
+                                ));
+                                return HirType::Unknown;
+                            };
+
+                            let alloc_struct_name = match Self::strip_ref(&alloc_ty) {
+                                HirType::Struct { name, .. } => self.str_id_to_string(*name),
+                                _ => {
+                                    self.record(TypeErrorKind::Generic(
+                                        "$own's allocator argument must be a struct implementing RawAllocator".to_string(),
+                                    ));
+                                    return HirType::Unknown;
+                                }
+                            };
+                            if !self
+                                .context
+                                .struct_implements(&alloc_struct_name, "RawAllocator")
+                            {
+                                self.record(TypeErrorKind::Generic(format!(
+                                    "`{}` does not implement `RawAllocator`",
+                                    alloc_struct_name
+                                )));
+                            }
+
+                            if !matches!(allocator.root, ProvenanceRoot::Global { .. }) {
+                                if let Some(place) = self.resolve_place(alloc_expr) {
+                                    match self.borrow_checker.borrow_shared(place) {
+                                        Ok(loan_id) => {
+                                            self.call_loans.insert(Self::expr_key(expr), loan_id);
+                                        }
+                                        Err(e) => {
+                                            let msg =
+                                                self.describe_borrow_error(&e, Some(&allocator));
+                                            self.record(TypeErrorKind::Generic(msg));
+                                        }
+                                    }
+                                }
+                            }
+                            allocator
+                        } else {
+                            let this_expr = HirExpr::This {
+                                span: self.current_span,
+                            };
+                            let Some(allocator) = self.infer_provenance(&this_expr) else {
+                                self.record(TypeErrorKind::Generic(
+                                    "$own without explicit allocator requires a `this` allocator in scope".to_string(),
+                                ));
+                                return HirType::Unknown;
+                            };
+                            allocator
+                        };
+
+                        let result_inner = if let Some(cap_expr) = cap_arg {
+                            let len_expr = len_arg.expect(
+                                "cap_arg implies len_arg due to the 4-arg-only branch above",
+                            );
+                            let len_ty = self.check_expr(len_expr);
+                            self.check_and_record_value_use(len_expr, &len_ty);
+                            if !self.is_integer(&len_ty) {
+                                self.record(TypeErrorKind::Generic(format!(
+                                    "$own's len argument must be an integer, found `{}`",
+                                    self.type_to_string(&len_ty)
+                                )));
+                            }
+                            let cap_ty = self.check_expr(cap_expr);
+                            self.check_and_record_value_use(cap_expr, &cap_ty);
+                            if !self.is_integer(&cap_ty) {
+                                self.record(TypeErrorKind::Generic(format!(
+                                    "$own's cap argument must be an integer, found `{}`",
+                                    self.type_to_string(&cap_ty)
+                                )));
+                            }
+                            HirType::Slice(self.context.bump.alloc_value(pointee))
+                        } else if let Some(len_expr) = len_arg {
+                            // Old 3-arg / 2-arg count-only shape with no cap: reject for
+                            // slice pointees now, since there's no way to recover a correct
+                            // cap. Non-slice owned pointers never take this branch (pointee
+                            // wouldn't be wrapped in Slice), so this only fires for the
+                            // ambiguous case this change intentionally closes off.
+                            let len_ty = self.check_expr(len_expr);
+                            self.check_and_record_value_use(len_expr, &len_ty);
+                            if !self.is_integer(&len_ty) {
+                                self.record(TypeErrorKind::Generic(format!(
+                                    "$own's argument must be an integer, found `{}`",
+                                    self.type_to_string(&len_ty)
+                                )));
+                            }
+                            self.record(TypeErrorKind::Generic(
+                                "$own for an owned slice requires both `len` and `cap`: use \
+                                 `$own(ptr, allocator, len, cap)`"
+                                    .to_string(),
+                            ));
+                            HirType::Slice(self.context.bump.alloc_value(pointee))
+                        } else {
+                            *pointee
+                        };
+
+                        HirType::OwnedPointer {
+                            inner: self.context.bump.alloc_value(result_inner),
+                            allocator: Some(allocator),
+                        }
+                    }
                     IntrinsicKind::AssertAlign => {
                         if !type_args.is_empty() {
                             self.record(TypeErrorKind::Generic(
@@ -1200,9 +1969,9 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                             self.check_and_record_value_use(&args[0], &ptr_ty);
                             if !matches!(
                                 Self::strip_ref(&ptr_ty),
-                                HirType::SafePointer(_)
-                                    | HirType::UnsafePointer(_)
-                                    | HirType::OwnedPointer(_)
+                                HirType::SafePointer { .. }
+                                    | HirType::UnsafePointer { .. }
+                                    | HirType::OwnedPointer { .. }
                             ) {
                                 self.record(TypeErrorKind::Generic(format!(
                                     "$assert_align expects a pointer, found `{}`",
@@ -1228,6 +1997,253 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                         }
                         HirType::Void
                     }
+                    IntrinsicKind::AtomicCasU32 => {
+                        if !self.in_unsafe() {
+                            self.record(TypeErrorKind::Generic(
+                                "$atomic_cas_u32 requires an unsafe block".to_string(),
+                            ));
+                        }
+                        if args.len() != 3 {
+                            self.record(TypeErrorKind::InvalidFunctionCall {
+                                expected_args: 3,
+                                found_args: args.len(),
+                            });
+                            return HirType::U32;
+                        }
+                        let ptr_ty = self.check_expr(&args[0]);
+                        self.check_and_record_value_use(&args[0], &ptr_ty);
+                        let points_to_u32 = matches!(
+                            Self::strip_ref(&ptr_ty),
+                            HirType::SafePointer { inner, .. } | HirType::UnsafePointer { inner, .. }
+                                if matches!(**inner, HirType::U32)
+                        );
+                        if !points_to_u32 {
+                            self.record(TypeErrorKind::Generic(format!(
+                                "$atomic_cas_u32 expects a pointer to `u32`, found `{}`",
+                                self.type_to_string(&ptr_ty)
+                            )));
+                        }
+                        for a in &args[1..] {
+                            let t = self.check_expr(a);
+                            self.check_and_record_value_use(a, &t);
+                            if !matches!(t, HirType::U32) {
+                                self.record(TypeErrorKind::TypeMismatch {
+                                    expected: "u32".to_string(),
+                                    found: self.type_to_string(&t),
+                                });
+                            }
+                        }
+                        HirType::U32
+                    }
+
+                    IntrinsicKind::AtomicLoadU32 => {
+                        if !self.in_unsafe() {
+                            self.record(TypeErrorKind::Generic(
+                                "$atomic_load_u32 requires an unsafe block".to_string(),
+                            ));
+                        }
+                        if args.len() != 1 {
+                            self.record(TypeErrorKind::InvalidFunctionCall {
+                                expected_args: 1,
+                                found_args: args.len(),
+                            });
+                            return HirType::U32;
+                        }
+                        let ptr_ty = self.check_expr(&args[0]);
+                        self.check_and_record_value_use(&args[0], &ptr_ty);
+                        let points_to_u32 = matches!(
+                            Self::strip_ref(&ptr_ty),
+                            HirType::SafePointer { inner, .. } | HirType::UnsafePointer { inner, .. }
+                                if matches!(**inner, HirType::U32)
+                        );
+                        if !points_to_u32 {
+                            self.record(TypeErrorKind::Generic(format!(
+                                "$atomic_load_u32 expects a pointer to `u32`, found `{}`",
+                                self.type_to_string(&ptr_ty)
+                            )));
+                        }
+                        HirType::U32
+                    }
+
+                    IntrinsicKind::AtomicStoreU32 => {
+                        if !self.in_unsafe() {
+                            self.record(TypeErrorKind::Generic(
+                                "$atomic_store_u32 requires an unsafe block".to_string(),
+                            ));
+                        }
+                        if args.len() != 2 {
+                            self.record(TypeErrorKind::InvalidFunctionCall {
+                                expected_args: 2,
+                                found_args: args.len(),
+                            });
+                            return HirType::Void;
+                        }
+                        let ptr_ty = self.check_expr(&args[0]);
+                        self.check_and_record_value_use(&args[0], &ptr_ty);
+                        let points_to_u32 = matches!(
+                            Self::strip_ref(&ptr_ty),
+                            HirType::SafePointer { inner, .. } | HirType::UnsafePointer { inner, .. }
+                                if matches!(**inner, HirType::U32)
+                        );
+                        if !points_to_u32 {
+                            self.record(TypeErrorKind::Generic(format!(
+                                "$atomic_store_u32 expects a pointer to `u32`, found `{}`",
+                                self.type_to_string(&ptr_ty)
+                            )));
+                        }
+                        let val_ty = self.check_expr(&args[1]);
+                        self.check_and_record_value_use(&args[1], &val_ty);
+                        if !matches!(val_ty, HirType::U32) {
+                            self.record(TypeErrorKind::TypeMismatch {
+                                expected: "u32".to_string(),
+                                found: self.type_to_string(&val_ty),
+                            });
+                        }
+                        HirType::Void
+                    }
+
+                    IntrinsicKind::CpuRelax => {
+                        if !args.is_empty() {
+                            self.record(TypeErrorKind::Generic(
+                                "$cpu_relax takes no arguments".to_string(),
+                            ));
+                        }
+                        HirType::Void
+                    }
+                }
+            }
+            HirExpr::If { if_stmt, span } => {
+                self.set_span(*span);
+                let HirStmt::If { else_block, .. } = if_stmt else {
+                    unreachable!()
+                };
+                if else_block.is_none() {
+                    self.record(TypeErrorKind::Generic(
+                        "if used as an expression must have an else branch".to_string(),
+                    ));
+                }
+                self.check_stmt(if_stmt).unwrap_or(HirType::Void)
+            }
+
+            HirExpr::Match { expr, arms, span } => {
+                self.set_span(*span);
+                let scrutinee_ty = self.check_expr(expr);
+
+                self.check_match_exhaustiveness(&scrutinee_ty, arms);
+
+                let move_state_before = self.move_state.clone();
+                let mut arm_types = Vec::with_capacity(arms.len());
+                let mut arm_move_states = Vec::with_capacity(arms.len());
+
+                for arm in *arms {
+                    self.move_state = move_state_before.clone();
+                    self.borrow_checker.begin_scope();
+                    let arm_context = self.context.create_child_scope();
+                    let old_context = std::mem::replace(&mut self.context, arm_context);
+
+                    self.check_pattern_against_type(&arm.pattern, &scrutinee_ty);
+                    self.register_pattern_bindings(&arm.pattern, &scrutinee_ty);
+
+                    if let Some(guard) = arm.guard {
+                        let guard_type = self.check_expr(guard);
+                        if guard_type != HirType::Boolean {
+                            self.record(TypeErrorKind::TypeMismatch {
+                                expected: "bool".to_string(),
+                                found: self.type_to_string(&guard_type),
+                            });
+                        }
+                    }
+
+                    let arm_ty = self.check_stmt(arm.body).unwrap_or(HirType::Void);
+                    self.context = old_context;
+                    self.borrow_checker.end_scope();
+                    arm_move_states.push(self.move_state.clone());
+                    arm_types.push(arm_ty);
+                }
+
+                self.move_state = arm_move_states
+                    .into_iter()
+                    .fold(move_state_before, |acc, s| MoveState::join(&acc, &s));
+                self.join_value_types(&arm_types)
+            }
+
+            HirExpr::Block {
+                body,
+                is_unsafe,
+                span,
+            } => {
+                self.set_span(*span);
+                if *is_unsafe {
+                    self.unsafe_depth += 1;
+                }
+
+                self.borrow_checker.begin_scope();
+                let mut block_context = self.context.create_child_scope();
+                let mut value = HirType::Void;
+                for stmt in *body {
+                    let old_context = std::mem::replace(&mut self.context, block_context);
+                    value = self.check_stmt(stmt).unwrap_or(HirType::Void);
+                    block_context = self.context.clone();
+                    self.context = old_context;
+                }
+                self.borrow_checker.end_scope();
+
+                if *is_unsafe {
+                    self.unsafe_depth -= 1;
+                }
+                value
+            }
+
+            HirExpr::Range {
+                start,
+                end,
+                inclusive,
+                span,
+            } => {
+                self.set_span(*span);
+                let start_ty = self.check_expr(start);
+                let end_ty = self.check_expr(end);
+                self.check_and_record_value_use(start, &start_ty);
+                self.check_and_record_value_use(end, &end_ty);
+                if !self.is_integer(&start_ty) {
+                    self.record(TypeErrorKind::Generic(format!(
+                        "range bounds must be integers, found `{}`",
+                        self.type_to_string(&start_ty)
+                    )));
+                }
+                let result = self.types_compatible(&start_ty, &end_ty);
+                self.recover(result, ());
+                HirType::Range {
+                    elem: self.context.bump.alloc_value(start_ty),
+                    inclusive: *inclusive,
+                }
+            }
+
+            HirExpr::Slice {
+                object,
+                start,
+                end,
+                inclusive: _,
+                span,
+            } => {
+                self.set_span(*span);
+                let object_ty = self.check_expr(object);
+                let start_ty = self.check_expr(start);
+                let end_ty = self.check_expr(end);
+                if !self.is_integer(&start_ty) || !self.is_integer(&end_ty) {
+                    self.record(TypeErrorKind::Generic(
+                        "slice bounds must be integers".to_string(),
+                    ));
+                }
+                match *Self::strip_ref(&object_ty) {
+                    HirType::Array(inner, _) | HirType::Slice(inner) => HirType::Slice(inner),
+                    _ => {
+                        self.record(TypeErrorKind::Generic(format!(
+                            "cannot slice type `{}`",
+                            self.type_to_string(&object_ty)
+                        )));
+                        HirType::Unknown
+                    }
                 }
             }
             HirExpr::Call {
@@ -1246,6 +2262,8 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                             return HirType::Unknown;
                         }
                     };
+                    self.check_unsafe_call(&func, &lookup_name);
+
                     self.record_item_occurrence(
                         *ident_span,
                         *func_name,
@@ -1337,7 +2355,23 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     {
                         return value;
                     }
+
+                    let read_templates = self.analyze_read_templates(&func);
+                    for (arg_idx, arg) in args.iter().enumerate() {
+                        if let HirExpr::Ref {
+                            expr: inner,
+                            mutable: false,
+                            ..
+                        } = arg
+                        {
+                            if let Some(template) = read_templates.get(arg_idx) {
+                                self.check_call_arg_read_effects(inner, template, args);
+                            }
+                        }
+                    }
+
                     let arg_loans = self.check_all_func_args(args, params, None);
+
                     if !self.return_type_may_alias(&ret_ty) {
                         for loan in arg_loans {
                             self.borrow_checker.end_loan_now(loan);
@@ -1421,30 +2455,19 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                         return method.return_type.unwrap_or(HirType::Void);
                     }
 
-                    let (struct_name_id, type_name, _recv_type_args) = match stripped {
-                        HirType::Struct {
-                            name, type_args, ..
-                        } => (name, name.to_string(), *type_args),
-                        _ => {
-                            self.record(TypeErrorKind::Generic(format!(
-                                "cannot call method on non-struct type: {}",
-                                self.type_to_string(&obj_type)
-                            )));
-                            return HirType::Unknown;
-                        }
-                    };
-
-                    let method_name = field.to_string();
-                    let func = match self.context.get_method(&type_name, &method_name).copied() {
-                        Some(f) => f,
-                        None => {
-                            self.record(TypeErrorKind::Generic(format!(
-                                "no method `{}` on `{}`",
-                                method_name, type_name
-                            )));
-                            return HirType::Unknown;
-                        }
-                    };
+                    let (struct_name_id, type_name, func) =
+                        match self.resolve_callable_method(stripped, &field.to_string()) {
+                            Some(found) => found,
+                            None => {
+                                self.record(TypeErrorKind::Generic(format!(
+                                    "no method `{}` on `{}`",
+                                    field,
+                                    self.type_to_string(&obj_type)
+                                )));
+                                return HirType::Unknown;
+                            }
+                        };
+                    self.check_unsafe_call(&func, &format!("{}.{}", type_name, field));
 
                     let total_params = func.params.map(|p| p.len()).unwrap_or(0);
                     let expected_args = total_params.saturating_sub(1);
@@ -1456,7 +2479,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     }
 
                     let ret_ty = func.return_type.unwrap_or(HirType::Void);
-                    self.record_method_occurrence(*span, *field, ret_ty, *struct_name_id);
+                    self.record_method_occurrence(*span, *field, ret_ty, struct_name_id);
 
                     let template = if self.return_type_may_alias(&ret_ty) {
                         Some(self.analyze_ref_template(&func))
@@ -1473,7 +2496,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                                     | ThisPassingKind::MoveMut
                             );
                             if requires_mut {
-                                let result = self.check_receiver_is_mutable(object, &method_name);
+                                let result = self.check_receiver_is_mutable(object, field.as_str());
                                 self.recover(result, ());
                             }
 
@@ -1483,17 +2506,21 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                             if matches!(kind, ThisPassingKind::Move | ThisPassingKind::MoveMut) {
                                 self.check_and_record_value_use(object, &obj_type);
                             } else if !has_precise_template {
-                                // Can't pin down exactly what sub-place this call touches
-                                // (e.g. push, which may reallocate)
                                 if let Some(place) = self.resolve_place(object) {
                                     let borrow_kind = if requires_mut {
                                         BorrowKind::Mutable
                                     } else {
                                         BorrowKind::Shared
                                     };
-                                    self.check_borrow_use(expr, place, borrow_kind);
+
+                                    if !requires_mut && !self.return_type_may_alias(&ret_ty) {
+                                        self.check_borrow_use_shell(expr, place, borrow_kind);
+                                    } else {
+                                        self.check_borrow_use(expr, place, borrow_kind);
+                                    }
                                 }
                             }
+
                             // defer entirely to finalize_call_loans below, which checks
                             // the precise resolved place (such as ptr[Const(1)] vs
                             // ptr[Const(2)]) and can prove index-disjointness that the
@@ -1532,10 +2559,23 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     // First: is access.path a single-segment local alias registered via
                     // `import foo::bar.Alias;`? Check that before treating path as a
                     // literal package path.
+                    let is_named_import = if access.path.len() == 1 {
+                        self.imports_by_module
+                            .get(&self.context.current_module_idx)
+                            .map(|imp| imp.named.contains_key(&access.path[0]))
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    };
+
                     let alias_module_idx: Option<usize> = if access.path.len() == 1 {
                         self.imports_by_module
                             .get(&self.context.current_module_idx)
-                            .and_then(|imp| imp.named.get(&access.path[0]))
+                            .and_then(|imp| {
+                                imp.named
+                                    .get(&access.path[0])
+                                    .or_else(|| imp.module_aliases.get(&access.path[0]))
+                            })
                             .copied()
                     } else {
                         None
@@ -1543,10 +2583,11 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
 
                     let (resolved_module_idx, assoc_type_name): (Option<usize>, Option<StrId>) =
                         if let Some(midx) = alias_module_idx {
-                            // Alias resolved to a module; the alias name itself is the
-                            // referenced symbol (type or free function) inside that module,
-                            // not a module-path segment to strip.
-                            (Some(midx), Some(access.path[0]))
+                            if is_named_import {
+                                (Some(midx), Some(access.path[0]))
+                            } else {
+                                (Some(midx), None)
+                            }
                         } else {
                             match self
                                 .context
@@ -1633,6 +2674,20 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                         });
                     }
                     if let Some(params) = func.params {
+                        let read_templates = self.analyze_read_templates(&func);
+                        for (arg_idx, arg) in args.iter().enumerate() {
+                            if let HirExpr::Ref {
+                                expr: inner,
+                                mutable: false,
+                                ..
+                            } = arg
+                            {
+                                if let Some(template) = read_templates.get(arg_idx) {
+                                    self.check_call_arg_read_effects(inner, template, args);
+                                }
+                            }
+                        }
+
                         let arg_loans = self.check_all_func_args(args, params, None);
 
                         let ret_ty = func.return_type.unwrap_or(HirType::Void);
@@ -1689,6 +2744,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             } => {
                 self.set_span(*span);
                 let HirExpr::Ident(struct_name_id, name_span) = name else {
+                    eprintln!("name failed {name:?}");
                     return HirType::Void;
                 };
                 let struct_name_str = self.str_id_to_string(*struct_name_id);
@@ -1702,8 +2758,9 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 };
                 self.check_bare_name_import(
                     self.context.struct_owner(&struct_name_str),
+                    *struct_name_id,
                     &struct_name_str,
-                    "struct",
+                    BareImportKind::Struct,
                 );
 
                 let is_generic_decl = ty_struct.generics.is_some_and(|g| !g.is_empty());
@@ -1863,18 +2920,6 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     }
                 }
 
-                if let HirExpr::Ident(name, _) = target {
-                    let var_name = self.str_id_to_string(*name);
-                    if self.context.is_local_binding(&var_name)
-                        && !self.context.is_mutable(&var_name)
-                    {
-                        self.record(TypeErrorKind::Generic(format!(
-                            "cannot assign to `{}`: it is not declared `mut`",
-                            var_name
-                        )));
-                    }
-                }
-
                 use ir::hir::AssignmentOperator::*;
                 let bin_result = match op {
                     Assign => self.types_compatible(&target_type, &value_type),
@@ -1935,8 +2980,9 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 };
                 self.check_bare_name_import(
                     self.context.enum_owner(&enum_name_str),
+                    *enum_name,
                     &enum_name_str,
-                    "enum",
+                    BareImportKind::Enum,
                 );
 
                 let variant_name = self.str_id_to_string(*variant);
@@ -1999,17 +3045,39 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                         found_args: args.len(),
                     });
                 }
+
+                let mut arg_types: Vec<HirType<'a, 'bump>> = Vec::with_capacity(args.len());
                 for (arg, field_type) in args.iter().zip(resolved_field_types.iter()) {
                     let arg_type = self.check_expr_expected(arg, field_type);
                     self.check_and_record_value_use(arg, &arg_type);
                     self.recover(self.types_compatible(field_type, &arg_type), ());
+                    arg_types.push(arg_type);
                 }
 
                 if let Some(ta) = type_args {
                     self.record_instance_args(expr, ta);
                 }
 
-                HirType::Enum(*enum_name, &[])
+                let final_type_args: &'bump [HirType<'a, 'bump>] = if let Some(ta) = type_args {
+                    ta
+                } else if is_generic_decl {
+                    let generics = enum_def.generics.unwrap_or(&[]);
+                    let mut subs: FxHashMap<StrId, HirType<'a, 'bump>> = FxHashMap::default();
+                    for (declared_field, actual_ty) in
+                        variant_def.fields.iter().zip(arg_types.iter())
+                    {
+                        self.unify_generic(&declared_field.field_type, actual_ty, &mut subs);
+                    }
+                    let inferred: Vec<HirType<'a, 'bump>> = generics
+                        .iter()
+                        .map(|g| subs.get(&g.name).copied().unwrap_or(HirType::Unknown))
+                        .collect();
+                    self.context.bump.alloc_slice_copy(&inferred)
+                } else {
+                    &[]
+                };
+
+                HirType::Enum(*enum_name, final_type_args)
             }
             HirExpr::ExprList { list, span } => {
                 self.set_span(*span);
@@ -2048,9 +3116,26 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 }
                 match inner_ty {
                     HirType::Ref { inner, .. } => *inner,
-                    HirType::SafePointer(inner) => *inner,
-                    HirType::UnsafePointer(inner) => *inner,
-                    HirType::OwnedPointer(inner) => *inner,
+                    HirType::SafePointer { inner, .. } => {
+                        if !self.in_unsafe() {
+                            self.record(TypeErrorKind::Generic(
+                                "dereferencing a raw pointer requires an unsafe block".into(),
+                            ));
+                        }
+
+                        *inner
+                    }
+
+                    HirType::UnsafePointer { inner, .. } => {
+                        if !self.in_unsafe() {
+                            self.record(TypeErrorKind::Generic(
+                                "dereferencing an unsafe pointer requires an unsafe block".into(),
+                            ));
+                        }
+
+                        *inner
+                    }
+                    HirType::OwnedPointer { inner, .. } => *inner,
                     _ => {
                         self.record(TypeErrorKind::Generic(format!(
                             "cannot dereference non-pointer type `{}`",
@@ -2087,10 +3172,23 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 // is access.path a single-segment local alias registered via
                 // `import foo::bar.Alias;`? Check that before treating path as a
                 // literal package path.
+                let is_named_import = if access.path.len() == 1 {
+                    self.imports_by_module
+                        .get(&self.context.current_module_idx)
+                        .map(|imp| imp.named.contains_key(&access.path[0]))
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+
                 let alias_module_idx: Option<usize> = if access.path.len() == 1 {
                     self.imports_by_module
                         .get(&self.context.current_module_idx)
-                        .and_then(|imp| imp.named.get(&access.path[0]))
+                        .and_then(|imp| {
+                            imp.named
+                                .get(&access.path[0])
+                                .or_else(|| imp.module_aliases.get(&access.path[0]))
+                        })
                         .copied()
                 } else {
                     None
@@ -2098,7 +3196,11 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
 
                 let (resolved_module_idx, assoc_type_name): (Option<usize>, Option<StrId>) =
                     if let Some(midx) = alias_module_idx {
-                        (Some(midx), Some(access.path[0]))
+                        if is_named_import {
+                            (Some(midx), Some(access.path[0]))
+                        } else {
+                            (Some(midx), None)
+                        }
                     } else {
                         match self
                             .context
@@ -2121,8 +3223,6 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                         }
                     };
 
-                // free_func now needs to try BOTH interpretations when alias-resolved,
-                // since a named import could name either a type or a free function.
                 let free_func = resolved_module_idx
                     .and_then(|midx| self.context.get_module_function(midx, &member_name));
 
@@ -2149,7 +3249,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                             .map(|s| s.to_string())
                             .collect::<Vec<_>>()
                             .join("::");
-                        let qualified_name = format!("{}::{}", path_str, member_name);
+                        let qualified_name = format!("{}.{}", path_str, member_name);
                         let candidate_modules = self
                             .context
                             .dep_graph
@@ -2174,6 +3274,8 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                         return HirType::Unknown;
                     }
                 };
+
+                self.check_unsafe_call(&func, &member_name);
 
                 self.check_module_path_imported(access.path);
 
@@ -2233,17 +3335,37 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
 
                 self.recover(self.types_compatible(&HirType::I64, &index_ty), ());
 
-                match *Self::strip_ref(&object_ty) {
-                    HirType::Array(inner, _) => *inner,
-                    HirType::Slice(inner) => *inner,
-
-                    _ => {
-                        self.record(TypeErrorKind::Generic(format!(
-                            "cannot index type `{}`",
-                            self.type_to_string(&object_ty)
-                        )));
-                        HirType::Unknown
+                match object_ty {
+                    HirType::SafePointer { inner, .. } => {
+                        if !self.in_unsafe() {
+                            self.record(TypeErrorKind::Generic(
+                                "indexing a raw pointer requires an unsafe block".to_string(),
+                            ));
+                        }
+                        *inner
                     }
+
+                    HirType::UnsafePointer { inner, .. } => {
+                        if !self.in_unsafe() {
+                            self.record(TypeErrorKind::Generic(
+                                "indexing an unsafe pointer requires an unsafe block".to_string(),
+                            ));
+                        }
+                        *inner
+                    }
+
+                    _ => match *Self::strip_ref(&object_ty) {
+                        HirType::Array(inner, _) => *inner,
+                        HirType::Slice(inner) => *inner,
+
+                        _ => {
+                            self.record(TypeErrorKind::Generic(format!(
+                                "cannot index type `{}`",
+                                self.type_to_string(&object_ty)
+                            )));
+                            HirType::Unknown
+                        }
+                    },
                 }
             }
             HirExpr::ArrayLiteral { elements, span } => {
@@ -2287,11 +3409,24 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 );
                 HirType::Unknown
             }
-            HirExpr::If { if_stmt, span } => {
-                self.set_span(*span);
-                self.check_stmt(if_stmt).unwrap_or(HirType::Void)
+        }
+    }
+
+    fn join_value_types(&mut self, branches: &[HirType<'a, 'bump>]) -> HirType<'a, 'bump> {
+        let mut result: Option<HirType<'a, 'bump>> = None;
+        for ty in branches {
+            if matches!(ty, HirType::Never) {
+                continue;
+            }
+            match result {
+                None => result = Some(*ty),
+                Some(expected) => {
+                    let check = self.types_compatible(&expected, ty);
+                    self.recover(check, ());
+                }
             }
         }
+        result.unwrap_or(HirType::Never) // every branch diverged
     }
 
     fn check_cast_legality(
@@ -2306,21 +3441,56 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         let is_ptr = |t: &HirType<'a, 'bump>| {
             matches!(
                 t,
-                HirType::SafePointer(_) | HirType::UnsafePointer(_) | HirType::OwnedPointer(_)
+                HirType::SafePointer { .. }
+                    | HirType::UnsafePointer { .. }
+                    | HirType::OwnedPointer { .. }
             )
         };
-        let source_is_ptr = is_ptr(source);
-        let target_is_ptr = is_ptr(target);
 
         let ok = match (source, target) {
             (s, t) if self.is_numeric(s) && self.is_numeric(t) => true,
+
             (HirType::Boolean, t) if self.is_numeric(t) => true,
-            _ if source_is_ptr && target_is_ptr => true,
-            _ if (source_is_ptr && self.is_integer(target))
-                || (self.is_integer(source) && target_is_ptr) =>
-            {
-                true
+
+            (
+                HirType::SafePointer { inner: src, .. },
+                HirType::UnsafePointer { inner: dst, .. },
+            ) => self.types_structurally_equal(src, dst),
+
+            (HirType::Slice(src), HirType::SafePointer { inner: dst, .. }) => {
+                self.types_structurally_equal(src, dst)
             }
+
+            (HirType::Slice(src), HirType::UnsafePointer { inner: dst, .. }) => {
+                self.types_structurally_equal(src, dst)
+            }
+
+            (HirType::Array(src, _), HirType::SafePointer { inner: dst, .. }) => {
+                self.types_structurally_equal(src, dst)
+            }
+
+            (HirType::Array(src, _), HirType::UnsafePointer { inner: dst, .. }) => {
+                self.types_structurally_equal(src, dst)
+            }
+
+            (
+                HirType::OwnedPointer { inner: owned, .. },
+                HirType::SafePointer { inner: dst, .. },
+            ) => match owned {
+                HirType::Slice(src) => self.types_structurally_equal(src, dst),
+                _ => false,
+            },
+
+            (
+                HirType::OwnedPointer { inner: owned, .. },
+                HirType::UnsafePointer { inner: dst, .. },
+            ) => match owned {
+                HirType::Slice(src) => self.types_structurally_equal(src, dst),
+                _ => false,
+            },
+
+            (s, t) if is_ptr(s) && self.is_integer(t) => true,
+            (s, t) if self.is_integer(s) && is_ptr(t) => true,
             _ => false,
         };
 
@@ -2371,6 +3541,22 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             // of dropping to nothing
             HirExpr::Index { object, .. } => self.infer_provenance_root(object, segments),
 
+            HirExpr::ModuleAccess(access) => {
+                let module_idx = self
+                    .context
+                    .dep_graph
+                    .borrow()
+                    .resolve_module_path(access.path)?;
+                self.context
+                    .dep_graph
+                    .borrow()
+                    .resolve_global_const(module_idx, access.member)?;
+                Some(ProvenanceRoot::Global {
+                    module_idx,
+                    name: access.member,
+                })
+            }
+
             _ => None,
         }
     }
@@ -2411,12 +3597,572 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         }
     }
 
+    fn check_pattern_against_type(
+        &mut self,
+        pattern: &HirPattern<'bump>,
+        scrutinee_ty: &HirType<'a, 'bump>,
+    ) {
+        match pattern {
+            HirPattern::EnumVariant {
+                variant, bindings, ..
+            } => {
+                let HirType::Enum(enum_name, _) = scrutinee_ty else {
+                    return;
+                };
+                let enum_name_str = self.str_id_to_string(*enum_name);
+                let Some(def) = self.context.get_enum(&enum_name_str) else {
+                    return;
+                };
+                let Some(variant_def) = def.variants.iter().find(|v| v.name == *variant) else {
+                    self.record(TypeErrorKind::Generic(format!(
+                        "enum `{}` has no variant `{}`",
+                        enum_name_str, variant
+                    )));
+                    return;
+                };
+                if bindings.len() != variant_def.fields.len() {
+                    self.record(TypeErrorKind::Generic(format!(
+                        "variant `{}::{}` has {} field(s), but the pattern binds {}",
+                        enum_name_str,
+                        variant,
+                        variant_def.fields.len(),
+                        bindings.len()
+                    )));
+                }
+            }
+            HirPattern::Boolean(_) => {
+                if !matches!(scrutinee_ty, HirType::Boolean) {
+                    self.record(TypeErrorKind::TypeMismatch {
+                        expected: self.type_to_string(scrutinee_ty),
+                        found: "bool".to_string(),
+                    });
+                }
+            }
+            HirPattern::Number(_) => {
+                if !self.is_integer(scrutinee_ty) {
+                    self.record(TypeErrorKind::TypeMismatch {
+                        expected: self.type_to_string(scrutinee_ty),
+                        found: "integer".to_string(),
+                    });
+                }
+            }
+            HirPattern::String(_) => {
+                if !matches!(scrutinee_ty, HirType::String) {
+                    self.record(TypeErrorKind::TypeMismatch {
+                        expected: self.type_to_string(scrutinee_ty),
+                        found: "str".to_string(),
+                    });
+                }
+            }
+
+            HirPattern::Ident(_) | HirPattern::Wildcard => {}
+
+            HirPattern::Tuple(patterns) => match scrutinee_ty {
+                HirType::Tuple(elems) => {
+                    if patterns.len() != elems.len() {
+                        self.record(TypeErrorKind::Generic(format!(
+                            "tuple pattern has {} element(s), but the scrutinee has {}",
+                            patterns.len(),
+                            elems.len()
+                        )));
+                    }
+                    for (sub_pattern, elem_ty) in patterns.iter().zip(elems.iter()) {
+                        self.check_pattern_against_type(sub_pattern, elem_ty);
+                    }
+                }
+                _ => {
+                    self.record(TypeErrorKind::TypeMismatch {
+                        expected: self.type_to_string(scrutinee_ty),
+                        found: format!("tuple pattern with {} element(s)", patterns.len()),
+                    });
+                }
+            },
+
+            HirPattern::Array(patterns) => match scrutinee_ty {
+                HirType::Array(inner, len) => {
+                    if patterns.len() != *len {
+                        self.record(TypeErrorKind::Generic(format!(
+                            "array pattern has {} element(s), but the array type `{}` has length {}",
+                            patterns.len(),
+                            self.type_to_string(scrutinee_ty),
+                            len
+                        )));
+                    }
+                    for sub_pattern in patterns.iter() {
+                        self.check_pattern_against_type(sub_pattern, inner);
+                    }
+                }
+                HirType::Slice(inner) => {
+                    for sub_pattern in patterns.iter() {
+                        self.check_pattern_against_type(sub_pattern, inner);
+                    }
+                }
+                _ => {
+                    self.record(TypeErrorKind::TypeMismatch {
+                        expected: self.type_to_string(scrutinee_ty),
+                        found: format!("array pattern with {} element(s)", patterns.len()),
+                    });
+                }
+            },
+
+            HirPattern::Struct { name, fields } => match scrutinee_ty {
+                HirType::Enum(enum_name, _) => {
+                    let enum_name_str = self.str_id_to_string(*enum_name);
+                    let Some(def) = self.context.get_enum(&enum_name_str) else {
+                        return;
+                    };
+                    let Some(variant_def) = def.variants.iter().find(|v| v.name == *name) else {
+                        self.record(TypeErrorKind::Generic(format!(
+                            "enum `{}` has no variant `{}`",
+                            enum_name_str, name
+                        )));
+                        return;
+                    };
+
+                    let mut seen: std::collections::HashSet<StrId> =
+                        std::collections::HashSet::new();
+                    for (field_name, sub_pattern) in fields.iter() {
+                        if !seen.insert(*field_name) {
+                            self.record(TypeErrorKind::Generic(format!(
+                                "field `{}` matched more than once in this pattern",
+                                self.str_id_to_string(*field_name)
+                            )));
+                            continue;
+                        }
+                        let Some(field_def) =
+                            variant_def.fields.iter().find(|f| f.name == *field_name)
+                        else {
+                            self.record(TypeErrorKind::Generic(format!(
+                                "variant `{}::{}` has no field `{}`",
+                                enum_name_str,
+                                name,
+                                self.str_id_to_string(*field_name)
+                            )));
+                            continue;
+                        };
+                        self.check_pattern_against_type(sub_pattern, &field_def.field_type);
+                    }
+
+                    let missing: Vec<&str> = variant_def
+                        .fields
+                        .iter()
+                        .filter(|f| !fields.iter().any(|(fname, _)| fname == &f.name))
+                        .map(|f| f.name.as_str())
+                        .collect();
+                    if !missing.is_empty() {
+                        self.record(TypeErrorKind::Generic(format!(
+                            "pattern doesn't bind field(s) {} of variant `{}::{}`",
+                            missing.join(", "),
+                            enum_name_str,
+                            name
+                        )));
+                    }
+                }
+
+                // A real struct scrutinee matched by field name.
+                HirType::Struct {
+                    name: struct_name,
+                    field_types,
+                    ..
+                } => {
+                    let struct_name_str = self.str_id_to_string(*struct_name);
+                    let Some(def) = self.context.get_struct(&struct_name_str) else {
+                        return;
+                    };
+
+                    let mut seen: std::collections::HashSet<StrId> =
+                        std::collections::HashSet::new();
+                    for (field_name, sub_pattern) in fields.iter() {
+                        if !seen.insert(*field_name) {
+                            self.record(TypeErrorKind::Generic(format!(
+                                "field `{}` matched more than once in this pattern",
+                                self.str_id_to_string(*field_name)
+                            )));
+                            continue;
+                        }
+                        let Some(field_idx) = def.fields.iter().position(|f| f.name == *field_name)
+                        else {
+                            self.record(TypeErrorKind::FieldNotFound {
+                                struct_name: struct_name_str.clone(),
+                                field: self.str_id_to_string(*field_name),
+                            });
+                            continue;
+                        };
+                        let field_ty = field_types
+                            .get(field_idx)
+                            .copied()
+                            .unwrap_or(def.fields[field_idx].field_type);
+                        self.check_pattern_against_type(sub_pattern, &field_ty);
+                    }
+                }
+
+                _ => {
+                    self.record(TypeErrorKind::TypeMismatch {
+                        expected: self.type_to_string(scrutinee_ty),
+                        found: format!("named-field pattern `{}`", name),
+                    });
+                }
+            },
+
+            HirPattern::Or(patterns) => {
+                if patterns.is_empty() {
+                    self.record(TypeErrorKind::Generic(
+                        "or-pattern must have at least one alternative".to_string(),
+                    ));
+                    return;
+                }
+
+                for sub_pattern in patterns.iter() {
+                    self.check_pattern_against_type(sub_pattern, scrutinee_ty);
+                }
+
+                let mut first_bindings: Option<Vec<(StrId, HirType<'a, 'bump>)>> = None;
+                for sub_pattern in patterns.iter() {
+                    let mut bindings = Vec::new();
+                    self.collect_pattern_bindings(sub_pattern, scrutinee_ty, &mut bindings);
+                    bindings.sort_by(|(na, _), (nb, _)| {
+                        self.str_id_to_string(*na).cmp(&self.str_id_to_string(*nb))
+                    });
+
+                    match &first_bindings {
+                        None => first_bindings = Some(bindings),
+                        Some(expected) => {
+                            if !self.bindings_match(expected, &bindings) {
+                                let names = |v: &[(StrId, HirType<'a, 'bump>)]| {
+                                    v.iter()
+                                        .map(|(n, _)| self.str_id_to_string(*n))
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                };
+                                self.record(TypeErrorKind::Generic(format!(
+                                    "all alternatives of an or-pattern must bind the same names with the same types: \
+                                     found `{}` in one alternative but `{}` in another",
+                                    names(expected),
+                                    names(&bindings),
+                                )));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn resolve_callable_method(
+        &self,
+        ty: &HirType<'a, 'bump>,
+        method_name: &str,
+    ) -> Option<(StrId, String, HirFunc<'a, 'bump>)> {
+        let try_name = |n: String| -> Option<(StrId, String, HirFunc<'a, 'bump>)> {
+            let id = StrId(self.context.string_pool.intern(&n));
+            self.context
+                .get_method(&n, method_name)
+                .map(|f| (id, n, *f))
+        };
+
+        match ty {
+            HirType::Struct { name, .. } => {
+                let struct_name_str = name.to_string();
+                if let Some(hit) = try_name(struct_name_str.clone()) {
+                    return Some(hit);
+                }
+                self.resolve_default_interface_method(*name, &struct_name_str, method_name)
+            }
+            HirType::Slice(elem) | HirType::Array(elem, _) => {
+                if let Some(elem_name) = self.builtin_element_name(elem) {
+                    if let Some(hit) = try_name(format!("slice_{}", elem_name)) {
+                        return Some(hit);
+                    }
+                }
+                try_name("slice".to_string())
+            }
+            other => try_name(self.builtin_element_name(other)?),
+        }
+    }
+
+    fn resolve_default_interface_method(
+        &self,
+        struct_name: StrId,
+        struct_name_str: &str,
+        method_name: &str,
+    ) -> Option<(StrId, String, HirFunc<'a, 'bump>)> {
+        let interfaces = self.context.struct_interfaces.get(struct_name_str)?;
+        for iface_name in interfaces {
+            let Some(iface) = self.context.get_interface(iface_name) else {
+                continue;
+            };
+            let Some(methods) = iface.methods else {
+                continue;
+            };
+            if let Some(m) = methods
+                .iter()
+                .find(|m| m.unmangled_name.as_str() == method_name && m.body.is_some())
+            {
+                return Some((struct_name, struct_name_str.to_string(), *m));
+            }
+        }
+        None
+    }
+
+    fn builtin_element_name(&self, ty: &HirType<'a, 'bump>) -> Option<String> {
+        Some(match ty {
+            HirType::I8 => "i8".into(),
+            HirType::I16 => "i16".into(),
+            HirType::I32 => "i32".into(),
+            HirType::I64 => "i64".into(),
+            HirType::I128 => "i128".into(),
+            HirType::U8 => "u8".into(),
+            HirType::U16 => "u16".into(),
+            HirType::U32 => "u32".into(),
+            HirType::U64 => "u64".into(),
+            HirType::U128 => "u128".into(),
+            HirType::Usize => "usize".into(),
+            HirType::Isize => "isize".into(),
+            HirType::F32 => "f32".into(),
+            HirType::F64 => "f64".into(),
+            HirType::Boolean => "bool".into(),
+            HirType::String => "str".into(),
+            HirType::Char => "char".into(),
+            HirType::Struct { name, .. } => name.to_string(),
+            _ => return None,
+        })
+    }
+
+    fn register_pattern_bindings(
+        &mut self,
+        pattern: &HirPattern<'bump>,
+        scrutinee_ty: &HirType<'a, 'bump>,
+    ) {
+        match pattern {
+            HirPattern::Ident(name) => {
+                let var_name = self.str_id_to_string(*name);
+                let symbol_id = self.mint_symbol_id();
+                self.context
+                    .add_variable(var_name, *scrutinee_ty, symbol_id);
+            }
+
+            HirPattern::EnumVariant {
+                variant, bindings, ..
+            } => {
+                let HirType::Enum(enum_name, _) = scrutinee_ty else {
+                    return;
+                };
+                let enum_name_str = self.str_id_to_string(*enum_name);
+                let Some(def) = self.context.get_enum(&enum_name_str) else {
+                    return;
+                };
+                let Some(variant_def) = def.variants.iter().find(|v| v.name == *variant) else {
+                    return;
+                };
+                for (binding_name, field) in bindings.iter().zip(variant_def.fields.iter()) {
+                    let var_name = self.str_id_to_string(*binding_name);
+                    let symbol_id = self.mint_symbol_id();
+                    self.context
+                        .add_variable(var_name, field.field_type, symbol_id);
+                }
+            }
+
+            HirPattern::Tuple(patterns) => {
+                if let HirType::Tuple(elems) = scrutinee_ty {
+                    for (sub_pattern, elem_ty) in patterns.iter().zip(elems.iter()) {
+                        self.register_pattern_bindings(sub_pattern, elem_ty);
+                    }
+                }
+            }
+
+            HirPattern::Array(patterns) => {
+                let elem_ty = match scrutinee_ty {
+                    HirType::Array(inner, _) | HirType::Slice(inner) => Some(**inner),
+                    _ => None,
+                };
+                if let Some(elem_ty) = elem_ty {
+                    for sub_pattern in patterns.iter() {
+                        self.register_pattern_bindings(sub_pattern, &elem_ty);
+                    }
+                }
+            }
+
+            HirPattern::Struct { name, fields } => match scrutinee_ty {
+                HirType::Enum(enum_name, _) => {
+                    let enum_name_str = self.str_id_to_string(*enum_name);
+                    let Some(def) = self.context.get_enum(&enum_name_str) else {
+                        return;
+                    };
+                    let Some(variant_def) = def.variants.iter().find(|v| v.name == *name) else {
+                        return;
+                    };
+                    for (field_name, sub_pattern) in fields.iter() {
+                        let Some(field_def) =
+                            variant_def.fields.iter().find(|f| f.name == *field_name)
+                        else {
+                            continue;
+                        };
+                        self.register_pattern_bindings(sub_pattern, &field_def.field_type);
+                    }
+                }
+                HirType::Struct {
+                    name: struct_name,
+                    field_types,
+                    ..
+                } => {
+                    let struct_name_str = self.str_id_to_string(*struct_name);
+                    let Some(def) = self.context.get_struct(&struct_name_str) else {
+                        return;
+                    };
+                    for (field_name, sub_pattern) in fields.iter() {
+                        let Some(field_idx) = def.fields.iter().position(|f| f.name == *field_name)
+                        else {
+                            continue;
+                        };
+                        let field_ty = field_types
+                            .get(field_idx)
+                            .copied()
+                            .unwrap_or(def.fields[field_idx].field_type);
+                        self.register_pattern_bindings(sub_pattern, &field_ty);
+                    }
+                }
+                _ => {}
+            },
+
+            HirPattern::Or(patterns) => {
+                if let Some(first) = patterns.first() {
+                    self.register_pattern_bindings(first, scrutinee_ty);
+                }
+            }
+
+            _ => {} // Wildcard, Number, String, Boolean bind nothing
+        }
+    }
+
+    fn collect_pattern_bindings(
+        &self,
+        pattern: &HirPattern<'bump>,
+        scrutinee_ty: &HirType<'a, 'bump>,
+        out: &mut Vec<(StrId, HirType<'a, 'bump>)>,
+    ) {
+        match pattern {
+            HirPattern::Ident(name) => {
+                out.push((*name, *scrutinee_ty));
+            }
+
+            HirPattern::EnumVariant {
+                variant, bindings, ..
+            } => {
+                let HirType::Enum(enum_name, _) = scrutinee_ty else {
+                    return;
+                };
+                let enum_name_str = self.str_id_to_string(*enum_name);
+                let Some(def) = self.context.get_enum(&enum_name_str) else {
+                    return;
+                };
+                let Some(variant_def) = def.variants.iter().find(|v| v.name == *variant) else {
+                    return;
+                };
+                for (binding_name, field) in bindings.iter().zip(variant_def.fields.iter()) {
+                    out.push((*binding_name, field.field_type));
+                }
+            }
+
+            HirPattern::Tuple(patterns) => {
+                if let HirType::Tuple(elems) = scrutinee_ty {
+                    for (sub_pattern, elem_ty) in patterns.iter().zip(elems.iter()) {
+                        self.collect_pattern_bindings(sub_pattern, elem_ty, out);
+                    }
+                }
+            }
+
+            HirPattern::Array(patterns) => {
+                let elem_ty = match scrutinee_ty {
+                    HirType::Array(inner, _) | HirType::Slice(inner) => Some(**inner),
+                    _ => None,
+                };
+                if let Some(elem_ty) = elem_ty {
+                    for sub_pattern in patterns.iter() {
+                        self.collect_pattern_bindings(sub_pattern, &elem_ty, out);
+                    }
+                }
+            }
+
+            HirPattern::Struct { name, fields } => match scrutinee_ty {
+                HirType::Enum(enum_name, _) => {
+                    let enum_name_str = self.str_id_to_string(*enum_name);
+                    let Some(def) = self.context.get_enum(&enum_name_str) else {
+                        return;
+                    };
+                    let Some(variant_def) = def.variants.iter().find(|v| v.name == *name) else {
+                        return;
+                    };
+                    for (field_name, sub_pattern) in fields.iter() {
+                        let Some(field_def) =
+                            variant_def.fields.iter().find(|f| f.name == *field_name)
+                        else {
+                            continue;
+                        };
+                        self.collect_pattern_bindings(sub_pattern, &field_def.field_type, out);
+                    }
+                }
+                HirType::Struct {
+                    name: struct_name,
+                    field_types,
+                    ..
+                } => {
+                    let struct_name_str = self.str_id_to_string(*struct_name);
+                    let Some(def) = self.context.get_struct(&struct_name_str) else {
+                        return;
+                    };
+                    for (field_name, sub_pattern) in fields.iter() {
+                        let Some(field_idx) = def.fields.iter().position(|f| f.name == *field_name)
+                        else {
+                            continue;
+                        };
+                        let field_ty = field_types
+                            .get(field_idx)
+                            .copied()
+                            .unwrap_or(def.fields[field_idx].field_type);
+                        self.collect_pattern_bindings(sub_pattern, &field_ty, out);
+                    }
+                }
+                _ => {}
+            },
+
+            HirPattern::Or(patterns) => {
+                // Nested or-pattern: consistency across its own alternatives is
+                // enforced separately wherever *this* pattern is itself checked
+                // via check_pattern_against_type. Any one alternative gives the
+                // right binding set here.
+                if let Some(first) = patterns.first() {
+                    self.collect_pattern_bindings(first, scrutinee_ty, out);
+                }
+            }
+
+            HirPattern::Wildcard
+            | HirPattern::Number(_)
+            | HirPattern::String(_)
+            | HirPattern::Boolean(_) => {}
+        }
+    }
+
+    /// Order-independent comparison of two binding sets: same names, same
+    /// types, regardless of the order each pattern happened to declare them in.
+    fn bindings_match(
+        &self,
+        a: &[(StrId, HirType<'a, 'bump>)],
+        b: &[(StrId, HirType<'a, 'bump>)],
+    ) -> bool {
+        if a.len() != b.len() {
+            return false;
+        }
+        a.iter()
+            .zip(b.iter())
+            .all(|((na, ta), (nb, tb))| na == nb && self.types_structurally_equal(ta, tb))
+    }
+
     fn check_potential_this_param_for_move(
         &mut self,
         args: &[HirExpr<'a, 'bump>],
         func: HirFunc<'a, 'bump>,
         params: &[HirParam<'a, 'bump>],
-        ret_ty: HirType<'a, 'bump>, // now passed in, already substituted by the caller
+        ret_ty: HirType<'a, 'bump>,
     ) -> Option<HirType<'a, 'bump>> {
         if let Some(this_param) = params.first() {
             if matches!(this_param, HirParam::This { .. }) {
@@ -2439,6 +4185,20 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 }) => Some(*i),
                 _ => None,
             };
+
+            let read_templates = self.analyze_read_templates(&func);
+            for (arg_idx, arg) in args.iter().enumerate() {
+                if let HirExpr::Ref {
+                    expr: inner,
+                    mutable: false,
+                    ..
+                } = arg
+                {
+                    if let Some(template) = read_templates.get(arg_idx) {
+                        self.check_call_arg_read_effects(inner, template, args);
+                    }
+                }
+            }
 
             let arg_loans = self.check_all_func_args(args, params, templated_base_param);
             self.finalize_call_loans(None, args, arg_loans, &ret_ty, template);
@@ -2553,9 +4313,9 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         match ty {
             // Direct reference-like types.
             HirType::Ref { .. }
-            | HirType::SafePointer(_)
-            | HirType::UnsafePointer(_)
-            | HirType::OwnedPointer(_) => true,
+            | HirType::SafePointer { .. }
+            | HirType::UnsafePointer { .. }
+            | HirType::OwnedPointer { .. } => true,
 
             HirType::Nullable(inner) => self.return_type_may_alias(inner),
 
@@ -2716,8 +4476,17 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             return RefTemplate::Opaque;
         };
 
-        let [HirStmt::Return(Some(HirExpr::Ref { expr, mutable, .. }))] = body else {
+        let [HirStmt::Return(Some(ret_expr))] = body else {
             return RefTemplate::Opaque;
+        };
+        let (expr, mutable) = match ret_expr {
+            HirExpr::Ref { expr, mutable, .. } => (*expr, *mutable),
+            HirExpr::Intrinsic {
+                kind: IntrinsicKind::Own,
+                args,
+                ..
+            } if args.len() == 2 => (&args[0], true),
+            _ => return RefTemplate::Opaque,
         };
 
         let Some((base, projections)) = Self::expr_to_template(expr, &param_index, has_this) else {
@@ -2726,7 +4495,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
 
         RefTemplate::Path {
             base,
-            mutable: *mutable,
+            mutable,
             projections,
         }
     }
@@ -3054,9 +4823,9 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         matches!(
             ty,
             HirType::Ref { .. }
-                | HirType::SafePointer(_)
-                | HirType::UnsafePointer(_)
-                | HirType::OwnedPointer(_)
+                | HirType::SafePointer { .. }
+                | HirType::UnsafePointer { .. }
+                | HirType::OwnedPointer { .. }
         )
     }
 
@@ -3122,8 +4891,9 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
 
         self.check_bare_name_import(
             self.context.struct_owner(&struct_name_str),
+            struct_name,
             &struct_name_str,
-            "struct",
+            BareImportKind::Struct,
         );
 
         let field_name = self.str_id_to_string(field);
@@ -3310,9 +5080,36 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 ma == mb && self.types_structurally_equal(ia, ib)
             }
             (Nullable(ia), Nullable(ib)) => self.types_structurally_equal(ia, ib),
-            (SafePointer(ia), SafePointer(ib)) => self.types_structurally_equal(ia, ib),
-            (UnsafePointer(ia), UnsafePointer(ib)) => self.types_structurally_equal(ia, ib),
-            (OwnedPointer(ia), OwnedPointer(ib)) => self.types_structurally_equal(ia, ib),
+            (
+                SafePointer {
+                    inner: ia,
+                    mutability_state: ma,
+                },
+                SafePointer {
+                    inner: ib,
+                    mutability_state: mb,
+                },
+            ) => ma == mb && self.types_structurally_equal(ia, ib),
+            (
+                UnsafePointer {
+                    inner: ia,
+                    mutability_state: ma,
+                },
+                UnsafePointer {
+                    inner: ib,
+                    mutability_state: mb,
+                },
+            ) => ma == mb && self.types_structurally_equal(ia, ib),
+            (
+                OwnedPointer {
+                    inner: ia,
+                    allocator: aa,
+                },
+                OwnedPointer {
+                    inner: ib,
+                    allocator: ab,
+                },
+            ) => aa == ab && self.types_structurally_equal(ia, ib),
             (Array(ia, la), Array(ib, lb)) => la == lb && self.types_structurally_equal(ia, ib),
             (Slice(ia), Slice(ib)) => self.types_structurally_equal(ia, ib),
             (Tuple(ta), Tuple(tb)) => {
@@ -3346,6 +5143,16 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                         .all(|(x, y)| self.types_structurally_equal(x, y))
                     && self.types_structurally_equal(ra, rb)
             }
+            (Enum(na, ta), Enum(nb, tb)) => {
+                na == nb
+                    && (ta.is_empty()
+                        || tb.is_empty()
+                        || (ta.len() == tb.len()
+                            && ta
+                                .iter()
+                                .zip(tb.iter())
+                                .all(|(x, y)| self.types_structurally_equal(x, y))))
+            }
             _ => a == b,
         }
     }
@@ -3373,21 +5180,33 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                     .bump
                     .alloc_value(self.substitute_type_local(inner, subs)),
             ),
-            HirType::SafePointer(inner) => HirType::SafePointer(
-                self.context
+            HirType::SafePointer {
+                inner,
+                mutability_state,
+            } => HirType::SafePointer {
+                inner: self
+                    .context
                     .bump
                     .alloc_value(self.substitute_type_local(inner, subs)),
-            ),
-            HirType::UnsafePointer(inner) => HirType::UnsafePointer(
-                self.context
+                mutability_state: *mutability_state,
+            },
+            HirType::UnsafePointer {
+                inner,
+                mutability_state,
+            } => HirType::UnsafePointer {
+                inner: self
+                    .context
                     .bump
                     .alloc_value(self.substitute_type_local(inner, subs)),
-            ),
-            HirType::OwnedPointer(inner) => HirType::OwnedPointer(
-                self.context
+                mutability_state: *mutability_state,
+            },
+            HirType::OwnedPointer { inner, allocator } => HirType::OwnedPointer {
+                inner: self
+                    .context
                     .bump
                     .alloc_value(self.substitute_type_local(inner, subs)),
-            ),
+                allocator: *allocator,
+            },
             HirType::Ref {
                 inner,
                 mutability_state,
@@ -3530,6 +5349,9 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         expected: &HirType<'a, 'bump>,
         found: &HirType<'a, 'bump>,
     ) -> TypeCheckResult<'a, ()> {
+        if matches!(found, HirType::Never) {
+            return Ok(());
+        }
         if self.types_structurally_equal(expected, found) {
             return Ok(());
         }
@@ -3595,13 +5417,11 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             .struct_implements(&struct_name, &interface_name)
     }
 
-    /// Unwraps a single layer of `Ref` to get at the underlying type, since
-    /// `&Vec3f` vs `&dyn Printable` need to be compared on their pointee types.
     fn strip_ref<'x>(ty: &'x HirType<'a, 'bump>) -> &'x HirType<'a, 'bump> {
         match ty {
             HirType::Ref { inner, .. } => inner,
-            HirType::SafePointer(inner) => inner,
-            HirType::OwnedPointer(inner) => inner,
+            HirType::SafePointer { inner, .. } => inner,
+            HirType::OwnedPointer { inner, .. } => inner,
             _ => ty,
         }
     }
@@ -3667,7 +5487,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             HirType::I128 => "i128".to_string(),
             HirType::U128 => "u128".to_string(),
             HirType::Boolean => "bool".to_string(),
-            HirType::String => "string".to_string(),
+            HirType::String => "str".to_string(),
             HirType::Void => "void".to_string(),
             HirType::Unknown => "<unknown>".to_string(),
             HirType::Struct {
@@ -3685,10 +5505,27 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 }
             }
             HirType::DynInterface(name, _) => format!("interface {}", self.str_id_to_string(*name)),
-            HirType::Enum(name, _) => format!("enum {}", self.str_id_to_string(*name)),
+            HirType::Enum(name, type_args) => {
+                if type_args.is_empty() {
+                    format!("enum {}", self.str_id_to_string(*name))
+                } else {
+                    let args = type_args
+                        .iter()
+                        .map(|t| self.type_to_string(t))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("enum {}<{}>", self.str_id_to_string(*name), args)
+                }
+            }
             HirType::Generic(name) => format!("generic {}", self.str_id_to_string(*name)),
-            HirType::SafePointer(_) => "*Ptr".to_string(),
-            HirType::UnsafePointer(_) => "[*]Ptr".to_string(),
+            HirType::SafePointer {
+                inner,
+                mutability_state,
+            } => format!("*{} {}", mutability_state, inner),
+            HirType::UnsafePointer {
+                inner,
+                mutability_state,
+            } => format!("[*]{} {}", mutability_state, inner),
             HirType::Lambda { .. } => "lambda".to_string(),
             HirType::This => "this".to_string(),
             HirType::Null => "null".to_string(),
@@ -3733,9 +5570,23 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             ),
             HirType::Array(inner, len) => format!("[{}]{}", len, self.type_to_string(inner)),
             HirType::Slice(inner) => format!("[]{}", self.type_to_string(inner)),
-            HirType::OwnedPointer(inner) => format!("^{}", self.type_to_string(inner)),
+            HirType::OwnedPointer { inner, allocator } => {
+                format!(
+                    "^{} {}",
+                    allocator
+                        .map(|all| self.provenance_to_string(&all))
+                        .unwrap_or(String::from("")),
+                    self.type_to_string(inner)
+                )
+            }
             HirType::Usize => "usize".to_string(),
             HirType::Isize => "isize".to_string(),
+            HirType::Never => "never".to_string(),
+            HirType::Range { elem, inclusive } => format!(
+                "range<{}>{}",
+                self.type_to_string(elem),
+                if *inclusive { " (inclusive)" } else { "" }
+            ),
         }
     }
 
@@ -3779,6 +5630,11 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         let root = match p.root {
             ProvenanceRoot::Var(name) => self.str_id_to_string(name),
             ProvenanceRoot::ThisRoot => "this".to_string(),
+            ProvenanceRoot::Global {
+                module_idx: _,
+                name,
+            } => self.str_id_to_string(name),
+            ProvenanceRoot::ImplicitParam(_) => todo!(),
         };
         p.path.iter().fold(root, |acc, seg| match seg {
             ProvenancePathSegment::Field(f) => format!("{}.{}", acc, self.str_id_to_string(*f)),
@@ -3833,9 +5689,9 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             }
             HirExpr::Deref { expr, .. } => match self.peek_type(expr) {
                 HirType::Ref { inner, .. } => *inner,
-                HirType::SafePointer(inner) => *inner,
-                HirType::UnsafePointer(inner) => *inner,
-                HirType::OwnedPointer(inner) => *inner,
+                HirType::SafePointer { inner, .. } => *inner,
+                HirType::UnsafePointer { inner, .. } => *inner,
+                HirType::OwnedPointer { inner, .. } => *inner,
                 _ => HirType::Unknown,
             },
             HirExpr::Index { object, .. } => match self.peek_type(object) {
@@ -3862,9 +5718,9 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                 let base = self.resolve_place(object)?;
                 let base = match self.peek_type(object) {
                     HirType::Ref { .. }
-                    | HirType::SafePointer(_)
-                    | HirType::UnsafePointer(_)
-                    | HirType::OwnedPointer(_) => self.borrow_checker.project_deref(base),
+                    | HirType::SafePointer { .. }
+                    | HirType::UnsafePointer { .. }
+                    | HirType::OwnedPointer { .. } => self.borrow_checker.project_deref(base),
                     _ => base,
                 };
                 Some(self.borrow_checker.project_field(base, *field))
@@ -3889,6 +5745,21 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
                         IndexContainer::Primitive,
                     ))
                 }
+                HirType::SafePointer { .. } | HirType::UnsafePointer { .. } => {
+                    let ptr_place = self.resolve_place(object)?;
+                    let (base, cur) = self.borrow_checker.pointee_of(ptr_place)?.clone();
+                    let idx_bound = self.expr_to_bound(index);
+                    let combined = Bound::Sum(Box::new(cur.lower.clone()), Box::new(idx_bound));
+                    let interval = Interval {
+                        lower: combined.clone(),
+                        upper: combined,
+                    };
+                    Some(self.borrow_checker.project_index(
+                        base,
+                        interval,
+                        IndexContainer::Primitive,
+                    ))
+                }
                 _ => None,
             },
 
@@ -3900,7 +5771,7 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
             } => {
                 if !matches!(
                     self.peek_type(left),
-                    HirType::SafePointer(_) | HirType::UnsafePointer(_)
+                    HirType::SafePointer { .. } | HirType::UnsafePointer { .. }
                 ) {
                     return None;
                 }
@@ -4028,8 +5899,9 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
     fn check_bare_name_import(
         &mut self,
         declaring_module: Option<usize>,
+        name: StrId,
         name_str: &str,
-        kind: &str,
+        kind: BareImportKind,
     ) {
         let Some(declaring_module) = declaring_module else {
             return;
@@ -4038,195 +5910,193 @@ impl<'a, 'bump> TypeChecker<'a, 'bump> {
         if declaring_module == current {
             return;
         }
-        let imported = self.imports_by_module.get(&current).is_some_and(|imp| {
+
+        let explicitly_imported = self.imports_by_module.get(&current).is_some_and(|imp| {
             imp.modules.contains(&declaring_module)
                 || imp.named.values().any(|&m| m == declaring_module)
         });
-        if !imported {
+        if explicitly_imported {
+            return;
+        }
+
+        let wildcard_modules: Vec<usize> = self
+            .imports_by_module
+            .get(&current)
+            .map(|imp| imp.wildcard.clone())
+            .unwrap_or_default();
+
+        if !wildcard_modules.contains(&declaring_module) {
             self.record(TypeErrorKind::Generic(format!(
                 "{} `{}` is declared in another module and has not been imported",
-                kind, name_str,
+                kind.as_str(),
+                name_str,
+            )));
+            return;
+        }
+
+        let by_module: &FxHashMap<usize, HashSet<StrId>> = match kind {
+            BareImportKind::Struct => &self.structs_by_module,
+            BareImportKind::Enum => &self.enums_by_module,
+        };
+        let candidates: Vec<usize> = wildcard_modules
+            .iter()
+            .copied()
+            .filter(|m| by_module.get(m).is_some_and(|set| set.contains(&name)))
+            .collect();
+
+        if candidates.len() > 1 {
+            let candidate_pkgs: Vec<String> = candidates
+                .iter()
+                .filter_map(|&m| self.context.dep_graph.borrow().get_module_package(m))
+                .map(|p| p.to_string())
+                .collect();
+            self.record(TypeErrorKind::Generic(format!(
+                "`{}` is ambiguous: it is auto-imported from multiple packages ({}); \
+                 add an explicit `import` to disambiguate",
+                name_str,
+                candidate_pkgs.join(", "),
             )));
         }
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
+    fn check_match_exhaustiveness(
+        &mut self,
+        scrutinee_ty: &HirType<'a, 'bump>,
+        arms: &[HirMatchArm<'a, 'bump>],
+    ) {
+        if matches!(scrutinee_ty, HirType::Unknown) {
+            return; // already errored elsewhere; don't cascade
+        }
 
-    use ir::registry::global_registry::GlobalRegistry;
-    use zetaruntime::string_pool::StringPool;
+        let has_catch_all = arms.iter().any(|arm| {
+            arm.guard.is_none()
+                && matches!(arm.pattern, HirPattern::Wildcard | HirPattern::Ident(_))
+        });
+        if has_catch_all {
+            return;
+        }
 
-    use super::*;
+        match scrutinee_ty {
+            HirType::Enum(enum_name, _) => {
+                let enum_name_str = self.str_id_to_string(*enum_name);
+                let Some(def) = self.context.get_enum(&enum_name_str) else {
+                    return;
+                };
+                let covered: std::collections::HashSet<StrId> = arms
+                    .iter()
+                    .filter(|arm| arm.guard.is_none())
+                    .filter_map(|arm| match &arm.pattern {
+                        HirPattern::EnumVariant { variant, .. } => Some(*variant),
+                        _ => None,
+                    })
+                    .collect();
+                let missing: Vec<&str> = def
+                    .variants
+                    .iter()
+                    .filter(|v| !covered.contains(&v.name))
+                    .map(|v| v.name.as_str())
+                    .collect();
+                if !missing.is_empty() {
+                    self.record(TypeErrorKind::Generic(format!(
+                        "non-exhaustive match on enum `{}`: missing variant(s) {}",
+                        enum_name_str,
+                        missing.join(", ")
+                    )));
+                }
+            }
 
-    #[test]
-    fn test_type_checker_creation() {
-        let dep_graph = RefCell::new(DepGraph::new());
+            HirType::Boolean => {
+                let mut has_true = false;
+                let mut has_false = false;
+                for arm in arms.iter().filter(|a| a.guard.is_none()) {
+                    match &arm.pattern {
+                        HirPattern::Boolean(true) => has_true = true,
+                        HirPattern::Boolean(false) => has_false = true,
+                        _ => {}
+                    }
+                }
+                if !(has_true && has_false) {
+                    self.record(TypeErrorKind::Generic(
+                        "non-exhaustive match on `bool`: requires a wildcard (`_`) arm or both `true` and `false` arms".to_string()
+                    ));
+                }
+            }
 
-        let bump = GrowableBump::new(4096, 8);
-        let context = Arc::new(StringPool::new().unwrap());
-        let registry = GlobalRegistry::new();
-        let cpy_ctx = Rc::new(RefCell::new(CopyAnalysisCtx::new(
-            &[],
-            registry.clone(),
-            context.clone(),
-        )));
-        let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx, context.clone());
-        assert_eq!(checker.context.variables.len(), 0);
-        assert!(!checker.has_errors());
+            HirType::I8
+            | HirType::I16
+            | HirType::I32
+            | HirType::I64
+            | HirType::I128
+            | HirType::U8
+            | HirType::U16
+            | HirType::U32
+            | HirType::U64
+            | HirType::U128
+            | HirType::Usize
+            | HirType::Isize
+            | HirType::String
+            | HirType::Char => {
+                self.record(TypeErrorKind::Generic(format!(
+                    "non-exhaustive match on `{}`: requires a wildcard (`_`) or binding (catch-all) arm",
+                    self.type_to_string(scrutinee_ty)
+                )));
+            }
+
+            _ => {} // structs/tuples/etc: not enforced yet
+        }
     }
 
-    #[test]
-    fn test_is_numeric() {
-        let dep_graph = RefCell::new(DepGraph::new());
-        let bump = GrowableBump::new(4096, 8);
-        let context = Arc::new(StringPool::new().unwrap());
-        let registry = GlobalRegistry::new();
-        let cpy_ctx = Rc::new(RefCell::new(CopyAnalysisCtx::new(
-            &[],
-            registry.clone(),
-            context.clone(),
-        )));
-        let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx, context.clone());
-        assert!(checker.is_numeric(&HirType::I32));
-        assert!(checker.is_numeric(&HirType::F64));
-        assert!(!checker.is_numeric(&HirType::Boolean));
-        assert!(!checker.is_numeric(&HirType::String));
+    fn local_used_after(&self, point: PointId, local: StrId) -> bool {
+        let mut stack: Vec<PointId> = vec![point];
+        let mut visited: HashSet<PointId> = HashSet::default();
+
+        while let Some(p) = stack.pop() {
+            if !visited.insert(p) {
+                continue;
+            }
+            if self
+                .point_locals_used
+                .get(&p)
+                .is_some_and(|set| set.contains(&local))
+            {
+                return true;
+            }
+            if let Some(succs) = self.cfg.successors.get(&p) {
+                stack.extend(succs.iter().copied());
+            }
+        }
+        false
     }
 
-    #[test]
-    fn test_is_comparable() {
-        let dep_graph = RefCell::new(DepGraph::new());
-        let bump = GrowableBump::new(4096, 8);
-        let context = Arc::new(StringPool::new().unwrap());
-        let registry = GlobalRegistry::new();
-        let cpy_ctx = Rc::new(RefCell::new(CopyAnalysisCtx::new(
-            &[],
-            registry.clone(),
-            context.clone(),
-        )));
-        let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx, context.clone());
-        assert!(checker.is_comparable(&HirType::I32));
-        assert!(checker.is_comparable(&HirType::Boolean));
-        assert!(checker.is_comparable(&HirType::String));
-    }
-
-    #[test]
-    fn test_type_to_string() {
-        let dep_graph = RefCell::new(DepGraph::new());
-        let bump = GrowableBump::new(4096, 8);
-        let context = Arc::new(StringPool::new().unwrap());
-        let registry = GlobalRegistry::new();
-        let cpy_ctx = Rc::new(RefCell::new(CopyAnalysisCtx::new(
-            &[],
-            registry.clone(),
-            context.clone(),
-        )));
-        let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx, context.clone());
-        assert_eq!(checker.type_to_string(&HirType::I32), "i32");
-        assert_eq!(checker.type_to_string(&HirType::Boolean), "bool");
-        assert_eq!(checker.type_to_string(&HirType::String), "string");
-        assert_eq!(checker.type_to_string(&HirType::Void), "void");
-    }
-
-    #[test]
-    fn test_types_compatible_same_type() {
-        let dep_graph = RefCell::new(DepGraph::new());
-        let bump = GrowableBump::new(4096, 8);
-        let context = Arc::new(StringPool::new().unwrap());
-        let registry = GlobalRegistry::new();
-        let cpy_ctx = Rc::new(RefCell::new(CopyAnalysisCtx::new(
-            &[],
-            registry.clone(),
-            context.clone(),
-        )));
-        let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx, context.clone());
-        let result = checker.types_compatible(&HirType::I32, &HirType::I32);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_types_compatible_different_type() {
-        let dep_graph = RefCell::new(DepGraph::new());
-        let bump = GrowableBump::new(4096, 8);
-        let context = Arc::new(StringPool::new().unwrap());
-        let registry = GlobalRegistry::new();
-        let cpy_ctx = Rc::new(RefCell::new(CopyAnalysisCtx::new(
-            &[],
-            registry.clone(),
-            context.clone(),
-        )));
-        let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx, context.clone());
-        let result = checker.types_compatible(&HirType::I32, &HirType::I64);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_binary_op_addition() {
-        let dep_graph = RefCell::new(DepGraph::new());
-        let bump = GrowableBump::new(4096, 8);
-        let context = Arc::new(StringPool::new().unwrap());
-        let registry = GlobalRegistry::new();
-        let cpy_ctx = Rc::new(RefCell::new(CopyAnalysisCtx::new(
-            &[],
-            registry.clone(),
-            context.clone(),
-        )));
-        let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx, context.clone());
-        let result = checker.check_binary_op(&HirType::I32, &Operator::Add, &HirType::I32);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), HirType::I32);
-    }
-
-    #[test]
-    fn test_binary_op_comparison() {
-        let dep_graph = RefCell::new(DepGraph::new());
-        let bump = GrowableBump::new(4096, 8);
-        let context = Arc::new(StringPool::new().unwrap());
-        let registry = GlobalRegistry::new();
-        let cpy_ctx = Rc::new(RefCell::new(CopyAnalysisCtx::new(
-            &[],
-            registry.clone(),
-            context.clone(),
-        )));
-        let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx, context.clone());
-        let result = checker.check_binary_op(&HirType::I32, &Operator::LessThan, &HirType::I32);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), HirType::Boolean);
-    }
-
-    #[test]
-    fn test_binary_op_logical() {
-        let dep_graph = RefCell::new(DepGraph::new());
-        let bump = GrowableBump::new(4096, 8);
-        let context = Arc::new(StringPool::new().unwrap());
-        let registry = GlobalRegistry::new();
-        let cpy_ctx = Rc::new(RefCell::new(CopyAnalysisCtx::new(
-            &[],
-            registry.clone(),
-            context.clone(),
-        )));
-        let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx, context.clone());
-        let result =
-            checker.check_binary_op(&HirType::Boolean, &Operator::LogicalAnd, &HirType::Boolean);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), HirType::Boolean);
-    }
-
-    #[test]
-    fn test_binary_op_type_mismatch() {
-        let dep_graph = RefCell::new(DepGraph::new());
-        let bump = GrowableBump::new(4096, 8);
-        let context = Arc::new(StringPool::new().unwrap());
-        let registry = GlobalRegistry::new();
-        let cpy_ctx = Rc::new(RefCell::new(CopyAnalysisCtx::new(
-            &[],
-            registry.clone(),
-            context.clone(),
-        )));
-        let checker = TypeChecker::new(&dep_graph, &bump, cpy_ctx, context.clone());
-        let result = checker.check_binary_op(&HirType::I32, &Operator::Add, &HirType::String);
-        assert!(result.is_err());
+    fn unify_generic(
+        &self,
+        declared: &HirType<'a, 'bump>,
+        actual: &HirType<'a, 'bump>,
+        subs: &mut FxHashMap<StrId, HirType<'a, 'bump>>,
+    ) {
+        match declared {
+            HirType::Generic(name) => {
+                subs.entry(*name).or_insert(*actual);
+            }
+            HirType::Nullable(inner) => {
+                if let HirType::Nullable(actual_inner) = actual {
+                    self.unify_generic(inner, actual_inner, subs);
+                }
+            }
+            HirType::Array(inner, _) => {
+                if let HirType::Array(actual_inner, _) = actual {
+                    self.unify_generic(inner, actual_inner, subs);
+                }
+            }
+            HirType::Slice(inner) => {
+                if let HirType::Slice(actual_inner) = actual {
+                    self.unify_generic(inner, actual_inner, subs);
+                }
+            }
+            HirType::Ref { inner, .. } => {
+                self.unify_generic(inner, Self::strip_ref(actual), subs);
+            }
+            _ => {}
+        }
     }
 }
