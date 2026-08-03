@@ -31,10 +31,6 @@ where
     Break(Option<&'bump Expr<'a, 'bump>>, SourceSpan<'a>),
     TypeAliasDecl(&'bump TypeAliasDecl<'a, 'bump>),
     Continue(SourceSpan<'a>),
-    Panic {
-        message: Expr<'a, 'bump>,
-        span: SourceSpan<'a>,
-    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -155,8 +151,6 @@ where
     pub name: StrId,
     pub field_type: Type<'a, 'bump>,
     pub visibility: Visibility,
-    /// Generic type parameters for this field
-    pub generics: Option<&'bump [Type<'a, 'bump>]>,
     pub span: SourceSpan<'a>,
 }
 
@@ -530,6 +524,8 @@ where
     Undefined {
         span: SourceSpan<'a>,
     },
+    Block(&'bump Block<'a, 'bump>),
+    UnsafeBlock(&'bump UnsafeBlock<'a, 'bump>),
 }
 
 /// A closure/anonymous-function parameter. Unlike `NormalParam`, the type
@@ -593,8 +589,6 @@ impl<'a, 'bump> Type<'a, 'bump> {
         }
     }
 
-    /// Name plus qualifying path segments, for callers that need to resolve
-    /// across modules (e.g. HIR lowering's mangling).
     pub fn struct_name_path(&self) -> Option<(StrId, &'bump [StrId])> {
         match self.kind {
             TypeKind::Struct { name, path, .. } => Some((name, path)),
@@ -607,6 +601,8 @@ impl<'a, 'bump> Type<'a, 'bump> {
 pub enum ProvenanceRoot {
     Var(StrId),
     ThisRoot,
+    Global { module_idx: usize, name: StrId },
+    ImplicitParam(u32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -626,6 +622,8 @@ impl fmt::Display for ProvenanceRoot {
         match self {
             ProvenanceRoot::Var(name) => write!(f, "{name}"),
             ProvenanceRoot::ThisRoot => write!(f, "self"),
+            ProvenanceRoot::Global { name, .. } => write!(f, "{name}"),
+            ProvenanceRoot::ImplicitParam(_) => todo!(),
         }
     }
 }
@@ -716,10 +714,13 @@ where
         bounds: &'bump [Type<'a, 'bump>],
     },
     OwnedPointer {
-        inner: &'bump Type<'a, 'bump>,
+        inner: &'a Type<'a, 'bump>,
+        allocator: Option<ProvenanceAnnotation<'bump>>, // None = unbound, infer/monomorphize
     },
     Usize,
     Isize,
+    Never,
+    AnySlice,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -891,7 +892,6 @@ pub enum Op {
     LogicalNot,
     Range,     // .. (inclusive range)
     RangeExcl, // ..< (exclusive range)
-    DerefUnsafe,
     Deref,
     Ref,
     RefMut,
@@ -1156,6 +1156,13 @@ impl<'a, 'bump> Type<'a, 'bump> {
         }
     }
 
+    pub fn never() -> Self {
+        Type {
+            kind: TypeKind::Never,
+            nullable: false,
+        }
+    }
+
     pub fn with_nullable(mut self, nullable: bool) -> Self {
         self.nullable = nullable;
         self
@@ -1184,19 +1191,19 @@ impl<'a, 'bump> Display for Type<'a, 'bump> {
             TypeKind::Isize => f.write_str("isize"),
             TypeKind::UF64 => f.write_str("uf64"),
             TypeKind::Void => f.write_str("void"),
+            TypeKind::AnySlice => f.write_str("[]"),
             TypeKind::Lambda {
                 params,
                 return_type,
             } => {
-                write!(f, "fn(")?;
+                write!(f, "func(")?;
                 for (i, p) in params.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
                     write!(f, "{}", p)?;
                 }
-                write!(f, ")")?;
-                write!(f, " -> {}", return_type)
+                write!(f, "): {}", return_type)
             }
             TypeKind::Struct {
                 name,
@@ -1259,7 +1266,11 @@ impl<'a, 'bump> Display for Type<'a, 'bump> {
                 }
                 Ok(())
             }
-            TypeKind::OwnedPointer { inner } => write!(f, "^{}", inner),
+            TypeKind::OwnedPointer {
+                inner,
+                allocator: _, // TODO: unignore
+            } => write!(f, "^{}", inner),
+            TypeKind::Never => f.write_str("never"),
         }?;
 
         if self.nullable {
