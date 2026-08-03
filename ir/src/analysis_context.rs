@@ -1,3 +1,4 @@
+use crate::ast::MutabilityState;
 use crate::borrow_checker::{Bound, Interval};
 use crate::hir::{
     AssignmentOperator, Hir, HirEnum, HirExpr, HirModule, HirParam, HirType, Operator, StrId,
@@ -698,22 +699,24 @@ impl<'a, 'bump> CopyAnalysisCtx<'a, 'bump> {
             | HirType::Void
             | HirType::This
             | HirType::Null
-            | HirType::Lambda { .. } => true,
+            | HirType::Lambda { .. }
+            | HirType::Never
+            | HirType::Range { .. } => true,
 
-            HirType::Ref { .. } | HirType::SafePointer(_) | HirType::UnsafePointer(_) => true,
+            HirType::Ref {
+                mutability_state, ..
+            }
+            | HirType::SafePointer {
+                mutability_state, ..
+            }
+            | HirType::UnsafePointer {
+                mutability_state, ..
+            } => *mutability_state != MutabilityState::Mut,
 
             HirType::Nullable(inner) => self.type_is_copy(inner),
 
-            HirType::Struct { name, .. } => self
-                .is_copy
-                .get(name)
-                .copied()
-                .unwrap_or_else(|| panic!("Copy analysis queried for unanalyzed type {}", name)),
-            HirType::Enum(name, _) => self
-                .is_copy
-                .get(name)
-                .copied()
-                .unwrap_or_else(|| panic!("Copy analysis queried for unanalyzed type {}", name)),
+            HirType::Struct { name, .. } => self.is_copy.get(name).copied().unwrap_or(false),
+            HirType::Enum(name, _) => self.is_copy.get(name).copied().unwrap_or(false),
 
             HirType::Dyn { .. } | HirType::DynInterface(..) => false,
 
@@ -724,7 +727,7 @@ impl<'a, 'bump> CopyAnalysisCtx<'a, 'bump> {
             HirType::Array(_, _) => false,
             // A kind of reference to an array of compile-time-unknown length, known to be able to store multiple elements
             HirType::Slice(_) => true,
-            HirType::OwnedPointer(_) => false,
+            HirType::OwnedPointer { .. } => false,
             HirType::Usize => true,
             HirType::Isize => true,
         }
