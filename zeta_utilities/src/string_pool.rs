@@ -17,6 +17,39 @@ const LANES: usize = 32;
 const FX_INIT: u64 = 0xcbf29ce484222325;
 const FX_PRIME: u64 = 0x100000001b3;
 
+use std::fmt::Write;
+
+struct CountWriter {
+    len: usize,
+}
+
+impl Write for CountWriter {
+    #[inline(always)]
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.len += s.len();
+        Ok(())
+    }
+}
+
+struct SliceWriter<'a> {
+    buf: &'a mut [u8],
+    pos: usize,
+}
+
+impl Write for SliceWriter<'_> {
+    #[inline(always)]
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let bytes = s.as_bytes();
+        let end = self.pos + bytes.len();
+
+        self.buf[self.pos..end].copy_from_slice(bytes);
+
+        self.pos = end;
+
+        Ok(())
+    }
+}
+
 #[derive(Default, Clone, Copy)]
 struct IdentityHasher(u64);
 
@@ -74,14 +107,15 @@ impl PartialEq for VmString {
         if self.length != other.length {
             return false;
         }
-
+        if self.offset.is_null() || other.offset.is_null() {
+            return self.offset == other.offset; // both null + same length(0) => equal
+        }
         let (a, b): (&[u8], &[u8]) = unsafe {
             (
                 std::slice::from_raw_parts(self.offset, self.length),
                 std::slice::from_raw_parts(other.offset, other.length),
             )
         };
-
         a == b
     }
 }
@@ -116,13 +150,20 @@ pub struct StringPool {
     interned_strings: DashMap<u64, SmallVec<VmString, 2>, IdentityBuild>,
 }
 
+#[macro_export]
+macro_rules! intern_fmt {
+    ($pool:expr, $($arg:tt)*) => {
+        $pool.intern_fmt(format_args!($($arg)*))
+    };
+}
+
 const MEGABYTE: usize = 1024 * 1024;
 
 impl StringPool {
     #[inline(always)]
     pub fn new() -> Result<Self, AllocError> {
         Ok(StringPool {
-            data_buffer: GrowableAtomicBump::with_capacity_and_aligned(4 * MEGABYTE, 32)?,
+            data_buffer: GrowableAtomicBump::with_capacity_and_aligned(256 * MEGABYTE, 32)?,
             interned_strings: DashMap::with_hasher(IdentityBuild),
         })
     }
@@ -141,17 +182,42 @@ impl StringPool {
     #[inline(always)]
     pub fn intern_bytes(&self, bytes: &[u8]) -> VmString {
         let hash = Self::hash_bytes_simd(bytes);
+        self.intern_bytes_unchecked(bytes, hash)
+    }
 
+    #[inline(always)]
+    pub fn intern_fmt(&self, args: fmt::Arguments<'_>) -> VmString {
+        // First pass: calculate final size
+        let mut counter = CountWriter { len: 0 };
+
+        fmt::write(&mut counter, args).expect("formatting failed");
+
+        let len = counter.len;
+
+        // Allocate final destination directly
+        let slice = self
+            .data_buffer
+            .alloc_many(&vec![0u8; len])
+            .expect("Failed to allocate formatted string");
+
+        // Second pass: write directly into arena
+        let mut writer = SliceWriter { buf: slice, pos: 0 };
+
+        fmt::write(&mut writer, args).expect("formatting failed");
+
+        let hash = Self::hash_bytes_simd(writer.buf);
+
+        self.intern_bytes_unchecked(writer.buf, hash)
+    }
+
+    #[inline(always)]
+    fn intern_bytes_unchecked(&self, bytes: &[u8], hash: u64) -> VmString {
         if let Some(collision_list) = self.interned_strings.get(&hash) {
             if let Some(vm_string) = self.find_simd(&collision_list, bytes) {
                 return vm_string;
             }
         }
 
-        self.insert_vm_string(bytes, hash)
-    }
-
-    fn insert_vm_string(&self, bytes: &[u8], hash: u64) -> VmString {
         let slice: &mut [u8] = self
             .data_buffer
             .alloc_many(bytes)
@@ -161,7 +227,7 @@ impl StringPool {
             ptr::copy_nonoverlapping(bytes.as_ptr(), slice.as_mut_ptr(), bytes.len());
         }
 
-        let new_vm_string = VmString {
+        let vm_string = VmString {
             offset: slice.as_ptr(),
             length: bytes.len(),
         };
@@ -169,8 +235,9 @@ impl StringPool {
         self.interned_strings
             .entry(hash)
             .or_default()
-            .push(new_vm_string);
-        new_vm_string
+            .push(vm_string);
+
+        vm_string
     }
 
     #[inline(always)]
