@@ -28,6 +28,7 @@ pub enum CompilerError<'a> {
     ParserError(DiagnosticError<'a>),
 }
 
+#[derive(Debug)]
 pub struct ErrorReporter<'a> {
     pub errors: Vec<CompilerError<'a>>,
     pub source_files: HashMap<String, String>,

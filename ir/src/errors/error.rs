@@ -108,6 +108,13 @@ where
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParseErrorKind {
+    /// A match arm was written without the leading `case` keyword.
+    MatchArmMissingCase {
+        found: TokenKind,
+    },
+    /// A match arm used `=>` where Zeta requires `->`.
+    MatchArmWrongArrow,
+
     /// A specific token was expected but something else appeared.
     UnexpectedToken {
         expected: TokenKind,
@@ -167,6 +174,7 @@ pub enum ParseErrorKind {
 
     ExpectedBlock,
     ExpectedTypeAfterThrows,
+    EmptyString,
 }
 
 impl fmt::Display for ParseErrorKind {
@@ -228,6 +236,14 @@ impl fmt::Display for ParseErrorKind {
             ParseErrorKind::PackageStmtCannotImport => {
                 write!(f, "package path cannot contain a trailing `.Ident`")
             }
+            ParseErrorKind::MatchArmMissingCase { found } => {
+                write!(f, "missing `case` keyword in match arm, found {found}")
+            }
+            ParseErrorKind::MatchArmWrongArrow => write!(
+                f,
+                "Wrong arrow detected: should use the thin arrow `case EnumVariant -> {{}}` instead of the fat arrow `case EnumVariant => {{}}`."
+            ),
+            ParseErrorKind::EmptyString => write!(f, "Expected a non-empty string"),
         }
     }
 }
