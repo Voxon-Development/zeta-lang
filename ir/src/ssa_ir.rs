@@ -11,14 +11,13 @@ impl SsaType {
     }
 
     pub fn is_pointer(&self) -> bool {
-        matches!(self, SsaType::Pointer(_))
+        matches!(self, SsaType::Pointer(_) | SsaType::Owned(_))
     }
 
     pub fn as_pointer(&self) -> Option<&SsaType> {
-        if let SsaType::Pointer(inner) = self {
-            Some(inner)
-        } else {
-            None
+        match self {
+            SsaType::Pointer(inner) | SsaType::Owned(inner) => Some(inner),
+            _ => None,
         }
     }
 
@@ -115,6 +114,10 @@ pub enum IntrinsicOp {
     AlignOf,
     AssertAlign,
     TypeName,
+    AtomicCasU32,
+    AtomicLoadU32,
+    AtomicStoreU32,
+    CpuRelax,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,11 +146,12 @@ pub enum SsaType {
     // Composite types
     User(StrId, Vec<SsaType>), // User-defined type with fields
     Interface(StrId),
-    Enum(Vec<SsaType>),  // Tagged union of types
-    Tuple(Vec<SsaType>), // Fixed-size collection of heterogeneous types
+    Enum(StrId, Vec<SsaType>), // Tagged union of types
+    Tuple(Vec<SsaType>),       // Fixed-size collection of heterogeneous types
 
     // Pointer types
     Pointer(Box<SsaType>), // Pointer to another type
+    Owned(Box<SsaType>),
 
     // Dynamically sized types
     Dyn,                        // Trait object (fat pointer)
@@ -160,6 +164,7 @@ pub enum SsaType {
 
 use crate::ast::FuncModifiers;
 use smallvec::SmallVec;
+use zetaruntime::string_pool::StringPool;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CastKind {
@@ -188,10 +193,6 @@ pub enum CastKind {
 
 #[derive(Debug, Clone)]
 pub enum Instruction {
-    Panic {
-        message: Operand, // string value: pointer to [len:8][bytes...] blob
-    },
-
     Intrinsic {
         dest: Option<Value>,
         op: IntrinsicOp,
@@ -362,8 +363,11 @@ pub struct Function {
 }
 
 impl Function {
-    /// Builds a Function's signature
-    pub fn from_signature(hir_fn: &HirFunc) -> Function {
+    pub fn from_signature(
+        hir_fn: &HirFunc,
+        structs: &HashMap<StrId, HirStruct, FxHashBuilder>,
+        context: &StringPool,
+    ) -> Function {
         let mut params: SmallVec<(Value, SsaType), 8> = SmallVec::new();
         let mut value_types: HashMap<Value, SsaType, FxHashBuilder> =
             HashMap::with_hasher(FxHashBuilder);
@@ -377,7 +381,7 @@ impl Function {
                 let ty = match p {
                     HirParam::This { kind, .. } => {
                         let inner = match hir_fn.impl_target {
-                            Some(struct_name) => SsaType::User(struct_name, vec![]),
+                            Some(target) => Self::this_inner_type(target, structs, context),
                             None => unreachable!(),
                         };
                         match kind {
@@ -395,7 +399,7 @@ impl Function {
 
         let ret_type = lower_type_hir(hir_fn.return_type.as_ref().unwrap_or(&HirType::Void));
 
-        let function = Function {
+        Function {
             name: hir_fn.name,
             params,
             ret_type,
@@ -403,9 +407,66 @@ impl Function {
             value_types,
             entry: BlockId(0),
             function_metadata: hir_fn.function_metadata,
-        };
+        }
+    }
 
-        function
+    fn primitive_ssa_type(name: &str) -> Option<SsaType> {
+        Some(match name {
+            "i8" => SsaType::I8,
+            "i16" => SsaType::I16,
+            "i32" => SsaType::I32,
+            "i64" => SsaType::I64,
+            "i128" => SsaType::I128,
+            "u8" => SsaType::U8,
+            "u16" => SsaType::U16,
+            "u32" => SsaType::U32,
+            "u64" => SsaType::U64,
+            "u128" => SsaType::U128,
+            "isize" => SsaType::Isize,
+            "usize" => SsaType::Usize,
+            "f32" => SsaType::F32,
+            "f64" => SsaType::F64,
+            "bool" => SsaType::Bool,
+            "str" => SsaType::String,
+            "char" => SsaType::Char,
+            _ => return None,
+        })
+    }
+
+    fn this_inner_type(
+        target: StrId,
+        structs: &HashMap<StrId, HirStruct, FxHashBuilder>,
+        context: &StringPool,
+    ) -> SsaType {
+        let name = target.to_string();
+
+        if name == "slice" {
+            return SsaType::Slice(Box::new(SsaType::U8)); // erased element, ptr+len only
+        }
+
+        if let Some(elem_name) = name.strip_prefix("slice_") {
+            if let Some(elem_ty) = Self::primitive_ssa_type(elem_name) {
+                return SsaType::Slice(Box::new(elem_ty));
+            }
+
+            let elem_id = StrId(context.intern(elem_name));
+            if let Some(elem_struct) = structs.get(&elem_id) {
+                let field_types: Vec<SsaType> = elem_struct
+                    .fields
+                    .iter()
+                    .map(|f| lower_type_hir(&f.field_type))
+                    .collect();
+                return SsaType::Slice(Box::new(SsaType::User(elem_id, field_types)));
+            }
+
+            return SsaType::Slice(Box::new(SsaType::Void));
+        }
+
+        if let Some(ty) = Self::primitive_ssa_type(&name) {
+            return ty;
+        }
+
+        SsaType::User(target, vec![])
     }
 }
 
@@ -485,7 +546,6 @@ pub fn inst_is_terminator(inst: &Instruction) -> bool {
             | Instruction::Branch { .. }
             | Instruction::Ret { .. }
             | Instruction::MatchEnum { .. } // lower this to br_table (terminator)
-            | Instruction::Panic { .. }
     )
 }
 
@@ -560,4 +620,16 @@ pub fn cast_kind(src: &SsaType, dst: &SsaType) -> CastKind {
     }
 
     panic!("unsupported cast {:?} -> {:?}", src, dst);
+}
+
+/// Which flavor of allocator interface a struct implements, needed to pick
+/// the free-call shape at drop time
+#[derive(Copy, Clone, Debug)]
+pub enum AllocatorKind {
+    /// Implements `Allocator`: has a `free<T>(&mut this, ^Self T)` that
+    /// internally handles dropping T before freeing
+    Owning,
+    /// Implements only `RawAllocator`: has `free_raw(&mut this, *void, size, align)`,
+    /// which knows nothing about T
+    RawOnly,
 }
