@@ -1,5 +1,5 @@
-use crate::hir_lowerer::utils::type_suffix_with_pool;
 use ir::hir::{HirStruct, HirType, StrId};
+use ir::hir_utils::type_suffix_with_pool;
 use ir::ir_hasher::HashMap;
 use smallvec::SmallVec;
 use std::sync::Arc;

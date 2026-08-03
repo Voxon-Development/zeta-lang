@@ -73,22 +73,11 @@ pub fn instantiate_struct_for_types<'a, 'bump>(
         }
         let mut new_fields = Vec::new();
         for field in new_struct.fields {
-            let field_generics = match field.generics {
-                Some(generics) => {
-                    let mut new_generics = Vec::with_capacity(generics.len());
-                    for ty in generics.iter() {
-                        new_generics.push(substitute_type(ty, &type_map, bump.clone()));
-                    }
-                    Some(bump.alloc_slice_immutable(&new_generics))
-                }
-                None => None,
-            };
             let new_field_type = substitute_type(&field.field_type, &type_map, bump.clone());
             new_fields.push(HirField {
                 name: field.name,
                 visibility: field.visibility,
                 field_type: new_field_type,
-                generics: field_generics,
             });
         }
         new_struct.fields = bump.alloc_slice(&new_fields);

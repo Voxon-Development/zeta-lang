@@ -10,6 +10,9 @@ pub fn substitute_type<'a, 'subs, 'bump>(
 ) -> HirType<'a, 'bump> {
     match ty {
         HirType::Generic(name) => subs.get(name).copied().unwrap_or(*ty),
+        HirType::Slice(inner) => {
+            HirType::Slice(bump.alloc_value_immutable(substitute_type(inner, subs, bump.clone())))
+        }
         HirType::Ref {
             inner,
             mutability_state,
@@ -19,21 +22,30 @@ pub fn substitute_type<'a, 'subs, 'bump>(
             mutability_state: *mutability_state,
             provenance: *provenance,
         },
-        HirType::SafePointer(inner) => HirType::SafePointer(
-            bump.alloc_value_immutable(substitute_type(inner, subs, bump.clone())),
-        ),
-        HirType::UnsafePointer(inner) => HirType::UnsafePointer(
-            bump.alloc_value_immutable(substitute_type(inner, subs, bump.clone())),
-        ),
-        HirType::OwnedPointer(inner) => HirType::OwnedPointer(
-            bump.alloc_value_immutable(substitute_type(inner, subs, bump.clone())),
-        ),
+        HirType::SafePointer {
+            inner,
+            mutability_state,
+        } => HirType::SafePointer {
+            inner: bump.alloc_value_immutable(substitute_type(inner, subs, bump.clone())),
+            mutability_state: *mutability_state,
+        },
+        HirType::UnsafePointer {
+            inner,
+            mutability_state,
+        } => HirType::UnsafePointer {
+            inner: bump.alloc_value_immutable(substitute_type(inner, subs, bump.clone())),
+            mutability_state: *mutability_state,
+        },
+        HirType::OwnedPointer { inner, allocator } => HirType::OwnedPointer {
+            inner: bump.alloc_value_immutable(substitute_type(inner, subs, bump.clone())),
+            allocator: *allocator,
+        },
         HirType::Struct {
             name,
             field_types,
             type_args,
         } => {
-            let new_fields: Vec<_> = field_types
+            let new_fields: Vec<HirType<'a, 'bump>> = field_types
                 .iter()
                 .map(|f| substitute_type(f, subs, bump.clone()))
                 .collect();

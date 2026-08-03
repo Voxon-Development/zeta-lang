@@ -183,13 +183,6 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
                 let body = self.ctx.bump.alloc_slice(&body_vec);
                 HirStmt::Block { body }
             }
-            Stmt::Panic { message, span } => {
-                let hir_msg = self.lower_expr(&message);
-                HirStmt::Panic {
-                    message: self.ctx.bump.alloc_value_immutable(hir_msg),
-                    span,
-                }
-            }
         }
     }
 
@@ -233,13 +226,13 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
         let value = self.lower_expr_expected(
             l.value,
             if l.type_annotation != Type::infer() {
-                self.lower_type(&l.type_annotation)
+                self.lower_type(&l.type_annotation, l.span)
             } else {
                 HirType::Unknown
             },
         );
         let final_type: HirType<'a, 'bump> = if l.type_annotation != Type::infer() {
-            self.lower_type(&l.type_annotation)
+            self.lower_type(&l.type_annotation, l.span)
         } else {
             self.infer_type(&value)
         };
@@ -259,7 +252,7 @@ impl<'a, 'bump> HirLowerer<'a, 'bump> {
             let lower_branch = |error_type: &Type<'a, 'bump>,
                                 binding: Option<StrId>,
                                 body: &'bump Block<'a, 'bump>| {
-                let hir_error_type = self.lower_type(error_type);
+                let hir_error_type = self.lower_type(error_type, l.span);
 
                 // Every named catch branch must correspond to a type the callee actually throws.
                 /*
