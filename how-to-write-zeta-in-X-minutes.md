@@ -11,11 +11,11 @@ func main() {
   	// No stdout for now
     // It'd look like this
     // StdOutWriter would be a zero-sized struct
-    let writer: StdOutWriter = zeta::io.out();
+    let writer: StdOutWriter = zeta::io.stdout();
     writer.writeln("Hello, world!");
 
     // for explicit buffering
-    let buf_writer: BufWriter = BufWriter::new(zeta::io.out());
+    let buf_writer: BufWriter = BufWriter::new(zeta::io.stdout());
     buf_writer.write("Hello");
     buf_writer.writeln(", world!");
     // you may choose to `buf_writer.flush()` or wait until the scope ends and Drop semantics does what it does best.
