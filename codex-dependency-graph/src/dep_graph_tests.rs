@@ -21,8 +21,6 @@ mod tests {
         StrId(p.intern(s))
     }
 
-    /// A zero-width source span that satisfies the lifetime but carries no
-    /// meaningful position information.
     fn dummy_span<'a>() -> SourceSpan<'a> {
         SourceSpan::default()
     }

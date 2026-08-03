@@ -162,11 +162,15 @@ pub struct DepGraph {
 
     /// (module_idx, impl_item_idx, method_idx) -> NodeIdx
     method_index: HashMap<(usize, usize, usize), NodeIdx>,
+
     /// (declaring type name, method name) -> (module_idx, impl_item_idx, method_idx).
     /// Global by design, methods aren't module-scoped for lookup the way
     /// free functions are (a call site knows the receiver's type, not
     /// which module declared the impl).
     method_symbol_table: HashMap<(StrId, StrId), (usize, usize, usize)>,
+
+    current_locals: HashMap<StrId, StrId>,
+    current_self_type: Option<StrId>,
 }
 
 impl DepGraph {
@@ -181,7 +185,91 @@ impl DepGraph {
             unresolved_imports: Vec::new(),
             method_index: HashMap::default(),
             method_symbol_table: HashMap::default(),
+            current_locals: HashMap::default(),
+            current_self_type: None,
         }
+    }
+
+    fn builtin_type_strid(&self, kind: &TypeKind, pool: &StringPool) -> Option<StrId> {
+        let s = match kind {
+            TypeKind::I8 => "i8",
+            TypeKind::I16 => "i16",
+            TypeKind::I32 => "i32",
+            TypeKind::I64 => "i64",
+            TypeKind::U8 => "u8",
+            TypeKind::U16 => "u16",
+            TypeKind::U32 => "u32",
+            TypeKind::U64 => "u64",
+            TypeKind::I128 => "i128",
+            TypeKind::U128 => "u128",
+            TypeKind::F32 => "f32",
+            TypeKind::F64 => "f64",
+            TypeKind::Usize => "usize",
+            TypeKind::Isize => "isize",
+            TypeKind::Boolean => "bool",
+            TypeKind::String => "str",
+            TypeKind::Char => "char",
+            _ => return None,
+        };
+        Some(StrId(pool.intern(s)))
+    }
+
+    fn type_name_of<'a, 'bump>(&self, ty: &Type<'a, 'bump>, pool: &StringPool) -> Option<StrId> {
+        match &ty.kind {
+            TypeKind::Struct { name, path, .. } if path.is_empty() => Some(*name),
+            other => self.builtin_type_strid(other, pool),
+        }
+    }
+
+    fn expr_type_name<'a, 'bump>(
+        &self,
+        expr: &Expr<'a, 'bump>,
+        pool: &StringPool,
+    ) -> Option<StrId> {
+        match expr {
+            Expr::This { .. } => self.current_self_type,
+            Expr::Ident { name, .. } => self.current_locals.get(name).copied(),
+            Expr::String { .. } => Some(StrId(pool.intern("str"))),
+            Expr::Number { .. } => Some(StrId(pool.intern("i64"))),
+            Expr::Decimal { .. } => Some(StrId(pool.intern("f64"))),
+            Expr::Boolean { .. } => Some(StrId(pool.intern("bool"))),
+            Expr::Char { .. } => Some(StrId(pool.intern("char"))),
+            Expr::StructInit { callee, .. } => match callee {
+                Expr::Ident { name, .. } => Some(*name),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn record_method_call_dep<'a, 'bump>(
+        &mut self,
+        object: &Expr<'a, 'bump>,
+        field: StrId,
+        from_node: NodeIdx,
+        pool: &StringPool,
+    ) {
+        let Some(type_name) = self.expr_type_name(object, pool) else {
+            return;
+        };
+        let Some(&(m, i, method_idx)) = self.method_symbol_table.get(&(type_name, field)) else {
+            return;
+        };
+        if let Some(&method_node) = self.method_index.get(&(m, i, method_idx)) {
+            self.add_edge(from_node, method_node);
+        }
+    }
+
+    pub fn register_module_structure<'a, 'bump>(
+        &mut self,
+        module_idx: usize,
+        module: &AstModule<'a, 'bump>,
+        pool: &StringPool,
+    ) {
+        self.remove_module_items(module_idx);
+        self.create_nodes_for_module(module_idx, module, pool);
+        self.populate_symbol_table_for_module(module_idx);
+        self.module_paths.insert(module_idx, module.path.clone());
     }
 
     pub fn module_symbols(
@@ -218,9 +306,6 @@ impl DepGraph {
         self.nodes[idx].hint = None;
     }
 
-    /// Tear down all item-level nodes owned by `module_idx` (func sigs/bodies,
-    /// types, consts, traits, impls) and this module's outgoing import edges.
-    /// The Module node itself is preserved so importers' edges into it stay valid.
     pub fn remove_module_items(&mut self, module_idx: usize) {
         let keys: Vec<ItemKey> = self
             .item_index
@@ -290,7 +375,7 @@ impl DepGraph {
             }
         }
         for (item_idx, stmt) in module.stmts.iter().enumerate() {
-            self.create_node_for_stmt(module_idx, item_idx, stmt);
+            self.create_node_for_stmt(module_idx, item_idx, stmt, pool);
         }
     }
 
@@ -322,9 +407,6 @@ impl DepGraph {
         }
     }
 
-    /// Full incremental update for one module: tear down its old item
-    /// nodes/edges, rebuild from the new AST. Does NOT touch importers,
-    /// caller (Compiler) re-extracts those separately, since it owns the ASTs.
     pub fn update_module_items<'a, 'bump>(
         &mut self,
         module_idx: usize,
@@ -358,10 +440,18 @@ impl DepGraph {
         visited
     }
 
-    /// Resolve a `::`-segmented path to a module index, using the same
-    /// path_index built from `package` declarations during graph construction.
     pub fn resolve_module_path(&self, path: &[StrId]) -> Option<usize> {
         self.path_index.resolve(path)
+    }
+
+    pub fn resolve_global_const(&self, module_idx: usize, name: StrId) -> Option<(usize, usize)> {
+        let &(m, item_idx, tag) = self.symbol_table.get(&(name, module_idx))?;
+
+        if tag == "const" {
+            Some((m, item_idx))
+        } else {
+            None
+        }
     }
 
     pub fn resolve_method(
@@ -374,9 +464,6 @@ impl DepGraph {
             .copied()
     }
 
-    /// Resolve `name` as a function declared directly in `module_idx`,
-    /// returning its (module_idx, item_idx) if found, restricted to function
-    /// declarations (func_sig/func_body), not types/consts/traits.
     pub fn resolve_function_in_module(
         &self,
         module_idx: usize,
@@ -390,8 +477,6 @@ impl DepGraph {
         }
     }
 
-    /// Find all (module_idx, name) pairs across every module where a function
-    /// of this name exists. Used to build "did you mean...?" suggestions.
     pub fn find_function_by_name_anywhere(&self, name: StrId) -> Vec<usize> {
         self.symbol_table
             .iter()
@@ -480,7 +565,7 @@ impl DepGraph {
             }
 
             for (item_idx, stmt) in module.stmts.iter().enumerate() {
-                self.create_node_for_stmt(midx, item_idx, stmt);
+                self.create_node_for_stmt(midx, item_idx, stmt, pool);
             }
         }
     }
@@ -490,6 +575,7 @@ impl DepGraph {
         module_idx: usize,
         item_idx: usize,
         stmt: &Stmt<'a, 'bump>,
+        pool: &StringPool,
     ) {
         match stmt {
             Stmt::FuncDecl(f) => {
@@ -542,7 +628,10 @@ impl DepGraph {
                 self.register_item_node(module_idx, item_idx, "trait", td);
             }
             Stmt::ImplDecl(i) => {
-                let target_name = i.target.struct_name();
+                let target_name = i
+                    .target
+                    .struct_name()
+                    .or_else(|| self.type_name_of(&i.target, pool));
                 let td = self.push_node(
                     NodeKind::TraitImpl {
                         module_idx,
@@ -564,7 +653,6 @@ impl DepGraph {
                         );
                         self.method_index
                             .insert((module_idx, item_idx, method_idx), method_node);
-                        // Method depends on its own impl block (target type, generics, interface).
                         self.add_edge(method_node, td);
                         if let Some(target_name) = target_name {
                             self.method_symbol_table.insert(
@@ -598,8 +686,6 @@ impl DepGraph {
         for ((module_idx, item_idx, tag), node_idx) in entries {
             if let Some(node) = self.nodes.get(node_idx) {
                 if let Some(hint) = node.hint {
-                    // Last writer win, for most declarations there is only
-                    // one entry per (name, module) pair.
                     self.symbol_table
                         .insert((hint, module_idx), (module_idx, item_idx, tag));
                 }
@@ -629,13 +715,24 @@ impl DepGraph {
         match stmt {
             Stmt::Import(imp) => {
                 let seg_vec: Vec<StrId> = imp.path.path.to_vec();
-                if let Some(target_module_idx) = self.path_index.resolve(&seg_vec) {
-                    self.register_import(module_idx, target_module_idx);
-                } else {
-                    self.unresolved_imports.push(UnresolvedImport {
-                        from_module_idx: module_idx,
-                        path: seg_vec,
-                    });
+                match self.path_index.resolve(&seg_vec) {
+                    Some(target_module_idx) => {
+                        ir::zdebug!(
+                            "import resolved: module {module_idx} -> module {target_module_idx} (path {:?})",
+                            seg_vec.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+                        );
+                        self.register_import(module_idx, target_module_idx);
+                    }
+                    None => {
+                        ir::zdebug!(
+                            "import UNRESOLVED: module {module_idx} wants path {:?}",
+                            seg_vec.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+                        );
+                        self.unresolved_imports.push(UnresolvedImport {
+                            from_module_idx: module_idx,
+                            path: seg_vec,
+                        });
+                    }
                 }
             }
 
@@ -645,7 +742,6 @@ impl DepGraph {
                 }
                 if let Some(body_node) = self.lookup_item_node(module_idx, item_idx, "func_body") {
                     self.walk_func_body(f, body_node, module_idx, pool);
-                    // Body always depends on its own signature.
                     if let Some(sig_node) = self.lookup_item_node(module_idx, item_idx, "func_sig")
                     {
                         self.add_edge(body_node, sig_node);
@@ -683,9 +779,22 @@ impl DepGraph {
                 }
             }
 
-            // Everything else at module scope (Package, Module nested decl,
-            // stray Let, etc.) is ignored for dependency purposes.
             _ => {}
+        }
+    }
+
+    fn populate_locals_from_params<'a, 'bump>(
+        &mut self,
+        params: Option<&'bump [Param<'a, 'bump>]>,
+        pool: &StringPool,
+    ) {
+        let Some(params) = params else { return };
+        for p in params {
+            if let Param::Normal(np) = p {
+                if let Some(type_name) = self.type_name_of(&np.type_annotation, pool) {
+                    self.current_locals.insert(np.name, type_name);
+                }
+            }
         }
     }
 
@@ -725,6 +834,9 @@ impl DepGraph {
         module_idx: usize,
         pool: &StringPool,
     ) {
+        self.current_locals.clear();
+        self.current_self_type = None;
+        self.populate_locals_from_params(f.params, pool);
         if let Some(body) = f.body {
             self.walk_block(body, from_node, module_idx, pool);
         }
@@ -822,6 +934,7 @@ impl DepGraph {
                 }
             }
         }
+        let self_type = i.target.struct_name();
         if let Some(methods) = i.methods {
             for (method_idx, m) in methods.iter().enumerate() {
                 let method_node = self
@@ -831,7 +944,11 @@ impl DepGraph {
                     .unwrap_or(from_node);
                 self.walk_func_signature(m, method_node, module_idx, pool);
                 if let Some(body) = m.body {
+                    self.current_locals.clear();
+                    self.current_self_type = self_type;
+                    self.populate_locals_from_params(m.params, pool);
                     self.walk_block(body, method_node, module_idx, pool);
+                    self.current_self_type = None;
                 }
             }
         }
@@ -861,11 +978,6 @@ impl DepGraph {
         pool: &StringPool,
     ) {
         self.add_ast_type_dep(from_node, &field.field_type, module_idx, pool);
-        if let Some(generics) = field.generics {
-            for ty in generics {
-                self.add_ast_type_dep(from_node, ty, module_idx, pool);
-            }
-        }
     }
 
     fn walk_block<'a, 'bump>(
@@ -891,6 +1003,9 @@ impl DepGraph {
             Stmt::Let(l) => {
                 self.add_ast_type_dep(from_node, &l.type_annotation, module_idx, pool);
                 self.walk_expr(l.value, from_node, module_idx, pool);
+                if let Some(type_name) = self.type_name_of(&l.type_annotation, pool) {
+                    self.current_locals.insert(l.ident, type_name);
+                }
             }
             Stmt::Const(c) => {
                 self.walk_const_stmt(c, from_node, module_idx, pool);
@@ -906,8 +1021,6 @@ impl DepGraph {
                 if let Some(else_branch) = i.else_branch {
                     match else_branch {
                         ElseBranch::If(nested) => {
-                            // Recurse by reconstructing as a temporary Stmt reference.
-                            // We borrow nested directly.
                             self.walk_expr(nested.condition, from_node, module_idx, pool);
                             self.walk_block(nested.then_branch, from_node, module_idx, pool);
                             if let Some(eb) = nested.else_branch {
@@ -970,8 +1083,6 @@ impl DepGraph {
             Stmt::ExprStmt(e) => {
                 self.walk_expr(e.expr, from_node, module_idx, pool);
             }
-            // Nested inline function / type declarations inside a body, treat
-            // them as inline dependencies of the enclosing item.
             Stmt::FuncDecl(f) => {
                 self.walk_func_signature(f, from_node, module_idx, pool);
                 if let Some(body) = f.body {
@@ -1040,6 +1151,11 @@ impl DepGraph {
                 arguments,
                 ..
             } => {
+                if let Expr::FieldAccess { object, field, .. } | Expr::Get { object, field, .. } =
+                    callee
+                {
+                    self.record_method_call_dep(object, *field, from_node, pool);
+                }
                 self.walk_expr(callee, from_node, module_idx, pool);
                 for ty in *generic_args {
                     self.add_ast_type_dep(from_node, ty, module_idx, pool);
@@ -1134,11 +1250,6 @@ impl DepGraph {
             }
 
             Expr::ModuleAccess { segments, .. } => {
-                // `member` itself isn't resolved here, that requires knowing whether
-                // it names a type, function, or static field inside the target module,
-                // which is symbol-table-across-modules work better left to the
-                // type-checker. The module-level edge is still useful for compilation
-                // ordering and import-cycle detection, so record it.
                 self.add_module_path_dep(from_node, segments);
             }
             Expr::ArrayLiteral { elements, span: _ } => {
@@ -1178,14 +1289,15 @@ impl DepGraph {
                     self.walk_expr(arg, from_node, module_idx, pool);
                 }
             }
+            Expr::Block(block) => {
+                self.walk_block(block, from_node, module_idx, pool);
+            }
+            Expr::UnsafeBlock(unsafe_block) => {
+                self.walk_block(unsafe_block.block, from_node, module_idx, pool);
+            }
         }
     }
 
-    /// Best-effort fine-grained edge: if `segments` resolves to a known module
-    /// via the path index, add a direct edge from `from_node` to that module's
-    /// node. This is additive to the blanket per-file import edges created by
-    /// `Stmt::Import`, it lets `get_function_callees`-style queries see which
-    /// specific declarations reference a module, not just which files import it.
     fn add_module_path_dep(&mut self, from_node: NodeIdx, segments: &[StrId]) {
         let Some(target_module_idx) = self.path_index.resolve(segments) else {
             return;
@@ -1701,6 +1813,59 @@ impl DepGraph {
             "Node[{}] {} hint={} -> deps={:?}",
             node.idx, kind_str, hint_str, node.deps
         )
+    }
+
+    pub fn modules_in_same_scc(&self, module_idx: usize) -> Vec<usize> {
+        for scc in self.tarjan_scc() {
+            let modules: Vec<usize> = scc
+                .iter()
+                .filter_map(|&ni| match self.nodes.get(ni).map(|n| &n.kind) {
+                    Some(NodeKind::Module { module_idx: m }) => Some(*m),
+                    _ => None,
+                })
+                .collect();
+            if modules.contains(&module_idx) {
+                return modules;
+            }
+        }
+        vec![module_idx]
+    }
+
+    pub fn debug_dump_sccs(&self) {
+        #[cfg(debug_assertions)]
+        {
+            if std::env::var_os("ZETA_DEBUG").is_none() {
+                return;
+            }
+            let sccs = self.tarjan_scc();
+            for (i, scc) in sccs.iter().enumerate() {
+                if scc.len() > 1 {
+                    eprintln!("[zeta-debug] SCC #{i} has {} nodes (CYCLE):", scc.len());
+                    for &ni in scc {
+                        if let Some(node) = self.nodes.get(ni) {
+                            let hint = node
+                                .hint
+                                .map(|h| h.to_string())
+                                .unwrap_or_else(|| "<no-hint>".into());
+                            eprintln!("[zeta-debug]   node[{}] {:?} hint={}", ni, node.kind, hint);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn debug_dump_module_order(&self, module_names: &HashMap<usize, String>) {
+        #[cfg(debug_assertions)]
+        {
+            if std::env::var_os("ZETA_DEBUG").is_none() {
+                return;
+            }
+            for m in self.get_module_compilation_order() {
+                let name = module_names.get(&m).cloned().unwrap_or_default();
+                eprintln!("[zeta-debug] compile order: module {m} ({name})");
+            }
+        }
     }
 }
 
