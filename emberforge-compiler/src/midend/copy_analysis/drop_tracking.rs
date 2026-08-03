@@ -1,17 +1,19 @@
+use std::marker::PhantomData;
+
 use ir::{
     hir::{DropKind, HirExpr, StrId},
     ir_hasher::{HashMap, HashSet},
 };
 
 #[derive(Clone, Debug)]
-pub struct DropLocal {
+pub struct DropLocal<'a, 'bump> {
     pub name: StrId,
-    pub kind: DropKind,
+    pub kind: DropKind<'a, 'bump>,
 }
 
 #[derive(Clone, Debug)]
-pub struct DropScope {
-    pub locals: Vec<DropLocal>,
+pub struct DropScope<'a, 'bump> {
+    pub locals: Vec<DropLocal<'a, 'bump>>,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -21,11 +23,12 @@ pub struct DropLocalState {
 }
 
 #[derive(Default, Clone, Debug)]
-pub struct DropMoveState {
+pub struct DropMoveState<'a, 'bump> {
     pub locals: HashMap<StrId, DropLocalState>,
+    phantom_data: PhantomData<&'bump &'a ()>,
 }
 
-impl DropMoveState {
+impl<'a, 'bump> DropMoveState<'a, 'bump> {
     pub fn mark_whole_moved(&mut self, name: StrId) {
         self.locals.entry(name).or_default().moved_whole = true;
     }
@@ -55,7 +58,10 @@ impl DropMoveState {
     }
 }
 
-pub(crate) fn local_is_droppable(scope_stack: &[DropScope], name: StrId) -> Option<DropKind> {
+pub(crate) fn local_is_droppable<'a, 'bump>(
+    scope_stack: &[DropScope<'a, 'bump>],
+    name: StrId,
+) -> Option<DropKind<'a, 'bump>> {
     scope_stack
         .iter()
         .rev()
@@ -64,9 +70,9 @@ pub(crate) fn local_is_droppable(scope_stack: &[DropScope], name: StrId) -> Opti
         .map(|l| l.kind.clone())
 }
 
-pub fn record_move_if_any(
-    scope_stack: &[DropScope],
-    drop_state: &mut DropMoveState,
+pub fn record_move_if_any<'a, 'bump>(
+    scope_stack: &[DropScope<'a, 'bump>],
+    drop_state: &mut DropMoveState<'a, 'bump>,
     expr: &HirExpr,
 ) {
     match expr {
