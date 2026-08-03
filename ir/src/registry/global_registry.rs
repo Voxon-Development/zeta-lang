@@ -1,10 +1,11 @@
-use crate::hir::{HirFunc, HirInterface, HirStruct, HirType, StrId};
+use crate::hir::{HirEnum, HirFunc, HirInterface, HirStruct, HirType, StrId};
 use crate::ir_hasher::FxHashMap;
 use std::{cell::RefCell, rc::Rc};
 
 #[derive(Clone, Default)]
 pub struct ModuleSymbols {
     pub structs: Vec<StrId>,
+    pub enums: Vec<StrId>,
     pub interfaces: Vec<StrId>,
     pub functions: Vec<StrId>,
     pub struct_interfaces: Vec<StrId>,
@@ -15,6 +16,7 @@ pub struct ModuleSymbols {
 #[derive(Clone)]
 pub struct GlobalRegistry<'a, 'bump> {
     pub structs: Rc<RefCell<FxHashMap<StrId, HirStruct<'a, 'bump>>>>,
+    pub enums: Rc<RefCell<FxHashMap<StrId, HirEnum<'a, 'bump>>>>,
     pub interfaces: Rc<RefCell<FxHashMap<StrId, HirInterface<'a, 'bump>>>>,
     pub functions: Rc<RefCell<FxHashMap<StrId, HirFunc<'a, 'bump>>>>,
     pub struct_interfaces: Rc<RefCell<FxHashMap<StrId, Vec<StrId>>>>,
@@ -40,6 +42,7 @@ impl<'a, 'bump> GlobalRegistry<'a, 'bump> {
     pub fn new() -> Self {
         Self {
             structs: Rc::new(RefCell::new(FxHashMap::default())),
+            enums: Rc::new(RefCell::new(FxHashMap::default())),
             interfaces: Rc::new(RefCell::new(FxHashMap::default())),
             functions: Rc::new(RefCell::new(FxHashMap::default())),
             struct_interfaces: Rc::new(RefCell::new(FxHashMap::default())),
