@@ -2,6 +2,8 @@ package zeta::utils::array_list;
 
 import zeta::libc;
 
+import zeta::alloc::allocator.Allocator;
+
 struct ArrayList<T, A: Allocator> {
     data: ^this.alloc []T,
     alloc: A,
@@ -65,12 +67,12 @@ impl<T, A: Allocator> ArrayList<T, A> {
 
     unsafe func get_unchecked(&this, index: usize): &T {
         let ptr: *const T = this.data as *const T;
-        return &ptr[index];
+        return &*ptr[index];
     }
 
     unsafe func get_unchecked_mut(&mut this, index: usize): &mut T {
         let ptr: *mut T = this.data as *mut T;
-        return &mut ptr[index];
+        return &mut *ptr[index];
     }
 
     func grow(&mut this) {
@@ -81,6 +83,13 @@ impl<T, A: Allocator> ArrayList<T, A> {
                 this.data.cap * 2
             };
 
-        this.data = this.alloc.realloc(this.data, new_cap);
+        this.data = this.alloc.alloc(this.data, new_cap);
+    }
+
+    func as_slice(&this): &[]T {
+        return this.data[0..this.data.len];
+    }
+    func clear(&mut this) {
+        this.data.len = 0;
     }
 }
