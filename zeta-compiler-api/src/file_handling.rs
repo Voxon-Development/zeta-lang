@@ -111,22 +111,21 @@ where
 
     let name = StrId(pool.intern(file_name_str));
 
+    let bump = Arc::new(GrowableAtomicBump::new());
     if contents.is_empty() {
         return Ok(ModuleWithArena {
-            bump: Arc::new(GrowableAtomicBump::new()),
+            bump: bump.clone(),
             name,
             path,
-            stmts: &[],
+            stmts: Vec::new_in(bump),
             parser_diagnostics: scribe_parser::parser::ParserDiagnostics::new(),
-            source: StrId(pool.intern("")),
+            source: String::new(),
         });
     }
 
-    let contents_bytes = contents.as_bytes();
-
     const BASE: usize = 16 * 1024;
     const FOUR_KB: usize = 4 * 1024;
-    let initial_capacity = std::cmp::max(BASE, contents_bytes.len() * 2 + FOUR_KB);
+    let initial_capacity = std::cmp::max(BASE, contents.len() * 2 + FOUR_KB);
 
     let atomic_bump = GrowableAtomicBump::with_capacity_and_aligned(initial_capacity, 8)
         .map_err(|_| CompilerError::FailedToAllocateBump)?;
@@ -137,24 +136,26 @@ where
         let stored = bump
             .alloc_many(bytes)
             .ok_or(CompilerError::FailedToAllocateBump)?;
-        std::str::from_utf8(unsafe { std::slice::from_raw_parts(stored.as_ptr(), bytes.len()) })
-            .unwrap()
+        // SAFETY: Always valid UTF-8
+        unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(stored.as_ptr(), bytes.len()))
+        }
     };
 
-    let source = StrId(pool.intern_bytes(contents_bytes));
-
-    let parse_result =
-        scribe_parser::parser::parse_program(source, file_name_static, pool.clone(), bump.clone());
-
-    let stmts: &'bump [ir::ast::Stmt<'a, 'bump>] = bump.alloc_slice(&parse_result.statements);
+    let parse_result = scribe_parser::parser::parse_program(
+        contents.as_str(),
+        file_name_static,
+        pool.clone(),
+        bump.clone(),
+    );
 
     Ok(ModuleWithArena {
         bump,
         name,
         path,
-        stmts,
+        stmts: parse_result.statements,
         parser_diagnostics: parse_result.diagnostics,
-        source,
+        source: contents,
     })
 }
 

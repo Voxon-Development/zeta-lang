@@ -138,13 +138,17 @@ where
     let mut compiler = Compiler::new()?;
 
     let file_loader = choose_file_loader();
-    let stdlib_diags = compiler.load_directory(&file_loader, &stdlib_path, true)?;
+    let stdlib_diags = compiler
+        .load_directory(&file_loader, &stdlib_path, true)
+        .unwrap_or_else(|e| panic!("Could not load stdlib because of {e}"));
     if stdlib_diags.has_errors() {
         stdlib_diags.report_all();
         return Err(CompilerError::ParserError(vec![]));
     }
 
-    let user_diags = compiler.load_directory(&file_loader, &source_path, false)?;
+    let user_diags = compiler
+        .load_directory(&file_loader, &source_path, false)
+        .unwrap_or_else(|e| panic!("Could not load user directory because of {e}"));
     if user_diags.has_errors() {
         user_diags.report_all();
         return Err(CompilerError::TypeCheckError);

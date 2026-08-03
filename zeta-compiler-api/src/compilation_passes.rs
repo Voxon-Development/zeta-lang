@@ -1,30 +1,9 @@
 use crate::main_structs::CompilerError;
-use codex_dependency_graph::dep_graph::DepGraph;
-use ir::ast::Stmt;
 use ir::errors::reporter::ErrorReporter;
 use ir::hir::{HirModule, StrId};
-use ir::registry::global_registry::GlobalRegistry;
-use scribe_parser::hir_lowerer::HirLowerer;
 use sentinel_typechecker::TypeChecker;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::Arc;
-use zetaruntime::arena::GrowableAtomicBump;
-use zetaruntime::bump::GrowableBump;
-use zetaruntime::string_pool::StringPool;
-
-pub fn pass_hir_lowering<'a, 'bump>(
-    statements: Vec<Stmt<'a, 'bump>, &GrowableBump<'bump>>,
-    context: Arc<StringPool>,
-    bump: Arc<GrowableAtomicBump<'bump>>,
-    dep_graph: &'a RefCell<DepGraph>,
-    module_idx: usize,
-    registry: GlobalRegistry<'a, 'bump>,
-) -> Result<HirModule<'a, 'bump>, CompilerError<'a>> {
-    let mut lowerer = HirLowerer::new(context.clone(), bump.clone(), dep_graph, registry);
-    let module = lowerer.lower_module(statements, module_idx);
-    Ok(module)
-}
 
 pub fn register_all_modules<'a, 'bump>(
     hir_modules: &[HirModule<'a, 'bump>],
@@ -48,8 +27,8 @@ pub fn check_all_module_bodies<'a, 'bump>(
         let file_name_and_content = file_names_and_contents[module_idx];
         checker.check_module_body(module, module_idx);
         error_reporter.add_source_file(
-            file_name_and_content.0.as_str().to_string(),
-            file_name_and_content.1.as_str().to_string(),
+            file_name_and_content.0.to_string(),
+            file_name_and_content.1.to_string(),
         );
     }
     let errors = checker.errors().to_vec();
