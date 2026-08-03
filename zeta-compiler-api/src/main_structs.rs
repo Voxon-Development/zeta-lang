@@ -13,9 +13,9 @@ pub struct ModuleWithArena<'a, 'bump> {
     pub bump: Arc<GrowableAtomicBump<'bump>>,
     pub name: StrId,
     pub path: PathBuf,
-    pub stmts: &'bump [Stmt<'a, 'bump>],
+    pub stmts: Vec<Stmt<'a, 'bump>, Arc<GrowableAtomicBump<'bump>>>,
     pub parser_diagnostics: ParserDiagnostics<'a>,
-    pub source: StrId,
+    pub source: String,
 }
 
 #[derive(Debug)]

@@ -51,11 +51,11 @@ pub fn build_semantic_tokens(
                 item_idx,
                 ..
             } => {
-                let Some(stmts) = state.compiler.ast_stmts(*module_idx) else {
+                let Some(module_with_arena) = state.compiler.module_with_arena(*module_idx) else {
                     continue;
                 };
 
-                match stmts.get(*item_idx) {
+                match module_with_arena.stmts.get(*item_idx) {
                     Some(Stmt::FuncDecl(_)) => 2,
                     Some(Stmt::StructDecl(_)) => 4,
                     Some(Stmt::EnumDecl(_)) => 5,

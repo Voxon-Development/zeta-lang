@@ -9,10 +9,11 @@ use codex_dependency_graph::dep_graph::{AstModule, DepGraph};
 use engraver_assembly_emit::backend::Backend;
 use engraver_assembly_emit::cranelift::cranelift_backend::CraneliftBackend;
 use ir::analysis_context::CopyAnalysisCtx;
-use ir::ast::Stmt;
+use ir::auto_imports::AutoImportRegistry;
 use ir::errors::reporter::ErrorReporter;
+use ir::errors::type_error::{TypeError, TypeErrorKind};
 use ir::hir::{HirModule, StrId};
-use ir::ir_hasher::{HashMap, HashSet};
+use ir::ir_hasher::{FxHashMap, HashMap, HashSet};
 use ir::registry::global_registry::GlobalRegistry;
 use scribe_parser::hir_lowerer::HirLowerer;
 use scribe_parser::hir_lowerer::lambda_hoisting::LambdaHoister;
@@ -29,20 +30,17 @@ pub mod link;
 pub mod main_structs;
 pub mod std_file_loader;
 
-use crate::compilation_passes::pass_hir_lowering;
 use crate::file_loader::FileLoader;
 use crate::main_structs::{CompilerError as BuildError, ModuleWithArena};
 
 pub struct Compiler<'a, 'bump> {
     pool: Arc<StringPool>,
     registry: GlobalRegistry<'a, 'bump>,
+    auto_imports: Rc<RefCell<AutoImportRegistry>>,
 
     dep_graph: &'a RefCell<DepGraph>,
     #[allow(unused)] // Avoids a UB
     dep_graph_storage: Box<RefCell<DepGraph>>,
-
-    lowerer_bump: Box<GrowableBump<'bump>>,
-
     type_checker: Rc<RefCell<TypeChecker<'a, 'bump>>>,
     cpy_ctx: Rc<RefCell<CopyAnalysisCtx<'a, 'bump>>>,
 
@@ -53,6 +51,8 @@ pub struct Compiler<'a, 'bump> {
     hir_modules: HashMap<usize, HirModule<'a, 'bump>>, // pre-monomorphization
     codegen_hir_modules: HashMap<usize, HirModule<'a, 'bump>>, // post-monomorphization
     loaded_sources: HashMap<String, String>,
+    #[allow(unused)] // Avoids a UB
+    lowerer_bump: Box<GrowableBump<'bump>>,
 }
 
 impl<'a, 'bump> Compiler<'a, 'bump>
@@ -80,6 +80,8 @@ where
         let lowerer_bump_ref: &'bump GrowableBump<'bump> =
             unsafe { &*(lowerer_bump.as_ref() as *const GrowableBump<'bump>) };
 
+        let auto_imports = Rc::new(RefCell::new(AutoImportRegistry::new()));
+
         let cpy_ctx = Rc::new(RefCell::new(CopyAnalysisCtx::new(
             &[],
             registry.clone(),
@@ -90,16 +92,18 @@ where
             lowerer_bump_ref,
             cpy_ctx.clone(),
             pool.clone(),
+            auto_imports.clone(),
         )));
 
         Ok(Self {
             pool,
             registry,
+            auto_imports,
             dep_graph,
             dep_graph_storage,
-            lowerer_bump,
             type_checker,
             cpy_ctx,
+            lowerer_bump,
             module_ids: HashMap::default(),
             next_module_idx: 0,
             stdlib_module_ids: HashSet::default(),
@@ -142,54 +146,316 @@ where
         is_stdlib: bool,
     ) -> Result<ErrorReporter<'a>, BuildError<'a>> {
         let files = crate::file_handling::collect_zeta_files(dir)?;
-
         let sources = loader
             .load_files(&files)
             .map_err(|e| BuildError::FailedToReadFile(dir.to_path_buf(), e))?;
 
         let mut reporter = ErrorReporter::new();
+        let mut batch: Vec<(usize, StrId, ModuleWithArena<'a, 'bump>)> = Vec::new();
 
         for file in sources {
-            reporter.merge(self.load_module(&file.path, file.source, is_stdlib)?);
+            let canonical_name = file
+                .path
+                .to_str()
+                .ok_or_else(|| BuildError::InvalidFileName(Vec::new()))?;
+            let name = StrId(self.pool.intern(canonical_name));
+            let module_idx = self.module_idx_for(name);
+
+            let parsed = crate::file_handling::parse_single_file_from_source(
+                self.pool.clone(),
+                file.path,
+                file.source,
+            )?;
+
+            self.loaded_sources
+                .insert(name.to_string(), parsed.source.to_string());
+
+            for perr in &parsed.parser_diagnostics.errors {
+                reporter.add_parser_error(perr.clone());
+            }
+
+            if is_stdlib {
+                self.stdlib_module_ids.insert(module_idx);
+            }
+
+            let ast_module = codex_dependency_graph::dep_graph::AstModule {
+                name,
+                path: parsed.path.clone(),
+                stmts: parsed.stmts.as_slice(),
+            };
+            self.dep_graph.borrow_mut().register_module_structure(
+                module_idx,
+                &ast_module,
+                &self.pool,
+            );
+
+            batch.push((module_idx, name, parsed));
+        }
+
+        for (module_idx, name, parsed) in &batch {
+            let ast_module = codex_dependency_graph::dep_graph::AstModule {
+                name: *name,
+                path: parsed.path.clone(),
+                stmts: parsed.stmts.as_slice(),
+            };
+            self.dep_graph.borrow_mut().extract_edges_for_module(
+                *module_idx,
+                &ast_module,
+                &self.pool,
+            );
+        }
+
+        // stdlib <-> user linking, unchanged semantics.
+        if is_stdlib {
+            for (module_idx, _, _) in &batch {
+                for &existing_idx in self.module_ids.values() {
+                    if existing_idx != *module_idx
+                        && !self.stdlib_module_ids.contains(&existing_idx)
+                    {
+                        self.dep_graph
+                            .borrow_mut()
+                            .register_import(existing_idx, *module_idx);
+                    }
+                }
+            }
+        } else {
+            for (module_idx, _, _) in &batch {
+                for &stdlib_idx in &self.stdlib_module_ids {
+                    self.dep_graph
+                        .borrow_mut()
+                        .register_import(*module_idx, stdlib_idx);
+                }
+            }
+        }
+
+        let mut pending: FxHashMap<usize, (StrId, ModuleWithArena<'a, 'bump>)> = batch
+            .into_iter()
+            .map(|(idx, name, parsed)| (idx, (name, parsed)))
+            .collect();
+
+        let order = self.dep_graph.borrow().get_module_compilation_order();
+
+        #[cfg(debug_assertions)]
+        {
+            use ir::ir_hasher::FxHashMap;
+            let names: FxHashMap<usize, String> = self
+                .module_ids
+                .iter()
+                .map(|(&name, &idx)| (idx, name.to_string()))
+                .collect();
+            self.dep_graph.borrow().debug_dump_sccs();
+            self.dep_graph.borrow().debug_dump_module_order(&names);
+        }
+
+        for (path, source) in &self.loaded_sources {
+            reporter.add_source_file(path.clone(), source.clone());
+        }
+        self.compile_pending_grouped(&order, &mut pending, &mut reporter);
+
+        for (module_idx, (_name, parsed)) in pending {
+            reporter.merge(self.lower_and_check_module(module_idx, parsed));
         }
 
         Ok(reporter)
     }
 
-    fn load_module(
-        &mut self,
-        path: &Path,
-        source: String,
-        is_stdlib: bool,
-    ) -> Result<ErrorReporter<'a>, BuildError<'a>> {
-        let canonical_name = path
-            .to_str()
-            .ok_or_else(|| BuildError::InvalidFileName(Vec::new()))?;
+    fn make_lowerer(&self, parsed: &ModuleWithArena<'a, 'bump>) -> HirLowerer<'a, 'bump> {
+        let module_auto_imports = self.auto_imports.clone();
 
-        let parsed = crate::file_handling::parse_single_file_from_source(
+        HirLowerer::new(
             self.pool.clone(),
-            path.to_path_buf(),
-            source,
-        )?;
-        let reporter = self.ingest_parsed_module(canonical_name, parsed, is_stdlib);
-
-        Ok(reporter)
+            parsed.bump.clone(),
+            self.dep_graph,
+            self.registry.clone(),
+            module_auto_imports,
+        )
     }
 
-    fn load_module_from_disk(
+    fn lower_module_bodies_phase(
         &mut self,
-        path: &Path,
-        is_stdlib: bool,
-    ) -> Result<ErrorReporter<'a>, BuildError<'a>> {
-        let canonical_name = path
-            .to_str()
-            .ok_or_else(|| BuildError::InvalidFileName(Vec::new()))?;
+        module_idx: usize,
+        mut lowerer: HirLowerer<'a, 'bump>,
+        parsed: ModuleWithArena<'a, 'bump>,
+        reporter: &mut ErrorReporter<'a>,
+    ) -> Option<HirLowerer<'a, 'bump>> {
+        let hir = lowerer.lower_module_bodies(&parsed.stmts, module_idx);
 
-        let parsed =
-            crate::file_handling::parse_single_file(self.pool.clone(), path.to_path_buf())?;
-        let reporter = self.ingest_parsed_module(canonical_name, parsed, is_stdlib);
+        for err in lowerer.lowering_errors().iter() {
+            reporter.add_type_error(TypeError {
+                kind: TypeErrorKind::Generic(err.0.clone()),
+                span: err.1.clone(),
+            });
+        }
 
-        Ok(reporter)
+        self.hir_modules.insert(module_idx, hir);
+        self.modules.insert(module_idx, parsed);
+
+        if reporter.has_errors() {
+            None
+        } else {
+            Some(lowerer)
+        }
+    }
+
+    fn monomorphize_module(&mut self, module_idx: usize, lowerer: HirLowerer<'a, 'bump>) {
+        let checked_hir = self.hir_modules[&module_idx];
+        let bump = &self.modules.get(&module_idx).unwrap().bump;
+
+        let hoister = LambdaHoister::new(bump.clone(), self.pool.clone(), checked_hir.name);
+        let hoisted_module = hoister.run(checked_hir);
+
+        let monomorphizer = Monomorphizer::new(
+            self.pool.clone(),
+            bump.clone(),
+            lowerer.ctx.functions.clone(),
+            &lowerer.ctx,
+            self.registry.instantiated_functions.clone(),
+            self.registry.instantiated_structs.clone(),
+            self.registry.instantiated_struct_origins.clone(),
+        );
+        let monomorphized_module = monomorphizer.run(hoisted_module);
+
+        self.codegen_hir_modules
+            .insert(module_idx, monomorphized_module);
+    }
+
+    fn compile_pending_grouped(
+        &mut self,
+        order: &[usize],
+        pending: &mut FxHashMap<usize, (StrId, ModuleWithArena<'a, 'bump>)>,
+        reporter: &mut ErrorReporter<'a>,
+    ) {
+        let mut seen: HashSet<usize> = HashSet::default();
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        for &module_idx in order {
+            if !seen.insert(module_idx) {
+                continue;
+            }
+            let scc = self.dep_graph.borrow().modules_in_same_scc(module_idx);
+            for &m in &scc {
+                seen.insert(m);
+            }
+            groups.push(scc);
+        }
+
+        for group in &groups {
+            let mut lowerers: FxHashMap<usize, HirLowerer<'a, 'bump>> = FxHashMap::default();
+            let mut group_parsed: FxHashMap<usize, ModuleWithArena<'a, 'bump>> =
+                FxHashMap::default();
+            for &module_idx in group {
+                if let Some((_name, parsed)) = pending.remove(&module_idx) {
+                    let mut lowerer = self.make_lowerer(&parsed);
+                    lowerer.lower_module_types(&parsed.stmts, module_idx);
+                    lowerers.insert(module_idx, lowerer);
+                    group_parsed.insert(module_idx, parsed);
+                }
+            }
+
+            for &module_idx in group {
+                if let (Some(lowerer), Some(parsed)) =
+                    (lowerers.get_mut(&module_idx), group_parsed.get(&module_idx))
+                {
+                    lowerer.lower_module_prototypes(&parsed.stmts, module_idx);
+                }
+            }
+
+            let mut ready: Vec<(usize, HirLowerer<'a, 'bump>)> = Vec::new();
+            for &module_idx in group {
+                let (Some(lowerer), Some(parsed)) = (
+                    lowerers.remove(&module_idx),
+                    group_parsed.remove(&module_idx),
+                ) else {
+                    continue;
+                };
+                if let Some(lowerer) =
+                    self.lower_module_bodies_phase(module_idx, lowerer, parsed, reporter)
+                {
+                    ready.push((module_idx, lowerer));
+                }
+            }
+
+            {
+                let mut checker = self.type_checker.borrow_mut();
+                for &(module_idx, _) in &ready {
+                    if let Some(hir) = self.hir_modules.get(&module_idx) {
+                        checker.register_module(hir, module_idx);
+                    }
+                }
+            }
+
+            let updated: Vec<(usize, &HirModule<'a, 'bump>)> = ready
+                .iter()
+                .filter_map(|&(m, _)| self.hir_modules.get(&m).map(|h| (m, h)))
+                .collect();
+            self.cpy_ctx.borrow_mut().recompute(&updated);
+
+            {
+                let mut checker = self.type_checker.borrow_mut();
+                for &(module_idx, _) in &ready {
+                    if let Some(hir) = self.hir_modules.get(&module_idx) {
+                        checker.check_module_body(hir, module_idx);
+                    }
+                }
+                for err in checker.take_errors() {
+                    reporter.add_type_error(err);
+                }
+            }
+
+            for (module_idx, lowerer) in ready {
+                self.monomorphize_module(module_idx, lowerer);
+            }
+        }
+    }
+
+    fn lower_and_check_module(
+        &mut self,
+        module_idx: usize,
+        parsed: ModuleWithArena<'a, 'bump>,
+    ) -> ErrorReporter<'a> {
+        let mut reporter = self.make_reporter();
+        let mut lowerer = self.make_lowerer(&parsed);
+        lowerer.lower_module_prototypes(&parsed.stmts, module_idx);
+
+        let Some(lowerer) =
+            self.lower_module_bodies_phase(module_idx, lowerer, parsed, &mut reporter)
+        else {
+            return reporter;
+        };
+
+        let invalidation_set = self
+            .dep_graph
+            .borrow()
+            .reverse_deps_transitive_modules(module_idx);
+
+        {
+            let mut checker = self.type_checker.borrow_mut();
+            for &m in &invalidation_set {
+                if let Some(hir) = self.hir_modules.get(&m) {
+                    checker.register_module(hir, m);
+                }
+            }
+        }
+
+        let updated: Vec<(usize, &HirModule<'a, 'bump>)> = invalidation_set
+            .iter()
+            .filter_map(|&m| self.hir_modules.get(&m).map(|h| (m, h)))
+            .collect();
+        self.cpy_ctx.borrow_mut().recompute(&updated);
+
+        {
+            let mut checker = self.type_checker.borrow_mut();
+            for &m in &invalidation_set {
+                if let Some(hir) = self.hir_modules.get(&m) {
+                    checker.check_module_body(hir, m);
+                }
+            }
+            for err in checker.take_errors() {
+                reporter.add_type_error(err);
+            }
+        }
+
+        self.monomorphize_module(module_idx, lowerer);
+        reporter
     }
 
     pub fn emit(
@@ -235,8 +501,8 @@ where
         }
     }
 
-    pub fn ast_stmts(&self, module_idx: usize) -> Option<&'bump [Stmt<'a, 'bump>]> {
-        self.modules.get(&module_idx).map(|m| m.stmts)
+    pub fn module_with_arena(&self, module_idx: usize) -> Option<&ModuleWithArena<'a, 'bump>> {
+        self.modules.get(&module_idx)
     }
 
     fn module_idx_for(&mut self, canonical_name: StrId) -> usize {
@@ -279,31 +545,25 @@ where
             return reporter;
         }
 
-        let bump = GrowableBump::new(4096, 8);
-        let mut stmt_vec: Vec<Stmt<'a, 'bump>, &GrowableBump<'bump>> = Vec::new_in(&bump);
-        for stmt in parsed.stmts {
-            stmt_vec.push(*stmt);
-        }
-
-        let hir = match pass_hir_lowering(
-            stmt_vec,
+        let mut lowerer = HirLowerer::new(
             self.pool.clone(),
             parsed.bump.clone(),
             self.dep_graph,
-            module_idx,
             self.registry.clone(),
-        ) {
-            Ok(h) => h,
-            Err(e) => {
-                eprintln!("error: {}", e);
-                return reporter;
-            }
-        };
+            self.auto_imports.clone(),
+        );
+        let hir = lowerer.lower_module(&parsed.stmts, module_idx);
+        for err in lowerer.lowering_errors().iter() {
+            reporter.add_type_error(TypeError {
+                kind: TypeErrorKind::Generic(err.0.clone()),
+                span: err.1,
+            });
+        }
 
         let ast_module = AstModule {
             name: canonical_name,
             path: parsed.path.clone(),
-            stmts: parsed.stmts,
+            stmts: parsed.stmts.as_slice(),
         };
 
         let importers = self.dep_graph.borrow().get_module_importers(module_idx);
@@ -317,7 +577,7 @@ where
                 let imp_ast = codex_dependency_graph::dep_graph::AstModule {
                     name: imp_module.name,
                     path: parsed.path.clone(),
-                    stmts: imp_module.stmts,
+                    stmts: imp_module.stmts.as_slice(),
                 };
                 self.dep_graph
                     .borrow_mut()
@@ -333,7 +593,6 @@ where
             .borrow()
             .reverse_deps_transitive_modules(module_idx);
 
-        self.registry.unregister_module(canonical_name);
         {
             let mut checker = self.type_checker.borrow_mut();
             for &m in &invalidation_set {
@@ -368,10 +627,68 @@ where
         stdlib_path: &Path,
     ) -> Result<ErrorReporter<'a>, BuildError<'a>> {
         let stdlib_files = crate::file_handling::collect_zeta_files(stdlib_path)?;
-
         let mut reporter = ErrorReporter::new();
-        for file in stdlib_files {
-            reporter.merge(self.load_module_from_disk(&file, true)?);
+        let mut batch: Vec<(usize, StrId, ModuleWithArena<'a, 'bump>)> = Vec::new();
+
+        for path in &stdlib_files {
+            let canonical_name = path
+                .to_str()
+                .ok_or_else(|| BuildError::InvalidFileName(Vec::new()))?;
+            let name = StrId(self.pool.intern(canonical_name));
+            let module_idx = self.module_idx_for(name);
+
+            let parsed = crate::file_handling::parse_single_file(self.pool.clone(), path.clone())?;
+
+            self.loaded_sources.insert(
+                parsed.path.to_string_lossy().to_string(),
+                parsed.source.to_string(),
+            );
+
+            if parsed.parser_diagnostics.has_errors() {
+                for perr in &parsed.parser_diagnostics.errors {
+                    reporter.add_parser_error(perr.clone());
+                }
+                continue;
+            }
+
+            self.stdlib_module_ids.insert(module_idx);
+
+            let ast_module = codex_dependency_graph::dep_graph::AstModule {
+                name,
+                path: parsed.path.clone(),
+                stmts: parsed.stmts.as_slice(),
+            };
+            self.dep_graph.borrow_mut().register_module_structure(
+                module_idx,
+                &ast_module,
+                &self.pool,
+            );
+            batch.push((module_idx, name, parsed));
+        }
+
+        for (module_idx, name, parsed) in &batch {
+            let ast_module = codex_dependency_graph::dep_graph::AstModule {
+                name: *name,
+                path: parsed.path.clone(),
+                stmts: parsed.stmts.as_slice(),
+            };
+            self.dep_graph.borrow_mut().extract_edges_for_module(
+                *module_idx,
+                &ast_module,
+                &self.pool,
+            );
+        }
+
+        let order = self.dep_graph.borrow().get_module_compilation_order();
+        let mut pending: FxHashMap<usize, (StrId, ModuleWithArena<'a, 'bump>)> = batch
+            .into_iter()
+            .map(|(idx, name, parsed)| (idx, (name, parsed)))
+            .collect();
+
+        self.compile_pending_grouped(&order, &mut pending, &mut reporter);
+
+        for (module_idx, (_name, parsed)) in pending {
+            reporter.merge(self.lower_and_check_module(module_idx, parsed));
         }
 
         Ok(reporter)
@@ -384,146 +701,6 @@ where
             reporter.add_source_file(path.clone(), source.clone());
         }
 
-        reporter
-    }
-
-    fn ingest_parsed_module(
-        &mut self,
-        name: &str,
-        parsed: ModuleWithArena<'a, 'bump>,
-        is_stdlib: bool,
-    ) -> ErrorReporter<'a> {
-        let canonical_name = StrId(self.pool.intern(name));
-        let module_idx = self.module_idx_for(canonical_name);
-
-        self.loaded_sources.insert(
-            parsed.path.to_string_lossy().to_string(),
-            parsed.source.to_string(),
-        );
-        let mut reporter = self.make_reporter();
-        for perr in &parsed.parser_diagnostics.errors {
-            reporter.add_parser_error(perr.clone());
-        }
-
-        if parsed.parser_diagnostics.has_errors() {
-            return reporter;
-        }
-
-        if is_stdlib {
-            self.stdlib_module_ids.insert(module_idx);
-        }
-
-        let mut stmt_vec = Vec::new_in(self.lowerer_bump.as_ref());
-        for stmt in parsed.stmts {
-            stmt_vec.push(*stmt);
-        }
-
-        let ast_module = codex_dependency_graph::dep_graph::AstModule {
-            name: canonical_name,
-            path: parsed.path.clone(),
-            stmts: parsed.stmts,
-        };
-
-        // Register this module's import edges FIRST, so lower_module can see them.
-        self.dep_graph
-            .borrow_mut()
-            .update_module_items(module_idx, &ast_module, &self.pool);
-
-        let mut lowerer = HirLowerer::new(
-            self.pool.clone(),
-            parsed.bump.clone(),
-            self.dep_graph,
-            self.registry.clone(),
-        );
-        let hir = lowerer.lower_module(stmt_vec, module_idx);
-        self.hir_modules.insert(module_idx, hir);
-
-        let importers = { self.dep_graph.borrow().get_module_importers(module_idx) };
-        for imp_idx in importers {
-            if let Some(imp_module) = self.modules.get(&imp_idx) {
-                let imp_ast = codex_dependency_graph::dep_graph::AstModule {
-                    name: imp_module.name,
-                    path: parsed.path.clone(),
-                    stmts: imp_module.stmts,
-                };
-                self.dep_graph
-                    .borrow_mut()
-                    .extract_edges_for_module(imp_idx, &imp_ast, &self.pool);
-            }
-        }
-
-        if is_stdlib {
-            for &existing_idx in self.module_ids.values() {
-                if existing_idx != module_idx && !self.stdlib_module_ids.contains(&existing_idx) {
-                    self.dep_graph
-                        .borrow_mut()
-                        .register_import(existing_idx, module_idx);
-                }
-            }
-        } else {
-            for &stdlib_idx in &self.stdlib_module_ids {
-                self.dep_graph
-                    .borrow_mut()
-                    .register_import(module_idx, stdlib_idx);
-            }
-        }
-
-        let invalidation_set = {
-            self.dep_graph
-                .borrow()
-                .reverse_deps_transitive_modules(module_idx)
-        };
-
-        self.registry.unregister_module(canonical_name);
-        {
-            let mut checker = self.type_checker.borrow_mut();
-            for &m in &invalidation_set {
-                if let Some(hir) = self.hir_modules.get(&m) {
-                    checker.register_module(hir, m);
-                }
-            }
-        }
-
-        let updated: Vec<(usize, &HirModule<'a, 'bump>)> = invalidation_set
-            .iter()
-            .filter_map(|&m| self.hir_modules.get(&m).map(|h| (m, h)))
-            .collect();
-        self.cpy_ctx.borrow_mut().recompute(&updated);
-
-        {
-            {
-                let mut checker = self.type_checker.borrow_mut();
-                for &m in &invalidation_set {
-                    if let Some(hir) = self.hir_modules.get(&m) {
-                        checker.check_module_body(hir, m);
-                    }
-                }
-            }
-            let mut checker = self.type_checker.borrow_mut();
-            for err in checker.take_errors() {
-                reporter.add_type_error(err);
-            }
-        }
-
-        let checked_hir = self.hir_modules[&module_idx];
-
-        let hoister = LambdaHoister::new(parsed.bump.clone(), self.pool.clone(), checked_hir.name);
-        let hoisted_module = hoister.run(checked_hir);
-
-        let monomorphizer = Monomorphizer::new(
-            self.pool.clone(),
-            parsed.bump.clone(),
-            lowerer.ctx.functions.clone(),
-            &lowerer.ctx,
-            self.registry.instantiated_functions.clone(),
-            self.registry.instantiated_structs.clone(),
-            self.registry.instantiated_struct_origins.clone(),
-        );
-        let monomorphized_module = monomorphizer.run(hoisted_module);
-
-        self.modules.insert(module_idx, parsed);
-        self.codegen_hir_modules
-            .insert(module_idx, monomorphized_module);
         reporter
     }
 

@@ -560,9 +560,9 @@ fn hover_at(state: &ServerState, params: &HoverParams) -> Option<Hover> {
 fn strip_container<'a, 'b, 'bump>(ty: &'b HirType<'a, 'bump>) -> &'b HirType<'a, 'bump> {
     match ty {
         HirType::Ref { inner, .. } => strip_container(inner),
-        HirType::SafePointer(inner) => strip_container(inner),
-        HirType::UnsafePointer(inner) => strip_container(inner),
-        HirType::OwnedPointer(inner) => strip_container(inner),
+        HirType::SafePointer { inner, .. } => strip_container(inner),
+        HirType::UnsafePointer { inner, .. } => strip_container(inner),
+        HirType::OwnedPointer { inner, .. } => strip_container(inner),
         _ => ty,
     }
 }
@@ -575,10 +575,10 @@ fn document_symbols_at(
     let doc = state.documents.get(uri)?;
     let module_idx = state.compiler.module_idx_for_path(&doc.path)?;
     let source = state.compiler.source_text(module_idx)?;
-    let stmts = state.compiler.ast_stmts(module_idx)?;
+    let module_with_arena = state.compiler.module_with_arena(module_idx)?;
 
     let mut symbols = Vec::new();
-    for stmt in stmts {
+    for stmt in &module_with_arena.stmts {
         let (name, kind, span) = match stmt {
             Stmt::FuncDecl(f) => (f.name.to_string(), SymbolKind::FUNCTION, f.span),
             Stmt::StructDecl(s) => (s.name.to_string(), SymbolKind::STRUCT, s.span),
@@ -697,10 +697,10 @@ fn references_at(state: &ServerState, params: &ReferenceParams) -> Vec<Location>
         if !include_declaration {
             return vec![];
         }
-        let Some(stmts) = state.compiler.ast_stmts(m) else {
+        let Some(module_with_arena) = state.compiler.module_with_arena(m) else {
             return vec![];
         };
-        let Some(span) = item_decl_span(stmts, item_idx, tag) else {
+        let Some(span) = item_decl_span(&module_with_arena.stmts, item_idx, tag) else {
             return vec![];
         };
         let Some(target_path) = state.compiler.path_for_module(m) else {
