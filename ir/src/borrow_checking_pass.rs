@@ -90,6 +90,47 @@ impl BorrowChecker {
         eprintln!("=============================");
     }
 
+    fn ancestor_crosses_indirection(
+        &self,
+        ancestor: PlaceId,
+        mut descendant: PlaceId,
+    ) -> Option<bool> {
+        if ancestor == descendant {
+            return None;
+        }
+        let mut crossed = false;
+        while let Some(place) = self.places.get(&descendant) {
+            if matches!(
+                place.projection,
+                Some(Projection::Index { .. }) | Some(Projection::Deref)
+            ) {
+                crossed = true;
+            }
+            match place.parent {
+                Some(parent) if parent == ancestor => return Some(crossed),
+                Some(parent) => descendant = parent,
+                None => return None,
+            }
+        }
+        None
+    }
+
+    fn shell_exempt(
+        &self,
+        place: PlaceId,
+        kind: BorrowKind,
+        loan_place: PlaceId,
+        loan_kind: BorrowKind,
+    ) -> bool {
+        if let Some(true) = self.ancestor_crosses_indirection(place, loan_place) {
+            return kind == BorrowKind::Shared;
+        }
+        if let Some(true) = self.ancestor_crosses_indirection(loan_place, place) {
+            return loan_kind == BorrowKind::Shared;
+        }
+        false
+    }
+
     fn alloc_place_id(&mut self) -> PlaceId {
         let id = self.next_place;
         self.next_place.0 += 1;
@@ -126,6 +167,11 @@ impl BorrowChecker {
 
         for loan_id in loans {
             let loan = &self.active_loans[loan_id];
+
+            if self.shell_exempt(place, kind, loan.place, loan.kind) {
+                continue;
+            }
+
             // Only a PROVEN overlap blocks creation. An Unknown relation is not
             // rejected here, the program may go on to establish disjointness
             // (e.g. via a runtime pointer-identity check) before either
@@ -140,6 +186,39 @@ impl BorrowChecker {
                         }
                     });
                 }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn check_use_shell(&self, place: PlaceId, kind: BorrowKind) -> BorrowResult<()> {
+        let root = self.place_roots[&place];
+        let Some(loans) = self.root_loans.get(&root) else {
+            return Ok(());
+        };
+
+        for loan_id in loans {
+            let loan = &self.active_loans[loan_id];
+
+            if loan.place == place || self.place_is_ancestor(loan.place, place) {
+                continue;
+            }
+
+            if self.shell_exempt(place, kind, loan.place, loan.kind) {
+                continue;
+            }
+
+            match self.overlaps(place, loan.place)? {
+                MemoryRelation::Disjoint => {}
+                MemoryRelation::Overlap | MemoryRelation::Unknown
+                    if kind == BorrowKind::Mutable || loan.kind == BorrowKind::Mutable =>
+                {
+                    return Err(BorrowError::UnknownAlias {
+                        lhs: place,
+                        rhs: loan.place,
+                    });
+                }
+                _ => {}
             }
         }
         Ok(())

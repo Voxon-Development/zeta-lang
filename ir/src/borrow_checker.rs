@@ -17,6 +17,13 @@ pub struct PlaceId(pub u32);
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct LoanId(pub u32);
 
+#[derive(Debug, Clone, Default)]
+pub enum ReadTemplate {
+    Paths(Vec<Vec<TemplateProjection>>),
+    #[default]
+    Opaque,
+}
+
 /// Provenance node.
 ///
 /// Every reference carries exactly one provenance.
