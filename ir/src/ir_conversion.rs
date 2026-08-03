@@ -46,40 +46,89 @@ pub fn lower_type_hir(ty: &HirType) -> SsaType {
             SsaType::User(*name, args.iter().map(lower_type_hir).collect())
         }
         HirType::Void => SsaType::Void,
-        HirType::SafePointer(inner) | HirType::UnsafePointer(inner) => {
-            SsaType::Pointer(Box::new(lower_type_hir(inner)))
+        HirType::SafePointer { inner, .. } | HirType::UnsafePointer { inner, .. } => {
+            // `*dyn T` / `[*]dyn T`: don't drill into the interface's own
+            // field layout, that's only meaningful for the implementor.
+            // A pointer-to-dyn is vtable-dispatched, same shape regardless
+            // of which concrete type is behind it.
+            match inner {
+                HirType::DynInterface(name, _) => {
+                    SsaType::Pointer(Box::new(SsaType::Interface(*name)))
+                }
+                HirType::Dyn { bounds } => {
+                    let iface = bounds.iter().find_map(|b| match b {
+                        HirType::DynInterface(name, _) => Some(*name),
+                        _ => None,
+                    });
+                    match iface {
+                        Some(name) => SsaType::Pointer(Box::new(SsaType::Interface(name))),
+                        None => SsaType::Pointer(Box::new(SsaType::Dyn)),
+                    }
+                }
+                _ => SsaType::Pointer(Box::new(lower_type_hir(inner))),
+            }
         }
+        HirType::OwnedPointer { inner, .. } => SsaType::Owned(Box::new(lower_type_hir(inner))),
         HirType::Lambda { .. } => {
             unreachable!()
         }
-        HirType::Generic(name) => {
-            // Generics are typically resolved at monomorphization time
-            // For now, represent as a user type with the generic name
-            SsaType::User(*name, vec![])
-        }
-        HirType::This => {
-            // This should have been replaced with the actual struct type before lowering
-            // If we get here, treat it as a generic user type
-            SsaType::Dyn
-        }
+        HirType::Generic(name) => panic!(
+            "[lower_type_hir] unsubstituted generic parameter `{}` reached MIR lowering; \
+             monomorphization should have resolved every HirType::Generic before this point",
+            name
+        ),
+        HirType::This => SsaType::Dyn,
         HirType::Null => SsaType::Void,
         HirType::Char => SsaType::Char,
         HirType::Ref {
             inner,
             mutability_state: _,
             provenance: _,
-        } => SsaType::Pointer(Box::new(lower_type_hir(inner))),
+        } => {
+            // Same rationale as SafePointer/UnsafePointer above: `&dyn T`
+            // is a vtable-dispatched reference, not a pointer to a struct
+            // shaped like the interface's own fields.
+            match inner {
+                HirType::DynInterface(name, _) => {
+                    SsaType::Pointer(Box::new(SsaType::Interface(*name)))
+                }
+                HirType::Dyn { bounds } => {
+                    let iface = bounds.iter().find_map(|b| match b {
+                        HirType::DynInterface(name, _) => Some(*name),
+                        _ => None,
+                    });
+                    match iface {
+                        Some(name) => SsaType::Pointer(Box::new(SsaType::Interface(name))),
+                        None => SsaType::Pointer(Box::new(SsaType::Dyn)),
+                    }
+                }
+                _ => SsaType::Pointer(Box::new(lower_type_hir(inner))),
+            }
+        }
         HirType::Nullable(hir_type) => SsaType::Nullable(Box::new(lower_type_hir(hir_type))),
-        HirType::Dyn { bounds: _ } => todo!(),
-        HirType::Unknown => todo!(),
+        HirType::Dyn { bounds } => {
+            let iface = bounds.iter().find_map(|b| match b {
+                HirType::DynInterface(name, _) => Some(*name),
+                _ => None,
+            });
+            match iface {
+                Some(name) => SsaType::Interface(name),
+                None => SsaType::Dyn,
+            }
+        }
+        HirType::Unknown => unreachable!(),
         HirType::Tuple(args) => SsaType::Tuple(args.iter().map(lower_type_hir).collect()),
         HirType::Array(hir_type, length) => {
             SsaType::Array(Box::new(lower_type_hir(hir_type)), *length)
         }
         HirType::Slice(hir_type) => SsaType::Slice(Box::new(lower_type_hir(hir_type))),
-        HirType::OwnedPointer(_hir_type) => todo!(),
         HirType::Usize => SsaType::Usize,
         HirType::Isize => SsaType::Isize,
+        HirType::Never => SsaType::Void,
+        HirType::Range { elem, inclusive: _ } => {
+            let elem_ssa = lower_type_hir(elem);
+            SsaType::Tuple(vec![elem_ssa.clone(), elem_ssa])
+        }
     }
 }
 

@@ -116,12 +116,21 @@ pub enum IntrinsicKind {
     AlignOf,
     AssertAlign,
     TypeName,
+    Own,
+    AtomicCasU32,
+    AtomicLoadU32,
+    AtomicStoreU32,
+    CpuRelax,
+    Unreachable,
+    Reinterpret,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ProvenanceRoot {
     Var(StrId),
     ThisRoot,
+    Global { module_idx: usize, name: StrId },
+    ImplicitParam(u32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -141,6 +150,8 @@ impl fmt::Display for ProvenanceRoot {
         match self {
             ProvenanceRoot::Var(name) => write!(f, "{name}"),
             ProvenanceRoot::ThisRoot => write!(f, "self"),
+            ProvenanceRoot::Global { name, .. } => write!(f, "{name}"),
+            ProvenanceRoot::ImplicitParam(_) => todo!(),
         }
     }
 }
@@ -256,8 +267,6 @@ where
     pub name: StrId,
     pub field_type: HirType<'a, 'bump>,
     pub visibility: Visibility,
-    /// Generic type parameters for this field
-    pub generics: Option<&'bump [HirType<'a, 'bump>]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -368,14 +377,23 @@ where
     },
     DynInterface(StrId, &'bump [HirType<'a, 'bump>]),
     Enum(StrId, &'bump [HirType<'a, 'bump>]),
-    SafePointer(&'a HirType<'a, 'bump>),
+    SafePointer {
+        inner: &'a HirType<'a, 'bump>,
+        mutability_state: MutabilityState,
+    },
     Ref {
         inner: &'a HirType<'a, 'bump>,
         mutability_state: MutabilityState,
         provenance: Option<ProvenanceAnnotation<'bump>>,
     },
-    UnsafePointer(&'a HirType<'a, 'bump>),
-    OwnedPointer(&'bump HirType<'a, 'bump>),
+    UnsafePointer {
+        inner: &'a HirType<'a, 'bump>,
+        mutability_state: MutabilityState,
+    },
+    OwnedPointer {
+        inner: &'bump HirType<'a, 'bump>,
+        allocator: Option<ProvenanceAnnotation<'bump>>, // None until typecheck resolves it
+    },
     Lambda {
         params: &'bump [HirType<'a, 'bump>],
         return_type: &'a HirType<'a, 'bump>,
@@ -398,6 +416,11 @@ where
     Slice(&'a HirType<'a, 'bump>),
     Usize,
     Isize,
+    Never,
+    Range {
+        elem: &'a HirType<'a, 'bump>,
+        inclusive: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -415,10 +438,6 @@ pub enum HirStmt<'a, 'bump>
 where
     'bump: 'a,
 {
-    Panic {
-        message: &'bump HirExpr<'a, 'bump>,
-        span: SourceSpan<'a>,
-    },
     Let {
         name: StrId,
         ty: HirType<'a, 'bump>,
@@ -504,12 +523,18 @@ pub enum HirPattern<'bump> {
     Ident(StrId),
     Number(i64),
     String(StrId),
+    Boolean(bool),
     Tuple(&'bump [HirPattern<'bump>]),
+    Array(&'bump [HirPattern<'bump>]),
+    Struct {
+        name: StrId,
+        fields: &'bump [(StrId, HirPattern<'bump>)],
+    },
     EnumVariant {
-        enum_name: StrId,
         variant: StrId,
         bindings: &'bump [StrId],
     },
+    Or(&'bump [HirPattern<'bump>]),
     Wildcard,
 }
 
@@ -657,6 +682,29 @@ where
         if_stmt: &'bump HirStmt<'a, 'bump>,
         span: SourceSpan<'a>,
     },
+    Match {
+        expr: &'bump HirExpr<'a, 'bump>,
+        arms: &'bump [HirMatchArm<'a, 'bump>],
+        span: SourceSpan<'a>,
+    },
+    Block {
+        body: &'bump [HirStmt<'a, 'bump>],
+        is_unsafe: bool,
+        span: SourceSpan<'a>,
+    },
+    Range {
+        start: &'bump HirExpr<'a, 'bump>,
+        end: &'bump HirExpr<'a, 'bump>,
+        inclusive: bool,
+        span: SourceSpan<'a>,
+    },
+    Slice {
+        object: &'bump HirExpr<'a, 'bump>,
+        start: &'bump HirExpr<'a, 'bump>,
+        end: &'bump HirExpr<'a, 'bump>,
+        inclusive: bool,
+        span: SourceSpan<'a>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -683,6 +731,7 @@ pub enum Operator {
     ShiftLeftAssign,
     ShiftRightAssign,
     BitNot,
+    LogicalNot,
     LogicalOr,
     LogicalAnd,
     Equals,
@@ -742,12 +791,13 @@ where
             HirType::F32 => write!(f, "f32"),
             HirType::F64 => write!(f, "f64"),
             HirType::Boolean => write!(f, "bool"),
-            HirType::String => write!(f, "string"),
+            HirType::String => write!(f, "str"),
             HirType::Struct {
                 name,
                 type_args: args,
                 ..
             } => Self::write_args(f, name, args),
+
             HirType::DynInterface(name, args) => Self::write_args(f, name, args),
             HirType::Enum(name, args) => Self::write_args(f, name, args),
             HirType::Lambda {
@@ -763,8 +813,32 @@ where
             HirType::Void => write!(f, "void"),
             HirType::This => write!(f, "this"),
             HirType::Null => write!(f, "null"),
-            HirType::SafePointer(inner) => write!(f, "*{}", inner),
-            HirType::UnsafePointer(inner) => write!(f, "[*]{}", inner),
+            HirType::SafePointer {
+                inner,
+                mutability_state,
+            } => write!(
+                f,
+                "*{} {}",
+                if *mutability_state == MutabilityState::Const {
+                    "const"
+                } else {
+                    "mut"
+                },
+                inner
+            ),
+            HirType::UnsafePointer {
+                inner,
+                mutability_state,
+            } => write!(
+                f,
+                "[*]{} {}",
+                if *mutability_state == MutabilityState::Const {
+                    "const"
+                } else {
+                    "mut"
+                },
+                inner
+            ),
             HirType::Char => write!(f, "char"),
             HirType::Ref {
                 inner,
@@ -809,7 +883,25 @@ where
             }
             HirType::Array(hir_type, len) => write!(f, "&[{}]{}", len, hir_type),
             HirType::Slice(hir_type) => write!(f, "&[]{}", hir_type),
-            HirType::OwnedPointer(hir_type) => write!(f, "^{}", hir_type),
+            HirType::OwnedPointer { inner, allocator } => {
+                write!(
+                    f,
+                    "^{} {}",
+                    allocator
+                        .map(|all| all.to_string())
+                        .unwrap_or(String::from("")),
+                    inner
+                )
+            }
+            HirType::Never => write!(f, "never"),
+            HirType::Range { elem, inclusive } => {
+                write!(
+                    f,
+                    "range<{}>{}",
+                    elem,
+                    if *inclusive { " (inclusive)" } else { "" }
+                )
+            }
         }
     }
 }
@@ -819,40 +911,49 @@ where
     'bump: 'a,
 {
     /// Creates a new safe pointer type that points to the given type (*T)
-    pub fn safe_ptr_to(inner: &'a HirType<'a, 'bump>) -> Self {
-        HirType::SafePointer(inner)
+    pub fn safe_ptr_to(inner: &'a HirType<'a, 'bump>, mutability_state: MutabilityState) -> Self {
+        HirType::SafePointer {
+            inner,
+            mutability_state,
+        }
     }
 
     /// Creates a new unsafe pointer type that points to the given type ([*]T)
-    pub fn unsafe_ptr_to(inner: &'a HirType<'a, 'bump>) -> Self {
-        HirType::UnsafePointer(inner)
+    pub fn unsafe_ptr_to(inner: &'a HirType<'a, 'bump>, mutability_state: MutabilityState) -> Self {
+        HirType::UnsafePointer {
+            inner,
+            mutability_state,
+        }
     }
 
     /// Returns true if this is a safe pointer type
     pub fn is_safe_pointer(&self) -> bool {
-        matches!(self, HirType::SafePointer(_))
+        matches!(self, HirType::SafePointer { .. })
     }
 
     /// Returns true if this is an unsafe pointer type
     pub fn is_unsafe_pointer(&self) -> bool {
-        matches!(self, HirType::UnsafePointer(_))
+        matches!(self, HirType::UnsafePointer { .. })
     }
 
     /// Returns true if this is any pointer type that is literally a pointer (safe or unsafe)
     pub fn is_pointer_literal(&self) -> bool {
-        matches!(self, HirType::SafePointer(_) | HirType::UnsafePointer(_))
+        matches!(
+            self,
+            HirType::SafePointer { .. } | HirType::UnsafePointer { .. }
+        )
     }
 
     /// Returns true if this is any pointer type that functions as a pointer (safe, unsafe or reference)
     pub fn is_pointer_semantics(&self) -> bool {
         matches!(
             self,
-            HirType::SafePointer(_) | HirType::UnsafePointer(_) | HirType::Ref { .. }
+            HirType::SafePointer { .. } | HirType::UnsafePointer { .. } | HirType::Ref { .. }
         )
     }
 
     pub fn as_safe_pointer(&self) -> Option<&'a HirType<'a, 'bump>> {
-        if let HirType::SafePointer(inner) = self {
+        if let HirType::SafePointer { inner, .. } = self {
             Some(inner)
         } else {
             None
@@ -860,7 +961,7 @@ where
     }
 
     pub fn as_unsafe_pointer(&self) -> Option<&'a HirType<'a, 'bump>> {
-        if let HirType::UnsafePointer(inner) = self {
+        if let HirType::UnsafePointer { inner, .. } = self {
             Some(inner)
         } else {
             None
@@ -870,19 +971,35 @@ where
     /// If this is any pointer type, returns the inner type. Otherwise returns None.
     pub fn as_pointer(&self) -> Option<&'a HirType<'a, 'bump>> {
         match self {
-            HirType::SafePointer(inner) => Some(inner),
-            HirType::UnsafePointer(inner) => Some(inner),
+            HirType::SafePointer { inner, .. } => Some(inner),
+            HirType::UnsafePointer { inner, .. } => Some(inner),
             _ => None,
         }
     }
 
-    pub fn drop_kind(&self) -> DropKind {
+    pub fn drop_kind(&self) -> DropKind<'a, 'bump> {
         match self {
             HirType::Struct { name, .. }
             | HirType::Enum(name, _)
             | HirType::DynInterface(name, _) => DropKind::Type(*name),
 
-            HirType::OwnedPointer(inner) => DropKind::OwnedPointer(Box::new(inner.drop_kind())),
+            HirType::OwnedPointer { inner, allocator } => DropKind::OwnedPointer {
+                pointee: Box::new(inner.drop_kind()),
+                pointee_ty: **inner,
+                allocator: allocator.expect("drop_kind called before ImplicitParam resolution"),
+            },
+
+            HirType::Slice(inner) => {
+                let element = inner.drop_kind();
+                if element.is_droppable() {
+                    DropKind::Slice {
+                        element: Box::new(element),
+                        element_ty: **inner,
+                    }
+                } else {
+                    DropKind::Undroppable
+                }
+            }
 
             _ => DropKind::Undroppable,
         }
@@ -895,9 +1012,9 @@ where
             | HirType::DynInterface(name, _) => Some(*name),
 
             HirType::Ref { inner, .. }
-            | HirType::SafePointer(inner)
-            | HirType::UnsafePointer(inner)
-            | HirType::OwnedPointer(inner)
+            | HirType::SafePointer { inner, .. }
+            | HirType::UnsafePointer { inner, .. }
+            | HirType::OwnedPointer { inner, .. }
             | HirType::Nullable(inner)
             | HirType::Array(inner, _)
             | HirType::Slice(inner) => inner.nominal_type_name(),
@@ -917,13 +1034,21 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum DropKind {
+pub enum DropKind<'a, 'bump> {
     Type(StrId),
-    OwnedPointer(Box<DropKind>),
+    OwnedPointer {
+        pointee: Box<DropKind<'a, 'bump>>,
+        pointee_ty: HirType<'a, 'bump>,
+        allocator: ProvenanceAnnotation<'bump>,
+    },
+    Slice {
+        element: Box<DropKind<'a, 'bump>>,
+        element_ty: HirType<'a, 'bump>,
+    },
     Undroppable,
 }
 
-impl DropKind {
+impl<'a, 'bump> DropKind<'a, 'bump> {
     pub fn is_droppable(&self) -> bool {
         match self {
             Undroppable => false,

@@ -61,7 +61,12 @@ pub fn layout_of_ssa(ty: &SsaType, target: TargetInfo) -> Result<Layout, LayoutE
         SsaType::I32 | SsaType::U32 | SsaType::F32 => Ok(Layout { size: 4, align: 4 }),
         SsaType::I64 | SsaType::U64 | SsaType::F64 => Ok(Layout { size: 8, align: 8 }),
 
-        SsaType::Slice(_) | SsaType::Dyn => Err(LayoutError::Unsized("unsized type")),
+        SsaType::Slice(_) => Ok(Layout {
+            size: 24, // data ptr (8) + len (8) + capacity (8)
+            align: 8,
+        }),
+
+        SsaType::Dyn => Ok(Layout { size: 8, align: 8 }),
 
         // Tuples/structs: sequential fields with padding between and at end to struct align.
         SsaType::Tuple(fields) | SsaType::User(_, fields) => {
@@ -81,7 +86,7 @@ pub fn layout_of_ssa(ty: &SsaType, target: TargetInfo) -> Result<Layout, LayoutE
         }
 
         // Enums/sum types: Simple tagged union:
-        SsaType::Enum(variants) => {
+        SsaType::Enum(_, variants) => {
             if variants.is_empty() {
                 return Ok(Layout { size: 0, align: 1 });
             }
@@ -143,6 +148,13 @@ pub fn layout_of_ssa(ty: &SsaType, target: TargetInfo) -> Result<Layout, LayoutE
             size: sizeof_ssa(ssa_type, TargetInfo { ptr_bytes: 8 })? * length,
             align: 8,
         }),
+        SsaType::Owned(inner) => match inner.as_ref() {
+            SsaType::Slice(_) => layout_of_ssa(inner, target),
+            _ => Ok(Layout {
+                size: target.ptr_bytes as usize,
+                align: target.ptr_bytes as usize,
+            }),
+        },
     }
 }
 
@@ -178,7 +190,7 @@ pub fn layout_of_hir(ty: &HirType, target: TargetInfo) -> Result<Layout, LayoutE
         }),
 
         // Pointers are always ptr_bytes in size
-        HirType::SafePointer(_) | HirType::UnsafePointer(_) => Ok(Layout {
+        HirType::SafePointer { .. } | HirType::UnsafePointer { .. } => Ok(Layout {
             size: target.ptr_bytes as usize,
             align: target.ptr_bytes as usize,
         }),
@@ -235,13 +247,16 @@ pub fn layout_of_hir(ty: &HirType, target: TargetInfo) -> Result<Layout, LayoutE
             })
         }
         HirType::Slice(_) => Ok(Layout {
-            size: (target.ptr_bytes * 2) as usize,
+            size: (target.ptr_bytes * 3) as usize,
             align: target.ptr_bytes as usize,
         }),
-        HirType::OwnedPointer(_) => Ok(Layout {
-            size: target.ptr_bytes as usize,
-            align: target.ptr_bytes as usize,
-        }),
+        HirType::OwnedPointer { inner, .. } => match inner {
+            HirType::Slice(_) => layout_of_hir(inner, target),
+            _ => Ok(Layout {
+                size: target.ptr_bytes as usize,
+                align: target.ptr_bytes as usize,
+            }),
+        },
         HirType::Usize => Ok(Layout {
             size: target.ptr_bytes as usize,
             align: target.ptr_bytes as usize,
@@ -250,5 +265,7 @@ pub fn layout_of_hir(ty: &HirType, target: TargetInfo) -> Result<Layout, LayoutE
             size: target.ptr_bytes as usize,
             align: target.ptr_bytes as usize,
         }),
+        HirType::Never => todo!(),
+        HirType::Range { .. } => todo!(),
     }
 }
