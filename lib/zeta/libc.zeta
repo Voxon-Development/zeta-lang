@@ -1,4 +1,17 @@
 package zeta::libc;
 
-extern(C) func malloc(size: usize): [*]mut void;
-extern(C) func free(ptr: [*]mut void);
+extern "C" func malloc(size: usize): [*]mut void;
+extern "C" func free(ptr: [*]mut void);
+extern "C" func calloc(count: usize, size: usize): [*]mut void;
+extern "C" func realloc(ptr: [*]mut void, size: usize): [*]mut void;
+extern "C" func memset(ptr: [*]mut void, value: i32, size: usize): [*]mut void;
+
+extern "C" func open(path: [*]const u8, flags: i32, mode: i32): i32;
+extern "C" func close(fd: i32): i32;
+extern "C" func read(fd: i32, buf: [*]mut void, count: usize): isize;
+extern "C" func write(fd: i32, buf: [*]const void, count: usize): isize;
+extern "C" func abort(): never;
+
+// glibc/musl expose errno through this on Linux; per-platform __error() on
+// Darwin/BSD would need a separate extern name behind a platform cfg later.
+extern "C" func __errno_location(): [*]mut i32;
