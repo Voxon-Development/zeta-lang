@@ -1,4 +1,6 @@
-public interface Allocator {
+package zeta::alloc::allocator;
+
+interface Allocator {
     func alloc<T>(&this): ^T;
 
     func calloc<T>(&this, count: usize): ^[]T;
@@ -44,7 +46,7 @@ public interface Allocator {
     );
 }
 
-public interface RawAllocator {
+interface RawAllocator {
     unsafe func alloc_raw(
         &this,
         size: usize,

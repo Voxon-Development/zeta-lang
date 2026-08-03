@@ -1,4 +1,4 @@
-package zeta::lang;
+package zeta::lang::traits;
 
 // Marker interface: types that implement `Copy` may be duplicated bitwise
 // (a plain memory copy) instead of being moved. No method is required
