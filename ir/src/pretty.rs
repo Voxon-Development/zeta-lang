@@ -517,7 +517,7 @@ impl IrPrettyPrinter {
             HirType::F32 => write!(output, "f32"),
             HirType::F64 => write!(output, "f64"),
             HirType::Boolean => write!(output, "bool"),
-            HirType::String => write!(output, "String"),
+            HirType::String => write!(output, "str"),
             HirType::Void => write!(output, "void"),
             HirType::Struct {
                 name,
@@ -600,6 +600,7 @@ impl IrPrettyPrinter {
             Operator::ShiftRightAssign => ">>=",
             Operator::BitNot => "~",
             Operator::LogicalOr => "||",
+            Operator::LogicalNot => "!",
             Operator::Equals => "==",
             Operator::NotEquals => "!=",
             Operator::GreaterThan => ">",
