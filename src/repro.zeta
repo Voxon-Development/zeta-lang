@@ -1,8 +1,0 @@
-package zeta::repro;
-
-
-public extern(C) func println_str(num: *const char): void;
-
-public func abc(): ?i64 {
-    return null;
-}
