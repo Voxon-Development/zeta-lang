@@ -1,0 +1,31 @@
+package zeta::sync::spinlock;
+
+struct SpinLock {
+    state: u32, // 0 = unlocked, 1 = locked
+}
+
+impl SpinLock {
+    func new(): SpinLock {
+        return SpinLock { state: 0 };
+    }
+
+    func lock(&mut this) {
+        while (true) {
+            if ($atomic_cas_u32(&mut this.state, 0, 1) == 0) {
+                return;
+            }
+            // spin without hammering the cache line with CAS while it's held
+            while ($atomic_load_u32(&this.state) != 0) {
+                $cpu_relax();
+            }
+        }
+    }
+
+    func try_lock(&mut this): bool {
+        return $atomic_cas_u32(&mut this.state, 0, 1) == 0;
+    }
+
+    func unlock(&mut this) {
+        $atomic_store_u32(&mut this.state, 0);
+    }
+}

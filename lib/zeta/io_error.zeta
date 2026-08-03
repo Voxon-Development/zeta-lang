@@ -1,0 +1,35 @@
+package zeta::io_error;
+
+import zeta::libc;
+
+enum IOError {
+    NotFound,
+    PermissionDenied,
+    AlreadyExists,
+    Interrupted,
+    WouldBlock,
+    InvalidInput,
+    UnexpectedEof,
+    WriteZero,
+    Other { err_no: i32 },
+}
+
+const ENOENT: i32 = 2;
+const EINTR:  i32 = 4;
+const EAGAIN: i32 = 11;
+const EACCES: i32 = 13;
+const EEXIST: i32 = 17;
+const EINVAL: i32 = 22;
+
+func from_errno(): IOError {
+    let code: i32 = unsafe { *libc.__errno_location() };
+    return match (code) {
+        case 2 -> IOError.NotFound,
+        case 13 -> IOError.PermissionDenied,
+        case 17 -> IOError.AlreadyExists,
+        case 4  -> IOError.Interrupted,
+        case 11 -> IOError.WouldBlock,
+        case 22 -> IOError.InvalidInput,
+        case _  -> IOError.Other { err_no: code },
+    };
+}

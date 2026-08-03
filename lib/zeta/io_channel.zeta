@@ -1,0 +1,75 @@
+package zeta::io_channel;
+import zeta::io_error.IOError;
+import zeta::utils::mallocator.Mallocator;
+import zeta::alloc::allocator.Allocator;
+import zeta::utils::array_list.ArrayList;
+import zeta::result.Result;
+import zeta::string.String;
+
+interface ReadChannel {
+    unsafe func read_raw(&mut this, buffer: &[]u8): Result<usize, IOError>;
+
+    func read_exact(&mut this, buffer: &[]u8): Result<usize, IOError> {
+        let mut filled: usize = 0;
+        while (filled < buffer.len) {
+            let n: usize = match (unsafe { this.read_raw(buffer[filled..buffer.len]) }) {
+                case Result.Ok(n) -> n,
+                case Result.Err { error } -> return Result.Err { error },
+            };
+            if (n == 0) {
+                return Result.Err { error: IOError.UnexpectedEof };
+            }
+            filled += n;
+        }
+        return Result.Ok { value: filled };
+    }
+
+    func skip(&mut this, count: usize): Result<usize, IOError> {
+        let mut remaining: usize = count;
+        let mut chunk: [4096]u8 = undefined;
+        while (remaining > 0) {
+            let want: usize = if (remaining < 4096) { remaining } else { 4096 };
+            let n: usize = match (unsafe { this.read_raw(chunk[0..want]) }) {
+                case Result.Ok(n) -> n,
+                case Result.Err { error } -> return Result.Err { error },
+            };
+            if (n == 0) { break; }
+            remaining -= n;
+        }
+        return Result.Ok(count - remaining);
+    }
+}
+
+interface WriteChannel {
+    unsafe func write_raw(&mut this, bytes: &[]u8): Result<usize, IOError>;
+
+    func write(&mut this, bytes: &[]u8): Result<usize, IOError> {
+        unsafe { return this.write_raw(bytes); };
+    }
+
+    func write_all(&mut this, bytes: &[]u8): Result<usize, IOError> {
+        let mut written: usize = 0;
+        while (written < bytes.len) {
+            let n: usize = match (unsafe { this.write_raw(bytes[written..bytes.len]) }) {
+                case Result.Ok(n) -> n,
+                case Result.Err { error } -> return Result.Err { error },
+            };
+            if (n == 0) {
+                return Result.Err(IOError.WriteZero);
+            }
+            written += n;
+        }
+        return Result.Ok(written);
+    }
+
+    func writeln(&mut this, s: str): Result<bool, IOError> {
+        return match (this.write_all(s.as_bytes())) {
+            case Result.Err { error } -> Result.Err { error },
+            case Result.Ok { value } -> this.write_all("\n".as_bytes()),
+        }
+    }
+
+    func flush(&mut this): Result<bool, IOError> {
+        return Result.Ok(false);
+    }
+}

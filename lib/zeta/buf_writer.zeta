@@ -1,0 +1,161 @@
+package zeta::buf_writer;
+
+import zeta::io_channel.ReadChannel;
+import zeta::io_channel.WriteChannel;
+import zeta::io_error.IOError;
+import zeta::result.Result;
+import zeta::sync::spinlock.SpinLock;
+import zeta::utils::mallocator.Mallocator;
+import zeta::alloc::allocator.Allocator;
+import zeta::utils::array_list.ArrayList;
+
+const DEFAULT_FLUSH_THRESHOLD: usize = 4096;
+
+struct BufWriter<W: WriteChannel, A: Allocator> {
+    inner: W,
+    buffer: ArrayList<u8, A>,
+    lock: SpinLock,
+    threshold: usize,
+}
+impl<W: WriteChannel, A: Allocator> BufWriter<W, A> {
+    func new(inner: W, alloc: A): BufWriter<W, A> {
+        return BufWriter.new_with_threshold(inner, alloc, DEFAULT_FLUSH_THRESHOLD);
+    }
+
+    func new_with_threshold(inner: W, alloc: A, threshold: usize): BufWriter<W, A> {
+        return BufWriter<W, A> {
+            inner,
+            buffer: ArrayList.with_capacity<u8, A>(threshold, alloc),
+            lock: SpinLock.new(),
+            threshold,
+        };
+    }
+
+    func flush(&mut this): Result<void, IOError> {
+        this.lock.lock();
+        let result: Result<void, IOError> = this.flush_locked();
+        this.lock.unlock();
+        return result;
+    }
+
+    func flush_locked(&mut this): Result<void, IOError> {
+        if (this.buffer.len() == 0) {
+            return Result.Ok { value: void };
+        }
+        let result: Result<void, IOError> = unsafe {
+            this.inner.write_all(this.buffer.as_slice())
+        };
+        this.buffer.clear();
+        return result;
+    }
+}
+
+impl<W: WriteChannel, A: Allocator> BufWriter<W, A> by WriteChannel {
+    unsafe func write_raw(&mut this, bytes: &[]u8): Result<usize, IOError> {
+        this.lock.lock();
+        for (let i: usize = 0; i < bytes.len; i += 1) {
+            this.buffer.push(bytes[i]);
+        }
+        let mut result: Result<usize, IOError> = Result.Ok { value: bytes.len };
+        if (this.buffer.len() >= this.threshold) {
+            result = match (this.flush_locked()) {
+                case Result.Ok { value } -> Result.Ok { value: bytes.len },
+                case Result.Err { error } -> Result.Err { error },
+            };
+        }
+        this.lock.unlock();
+        return result;
+    }
+}
+
+impl<W: WriteChannel, A: Allocator> BufWriter<W, A> by Drop {
+    func drop(mut this) {
+        this.flush().unwrap_or_else(func(e: IOError) {
+            // TODO: This really needs formatting soon, lol
+            debug.debug_panic("Failed to flush to file");
+        });
+    }
+}
+
+struct BufReader<R: ReadChannel, A: Allocator> {
+    inner: R,
+    buffer: ArrayList<u8, A>,
+    pos: usize,
+}
+impl<R: ReadChannel, A: Allocator> BufReader<R, A> {
+    func new(inner: R, alloc: A): BufReader<R, A> {
+        return BufReader<R, A> {
+            inner,
+            buffer: ArrayList.with_capacity<u8, A>(DEFAULT_FLUSH_THRESHOLD, alloc),
+            pos: 0,
+        };
+    }
+
+    func fill_buffer(&mut this): Result<usize, IOError> {
+        this.buffer.clear();
+        this.pos = 0;
+        let mut chunk: [4096]u8 = undefined;
+        let n: usize = match (unsafe { this.inner.read_raw(&mut chunk) }) {
+            case Result.Ok { value } -> value,
+            case Result.Err { error } -> return Result.Err { error },
+        };
+        for (let i: usize = 0; i < n; i += 1) {
+            this.buffer.push(chunk[i]);
+        }
+        return Result.Ok { value: n };
+    }
+}
+
+impl<R: ReadChannel, A: Allocator> BufReader<R, A> by ReadChannel {
+    unsafe func read_raw(&mut this, out: &mut []u8): Result<usize, IOError> {
+        if (this.pos >= this.buffer.len()) {
+            let n: usize = match (this.fill_buffer()) {
+                case Result.Ok(n) -> n,
+                case Result.Err { error } -> return Result.Err { error },
+            };
+            if (n == 0) {
+                return Result.Ok(0);
+            }
+        }
+        let mut copied: usize = 0;
+        while (copied < out.len && this.pos < this.buffer.len()) {
+            out[copied] = *this.buffer.get(this.pos);
+            copied += 1;
+            this.pos += 1;
+        }
+        return Result.Ok(copied);
+    }
+
+    func read_to_end<A: Allocator>(&mut this, out: &ArrayList<u8, A>): Result<usize, IOError> {
+        let mut total: usize = 0;
+        let mut chunk: [4096]u8 = undefined;
+        while (true) {
+            let n: usize = match (unsafe { this.read_raw(&chunk) }) {
+                case Result.Ok(n) -> n,
+                case Result.Err { error } -> return Result.Err { error },
+            };
+            if (n == 0) { break; }
+            for (let i: usize = 0; i < n; i += 1) {
+                out.push(chunk[i]);
+            }
+            total += n;
+        }
+        return Result.Ok(total);
+    }
+
+    func read_line<A: Allocator>(&mut this, out: &String<A>): Result<usize, IOError> {
+        let mut total: usize = 0;
+        let mut byte: [1]u8 = undefined;
+        while (true) {
+            let n: usize = match (unsafe { this.read_raw(&mut byte) }) {
+                case Result.Ok(n) -> n,
+                case Result.Err { error } -> return Result.Err { error },
+            };
+            if (n == 0) { break; }
+            total += 1;
+            if (byte[0] == '\n' as u8) { break; }
+            out.push_byte(byte[0]);
+        }
+        return Result.Ok(total);
+    }
+}

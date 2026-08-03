@@ -1,0 +1,91 @@
+package zeta::result;
+
+import zeta::debug;
+
+enum Result<T, E> {
+    Ok { value: T },
+    Err { error: E },
+}
+
+impl<T, E> Result<T, E> {
+    func is_ok(&this): bool {
+        return match (this) {
+            case Result.Ok { value } -> true,
+            case Result.Err { error } -> false,
+        };
+    }
+
+    func is_err(&this): bool {
+        return !this.is_ok();
+    }
+
+    func unwrap(this): T {
+        return match (this) {
+            case Result.Ok { value } -> value,
+            case Result.Err { error } -> debug.debug_panic("called unwrap() on an Err value"),
+        };
+    }
+
+    func unwrap_err(this): E {
+        return match (this) {
+            case Result.Ok { value } -> debug.debug_panic("called unwrap_err() on an Ok value"),
+            case Result.Err { error } -> error,
+        };
+    }
+
+    func expect(this, msg: str): T {
+        return match (this) {
+            case Result.Ok { value } -> value,
+            case Result.Err { error } -> debug.debug_panic(msg),
+        };
+    }
+
+    func unwrap_or(this, default: T): T {
+        return match (this) {
+            case Result.Ok { value } -> value,
+            case Result.Err { error } -> default,
+        };
+    }
+
+    func unwrap_or_else<F: func(E): T>(this, f: F): T {
+        return match (this) {
+            case Result.Ok { value } -> value,
+            case Result.Err { error } -> f(error),
+        };
+    }
+
+    func ok(this): ?T {
+        return match (this) {
+            case Result.Ok { value } -> value,
+            case Result.Err { error } -> null,
+        };
+    }
+
+    func err(this): ?E {
+        return match (this) {
+            case Result.Ok { value } -> null,
+            case Result.Err { error } -> error,
+        };
+    }
+
+    func map<U, F: func(T): U>(this, f: F): Result<U, E> {
+        return match (this) {
+            case Result.Ok { value } -> Result.Ok(f(value)),
+            case Result.Err { error } -> Result.Err { error },
+        };
+    }
+
+    func map_err<F2, F: func(E): F2>(this, f: F): Result<T, F2> {
+        return match (this) {
+            case Result.Ok { value } -> Result.Ok { value },
+            case Result.Err { error } -> Result.Err { error: f(error) },
+        };
+    }
+
+    func and_then<U, F: func(T): Result<U, E>>(this, f: F): Result<U, E> {
+        return match (this) {
+            case Result.Ok { value } -> f(value),
+            case Result.Err { error } -> Result.Err { error },
+        };
+    }
+}

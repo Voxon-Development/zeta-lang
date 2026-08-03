@@ -1,0 +1,52 @@
+package zeta::string;
+import zeta::io_channel.WriteChannel;
+import zeta::io_error.IOError;
+import zeta::utils::mallocator.Mallocator;
+import zeta::alloc::allocator.Allocator;
+import zeta::utils::array_list.ArrayList;
+
+struct String<A: Allocator> {
+    data: ArrayList<u8, A>,
+}
+impl<A: Allocator> String<A> {
+    func new(alloc: A): String<A> {
+        return String<A> { data: ArrayList.new<u8, A>(alloc) };
+    }
+    func from(string: str, alloc: A): String<A> {
+        let mut heap_string: String<A> = String.with_capacity<A>(string.len() + 16, alloc);
+        heap_string.push_str(string);
+        return heap_string;
+    }
+    func with_capacity(capacity: usize, alloc: A): String<A> {
+        return String<A> { data: ArrayList.with_capacity<u8, A>(capacity, alloc) };
+    }
+    func push_byte(&mut this, byte: u8) {
+        this.data.push(byte);
+    }
+    func push_str(&mut this, s: str) {
+        let bytes: &[]u8 = s.as_bytes();
+        for (let i: usize = 0; i < bytes.len; i += 1) {
+            this.data.push(bytes[i]);
+        }
+    }
+    func len(&this): usize {
+        return this.data.len();
+    }
+    func as_bytes(&this): &[]u8 {
+        return this.data.as_slice();
+    }
+    func as_str(&this): str {
+        // SAFETY: invariant is that only valid UTF-8 is ever pushed via
+        // push_str/push_byte-of-ASCII.
+        unsafe { return str.from_utf8_unchecked(this.as_bytes()); }
+    }
+}
+
+impl<A: Allocator> String<A> by WriteChannel {
+    unsafe func write_raw(&mut this, bytes: &[]u8): Result<usize, IOError> {
+        for (let i: usize = 0; i < bytes.len; i += 1) {
+            this.data.push(bytes[i]);
+        }
+        return Result.Ok(bytes.len);
+    }
+}

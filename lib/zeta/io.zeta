@@ -1,0 +1,66 @@
+// TODO: this should be a directory in the future that auto imports everything it contains
+package zeta::io;
+
+import zeta::libc;
+import zeta::debug;
+import zeta::file.File;
+import zeta::file.FileWriter;
+import zeta::file.FileReader;
+import zeta::sync::spinlock.SpinLock;
+import zeta::utils::mallocator.Mallocator;
+import zeta::utils::array_list.ArrayList;
+
+interface Writer {
+    unsafe func write_raw(&mut this, bytes: &[]u8): usize;
+
+    func write(&mut this, s: str) {
+        let bytes: &[]u8 = s.as_bytes();
+        let written: usize = 0;
+        while (written < bytes.len) {
+            let n: usize = unsafe {
+                this.write_raw(bytes[written..bytes.len])
+            };
+            if (n == 0) {
+                debug.debug_panic("Writer.write: write_raw made no progress");
+            }
+            written += n;
+        }
+    }
+
+    func writeln(&mut this, s: str) {
+        this.write(s);
+        this.write("\n");
+    }
+}
+
+struct StdOutWriter {}
+impl StdOutWriter by Writer {
+    unsafe func write_raw(&mut this, bytes: &[]u8): usize {
+        let n: isize = libc.write(1, bytes.ptr as [*]const void, bytes.len);
+        if (n < 0) {
+            debug.debug_panic("write to stdout failed");
+        }
+        return n as usize;
+    }
+}
+
+struct StdErrWriter {}
+impl StdErrWriter by Writer {
+    unsafe func write_raw(&mut this, bytes: &[]u8): usize {
+        let n: isize = libc.write(2, bytes.ptr as [*]const void, bytes.len);
+        if (n < 0) {
+            debug.debug_panic("write to stderr failed");
+        }
+        return n as usize;
+    }
+}
+
+func stdout(): FileWriter {
+    return File.stdout().writer();
+}
+func stderr(): FileWriter {
+    return File.stderr().writer();
+}
+func stdin(): FileReader {
+    return File.stdin().reader();
+}

@@ -1,0 +1,97 @@
+package zeta::utils::bump_allocator;
+
+import zeta::debug;
+import zeta::libc;
+
+import zeta::alloc::allocator.Allocator;
+
+struct BumpAllocator<A: Allocator> {
+    memory: ^this []u8,
+    offset: usize,
+    backing: A,
+}
+
+impl<A: Allocator> BumpAllocator<A> {
+    func new(size: usize, alloc: A): BumpAllocator<A> {
+        return BumpAllocator<A> {
+            memory: alloc.calloc<u8>(size),
+            offset: 0,
+            alloc,
+        };
+    }
+
+    func capacity(&this): usize {
+        return this.memory.cap;
+    }
+
+    func used(&this): usize {
+        return this.memory.len;
+    }
+
+    func remaining(&this): usize {
+        return this.memory.cap - this.memory.len;
+    }
+
+    func reset(&mut this) {
+        this.memory.len = 0;
+    }
+
+    func alloc<T>(&mut this): ^this T {
+        let start: usize = align_up(this.memory.len, $alignof<T>());
+        let end: usize = start + $sizeof<T>();
+
+        debug.assert(end <= this.memory.cap);
+
+        let ptr: [*]mut u8 = (this.memory as [*]mut u8) + start;
+
+        this.memory.len = end;
+
+        return $own(ptr as [*]mut T, this);
+    }
+
+    func calloc<T>(&mut this, count: usize): ^this []T {
+        let align: usize = $alignof<T>();
+        let size: usize = count * $sizeof<T>();
+
+        let start: usize = this.align_up(this.memory.len, align);
+        let end: usize = start + size;
+
+        $assert(end <= this.memory.cap);
+
+        let ptr: [*]mut u8 =
+            (this.memory as [*]mut u8) + start;
+
+        libc.memset(ptr as [*]mut void, 0, size);
+
+        this.memory.len = end;
+
+        return $own(
+            ptr as [*]mut T,
+            this,
+            0,
+            count
+        );
+    }
+
+    func new<T>(&mut this, value: T): ^this T {
+        let ptr: ^this T = this.alloc<T>();
+        *ptr = value;
+        return ptr;
+    }
+
+    func free<T>(&this, value: ^this T) {
+        // no-op
+    }
+
+    func free_slice<T>(&this, value: ^this []T) {
+        // no-op
+    }
+
+    func align_up(
+        &this,
+        value: usize,
+        align: usize
+    ): usize {
+        return (value + align - 1) & ~(align - 1);
+    }
+}

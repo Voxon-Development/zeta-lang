@@ -1,0 +1,108 @@
+package zeta::file;
+import zeta::libc;
+import zeta::io_error.IOError;
+import zeta::result.Result;
+import zeta::io_channel.ReadChannel;
+import zeta::io_channel.WriteChannel;
+
+const O_RDONLY: i32 = 0o0;
+const O_WRONLY: i32 = 0o1;
+const O_RDWR:   i32 = 0o2;
+const O_CREAT:  i32 = 0o100;
+const O_TRUNC:  i32 = 0o1000;
+const O_APPEND: i32 = 0o2000;
+
+const DEFAULT_MODE: i32 = 0o644;
+
+struct CPathBuf {
+    buf: [4096]u8,
+    len: usize,
+}
+
+impl CPathBuf {
+    func from_str(path: str): CPathBuf {
+        let bytes: &[]u8 = path.as_bytes();
+        debug.assert(bytes.len < 4096, "path exceeds max length");
+        let mut cbuf: CPathBuf = CPathBuf { buf: undefined, len: bytes.len };
+        for (let i: usize = 0; i < bytes.len; i += 1) {
+            cbuf.buf[i] = bytes[i];
+        }
+        cbuf.buf[bytes.len] = 0;
+        return cbuf;
+    }
+    unsafe func ptr(&this): [*]const u8 {
+        return &this.buf as [*]const u8;
+    }
+}
+
+struct File {
+    fd: i32,
+}
+
+impl File {
+    unsafe func from_raw_fd(fd: i32): File {
+        return File { fd };
+    }
+
+    func open(path: str): Result<File, IOError> {
+        return File.open_with_flags(path, O_RDONLY, 0);
+    }
+
+    func create(path: str): Result<File, IOError> {
+        return File.open_with_flags(path, O_WRONLY | O_CREAT | O_TRUNC, DEFAULT_MODE);
+    }
+
+    func append(path: str): Result<File, IOError> {
+        return File.open_with_flags(path, O_WRONLY | O_CREAT | O_APPEND, DEFAULT_MODE);
+    }
+
+    func open_with_flags(path: str, flags: i32, mode: i32): Result<File, IOError> {
+        let cpath: CPathBuf = CPathBuf.from_str(path);
+        let fd: i32 = unsafe { libc.open(cpath.ptr(), flags, mode) };
+        if (fd < 0) {
+            return Result.Err(error.from_errno());
+        }
+        return Result.Ok(File { fd });
+    }
+
+    func stdin(): File  { return File { fd: 0 }; }
+    func stdout(): File { return File { fd: 1 }; }
+    func stderr(): File { return File { fd: 2 }; }
+
+    func reader(&this): FileReader {
+        return FileReader { fd: this.fd };
+    }
+    func writer(&this): FileWriter {
+        return FileWriter { fd: this.fd };
+    }
+
+    func close(mut this): Result<void, IOError> {
+        let ret: i32 = unsafe { libc.close(this.fd) };
+        if (ret < 0) {
+            return Result.Err(error.from_errno());
+        }
+        return Result.Ok(void);
+    }
+}
+
+struct FileReader { fd: i32 }
+impl FileReader by ReadChannel {
+    unsafe func read_raw(&mut this, buffer: &mut []u8): Result<usize, IOError> {
+        let n: isize = libc.read(this.fd, buffer.ptr as [*]mut void, buffer.len);
+        if (n < 0) {
+            return Result.Err(error.from_errno());
+        }
+        return Result.Ok(n as usize);
+    }
+}
+
+struct FileWriter { fd: i32 }
+impl FileWriter by WriteChannel {
+    unsafe func write_raw(&mut this, bytes: &[]u8): Result<usize, IOError> {
+        let n: isize = libc.write(this.fd, bytes.ptr as [*]const void, bytes.len);
+        if (n < 0) {
+            return Result.Err(error.from_errno());
+        }
+        return Result.Ok(n as usize);
+    }
+}
