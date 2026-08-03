@@ -1,8 +1,10 @@
+use std::marker::PhantomData;
+
 use crate::errors::error::{DiagnosticError, ParseContext};
 use crate::span::SourceSpan;
 use crate::tokens::{Cursor, TokenKind};
 
-pub struct ParserDiagnosticsContext<'a> {
+pub struct ParserDiagnosticsContext<'a, 'bump> {
     errors: Vec<DiagnosticError<'a>>,
     warnings: Vec<DiagnosticWarning<'a>>,
     context_stack: Vec<ParseContext>,
@@ -10,9 +12,10 @@ pub struct ParserDiagnosticsContext<'a> {
 
     /// How many errors we tolerate before giving up recovery attempts.
     pub max_errors: usize,
+    phantom_data: PhantomData<&'bump ()>,
 }
 
-impl<'a> ParserDiagnosticsContext<'a> {
+impl<'a, 'bump> ParserDiagnosticsContext<'a, 'bump> {
     pub fn new(tracing_enabled: bool) -> Self {
         ParserDiagnosticsContext {
             errors: Vec::new(),
@@ -20,6 +23,7 @@ impl<'a> ParserDiagnosticsContext<'a> {
             context_stack: Vec::with_capacity(16),
             tracing_enabled,
             max_errors: 20,
+            phantom_data: PhantomData,
         }
     }
 
@@ -106,7 +110,7 @@ impl<'a> ParserDiagnosticsContext<'a> {
     ///
     /// Returns the `TokenKind` we stopped at so the caller can decide whether
     /// to consume it (e.g. consume `}`) or leave it (e.g. leave `fn`).
-    pub fn synchronize(&self, cursor: &mut Cursor<'a>) -> TokenKind {
+    pub fn synchronize(&self, cursor: &mut Cursor<'a, 'bump>) -> TokenKind {
         // Always consume at least one token so the caller can't get stuck
         // re-entering recovery on the same position forever.
         if cursor.peek() != TokenKind::EOF {
@@ -131,7 +135,7 @@ impl<'a> ParserDiagnosticsContext<'a> {
     pub fn record_and_recover(
         &mut self,
         err: DiagnosticError<'a>,
-        cursor: &mut Cursor<'a>,
+        cursor: &mut Cursor<'a, 'bump>,
     ) -> TokenKind {
         self.record(err);
         self.synchronize(cursor)
