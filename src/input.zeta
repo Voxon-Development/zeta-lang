@@ -4,7 +4,7 @@ import zeta::utils::array_list.ArrayList;
 import zeta::utils::mallocator.Mallocator;
 import zeta::utils::mallocator.RawMallocator;
 
-extern(C) func println_int(num: i64);
+extern "C" func println_int(num: i64);
 
 public struct Inner {
     tag: i64

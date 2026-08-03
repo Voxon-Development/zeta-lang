@@ -104,8 +104,6 @@ pub fn span_to_range(
     }
 }
 
-// ---
-//
 fn contains(span: &SourceSpan, line: usize, column: usize) -> bool {
     if line < span.line || line > span.end_line {
         return false;
