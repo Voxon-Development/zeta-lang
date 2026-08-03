@@ -3,7 +3,7 @@ use ir::ast::{
     ConstStmt, EnumDecl, EnumVariant, Field, ImplDecl, InterfaceDecl, Param, PermitsExpr, Stmt,
     StructDecl, Visibility,
 };
-use ir::errors::error::DiagnosticError;
+use ir::errors::error::{DiagnosticError, ParseErrorKind};
 use ir::hir::StrId;
 use ir::tokens::TokenKind;
 
@@ -43,7 +43,7 @@ where
         } else {
             self.cursor.expect(TokenKind::LBrace)?;
 
-            let mut fields = Vec::new_in(self.bump);
+            let mut fields = Vec::new();
 
             while self.cursor.peek() != TokenKind::RBrace && self.cursor.peek() != TokenKind::EOF {
                 let field_vis = if self.cursor.peek() == TokenKind::Private
@@ -65,7 +65,6 @@ where
                     name: field_name,
                     field_type,
                     visibility: field_vis,
-                    generics: None,
                     span: field_span,
                 });
 
@@ -91,7 +90,7 @@ where
             if fields_as_params.is_empty() {
                 None
             } else {
-                Some(self.bump.alloc_slice_copy(&fields_as_params))
+                Some(self.bump.alloc_slice_immutable(&fields_as_params))
             }
         };
 
@@ -133,7 +132,7 @@ where
             None
         };
 
-        let target = self.parse_type()?;
+        let target = self.parse_impl_target()?;
 
         let interface = if self.cursor.peek() == TokenKind::By {
             self.cursor.advance();
@@ -146,13 +145,15 @@ where
 
         self.cursor.expect(TokenKind::LBrace)?;
 
-        let mut methods = Vec::new_in(self.bump);
-        let mut constants = Vec::new_in(self.bump);
+        let mut methods = Vec::new();
+        let mut constants = Vec::new();
 
         while self.cursor.peek() != TokenKind::RBrace && self.cursor.peek() != TokenKind::EOF {
             if self.cursor.peek() == TokenKind::Const {
-                let const_stmt = self.parse_const_stmt()?;
-                constants.push(const_stmt);
+                let Stmt::Const(const_stmt) = self.parse_const_stmt()? else {
+                    unreachable!()
+                };
+                constants.push(*const_stmt);
                 continue;
             }
 
@@ -192,12 +193,12 @@ where
             methods: if methods.is_empty() {
                 None
             } else {
-                Some(self.bump.alloc_slice_copy(&methods))
+                Some(self.bump.alloc_slice_immutable(&methods))
             },
             constants: if constants.is_empty() {
                 None
             } else {
-                Some(self.bump.alloc_slice_copy(&constants))
+                Some(self.bump.alloc_slice_immutable(&constants))
             },
             span: token.span,
         };
@@ -212,7 +213,7 @@ where
     ) -> Result<&'bump [Param<'a, 'bump>], DiagnosticError<'a>> {
         self.cursor.expect(TokenKind::LParen)?;
 
-        let mut fields = Vec::new_in(self.bump);
+        let mut fields = Vec::new();
 
         while self.cursor.peek() != TokenKind::RParen && self.cursor.peek() != TokenKind::EOF {
             let field_vis = if self.cursor.peek() == TokenKind::Private
@@ -250,12 +251,12 @@ where
 
         self.cursor.expect(TokenKind::RParen)?;
 
-        Ok(self.bump.alloc_slice_copy(&fields))
+        Ok(self.bump.alloc_slice_immutable(&fields))
     }
 
-    fn parse_const_stmt(&mut self) -> Result<ConstStmt<'a, 'bump>, DiagnosticError<'a>> {
+    pub fn parse_const_stmt(&mut self) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         let token = self.cursor.expect(TokenKind::Const)?;
-        let (name, _span) = self.cursor.expect_ident()?;
+        let (name, _span) = self.expect_binding_name()?;
 
         let type_annotation = if self.cursor.consume(TokenKind::Colon) {
             self.parse_type()?
@@ -267,12 +268,12 @@ where
         let value = self.parse_expr(0)?;
         self.cursor.consume(TokenKind::Semicolon);
 
-        Ok(ConstStmt {
+        Ok(Stmt::Const(self.bump.alloc_value_immutable(ConstStmt {
             ident: name,
             type_annotation,
             value: self.bump.alloc_value_immutable(value),
             span: token.span,
-        })
+        })))
     }
 
     /// Parse an interface declaration (like Rust trait)
@@ -310,7 +311,7 @@ where
 
         self.cursor.expect(TokenKind::LBrace)?;
 
-        let mut methods = Vec::new_in(self.bump);
+        let mut methods = Vec::new();
 
         while self.cursor.peek() != TokenKind::RBrace && self.cursor.peek() != TokenKind::EOF {
             let method_vis = if self.cursor.peek() == TokenKind::Private
@@ -324,7 +325,14 @@ where
                 Visibility::Public
             };
 
-            if self.cursor.peek() == TokenKind::Func {
+            if matches!(
+                self.cursor.peek(),
+                TokenKind::Func
+                    | TokenKind::Unsafe
+                    | TokenKind::Inline
+                    | TokenKind::Noinline
+                    | TokenKind::Extern
+            ) {
                 let func = self.parse_function_signature(method_vis)?;
                 methods.push(func);
             } else {
@@ -344,7 +352,7 @@ where
             methods: if methods.is_empty() {
                 None
             } else {
-                Some(self.bump.alloc_slice_copy(&methods))
+                Some(self.bump.alloc_slice_immutable(&methods))
             },
             generics,
             span: token.span,
@@ -358,7 +366,7 @@ where
     fn parse_permits_expr(&mut self) -> Result<&'bump PermitsExpr<'a, 'bump>, DiagnosticError<'a>> {
         let token = self.cursor.expect(TokenKind::Permits)?;
 
-        let mut types = Vec::new_in(self.bump);
+        let mut types = Vec::new();
 
         loop {
             let ty = self.parse_type()?;
@@ -370,7 +378,7 @@ where
         }
 
         Ok(self.bump.alloc_value_immutable(ir::ast::PermitsExpr {
-            types: self.bump.alloc_slice_copy(&types),
+            types: self.bump.alloc_slice_immutable(&types),
             span: token.span,
         }))
     }
@@ -397,7 +405,7 @@ where
             name,
             visibility,
             generics,
-            variants: self.bump.alloc_slice_copy(&variants),
+            variants: self.bump.alloc_slice_immutable(&variants),
             span: token.span,
         })))
     }
@@ -405,6 +413,40 @@ where
     /// Allows `VariantName` or `VariantName { first_field: type, second_field: type }`
     fn parse_variant(&mut self) -> Result<EnumVariant<'a, 'bump>, DiagnosticError<'a>> {
         let (name, span) = self.cursor.expect_ident()?;
+
+        if self.cursor.peek() == TokenKind::LParen {
+            let paren_span = self.cursor.peek_token().span;
+            self.diag.record(
+                DiagnosticError::new(
+                    ParseErrorKind::UnexpectedToken {
+                        expected: TokenKind::LBrace,
+                        found: TokenKind::LParen,
+                    },
+                    paren_span,
+                )
+                .with_note(
+                    "Fix: Zeta enum variants don't support tuple syntax `Name(Type)`. \
+                     Use named fields instead: `Name { field: Type }`.",
+                ),
+            );
+
+            self.cursor.advance(); // consume '('
+            let mut depth = 1i32;
+            while depth > 0 && self.cursor.peek() != TokenKind::EOF {
+                match self.cursor.peek() {
+                    TokenKind::LParen => depth += 1,
+                    TokenKind::RParen => depth -= 1,
+                    _ => {}
+                }
+                self.cursor.advance();
+            }
+
+            return Ok(EnumVariant {
+                name,
+                fields: &[],
+                span,
+            });
+        }
 
         if self.cursor.peek() != TokenKind::LBrace {
             Ok(EnumVariant {
@@ -427,12 +469,10 @@ where
                 self.cursor.expect(TokenKind::Colon)?;
                 let field_type = self.parse_type()?;
 
-                // TODO: generics
                 fields.push(Field {
                     name: field_name,
                     field_type,
                     visibility,
-                    generics: None,
                     span: field_span,
                 });
                 if !self.cursor.consume(TokenKind::Comma) {
@@ -443,7 +483,7 @@ where
             self.cursor.expect(TokenKind::RBrace)?;
             Ok(EnumVariant {
                 name,
-                fields: self.bump.alloc_slice_copy(&fields),
+                fields: self.bump.alloc_slice_immutable(&fields),
                 span,
             })
         }

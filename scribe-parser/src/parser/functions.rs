@@ -48,7 +48,7 @@ where
         let params = self.parse_params()?;
 
         let return_type = if self.cursor.consume(TokenKind::Colon) {
-            self.parse_return_type()
+            self.parse_return_type()?
         } else {
             None
         };
@@ -73,10 +73,10 @@ where
         Ok(func_decl)
     }
 
-    fn parse_return_type(&mut self) -> Option<Type<'a, 'bump>> {
+    fn parse_return_type(&mut self) -> Result<Option<Type<'a, 'bump>>, DiagnosticError<'a>> {
         match self.cursor.peek() {
-            TokenKind::Semicolon | TokenKind::LBrace | TokenKind::EOF => None,
-            _ => self.parse_type().ok(),
+            TokenKind::Semicolon | TokenKind::LBrace | TokenKind::EOF => Ok(None),
+            _ => self.parse_type().map(|ty| Some(ty)),
         }
     }
 
@@ -99,7 +99,7 @@ where
     }
 
     pub fn get_func_metadata(
-        cursor: &mut Cursor<'a>,
+        cursor: &mut Cursor<'a, 'bump>,
         visibility: Visibility,
     ) -> Result<FuncModifiers, DiagnosticError<'a>> {
         let mut inline_modifier = InlineModifier::None;
@@ -130,9 +130,9 @@ where
                 }
                 TokenKind::Extern => {
                     cursor.advance();
-                    cursor.expect(TokenKind::LParen)?;
-                    extern_modifier = ExternModifier::Abi(cursor.expect_ident()?.0);
-                    cursor.expect(TokenKind::RParen)?;
+
+                    let (abi, _) = cursor.expect_string()?;
+                    extern_modifier = ExternModifier::Abi(abi);
                 }
                 TokenKind::Unsafe => {
                     if func_safety == FuncSafety::Unsafe {

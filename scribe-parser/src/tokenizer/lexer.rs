@@ -3,9 +3,9 @@ use ir::span::SourceSpan;
 use ir::tokens::{Token, TokenKind, Tokens};
 use smallvec::SmallVec;
 use std::fs::File;
-use std::io::{self, Error, ErrorKind, Read};
+use std::io::{Error, ErrorKind, Read};
 use std::sync::Arc;
-use zetaruntime::bump::GrowableBump;
+use zetaruntime::arena::GrowableAtomicBump;
 use zetaruntime::string_pool::StringPool;
 
 // Maps ASCII bytes 0..128 to a dispatch category.
@@ -44,6 +44,7 @@ enum ByteClass {
     Comma,      // ,
     Question,   // ?
     Dollar,     // $
+    SingleQuote,
     Unknown,
 }
 
@@ -99,6 +100,7 @@ const JUMP: [ByteClass; 128] = {
     t[b',' as usize] = ByteClass::Comma;
     t[b'?' as usize] = ByteClass::Question;
     t[b'$' as usize] = ByteClass::Dollar;
+    t[b'\'' as usize] = ByteClass::SingleQuote;
     t
 };
 
@@ -120,16 +122,18 @@ impl Lexer {
         Self { context }
     }
 
-    pub fn tokenize_file<'a>(
+    pub fn tokenize_file<'a, 'bump>(
         &self,
         file_name: &'a str,
-        bump: &'a GrowableBump<'a>,
-    ) -> std::io::Result<Tokens<'a>> {
+        bump: Arc<GrowableAtomicBump<'bump>>,
+    ) -> std::io::Result<Tokens<'a, 'bump>>
+    where
+        'bump: 'a,
+    {
         let mut file = File::open(file_name)?;
-        let len = file.metadata().map(|m| m.len() as usize).unwrap_or(0);
-        let buf: &'a mut [u8] = bump.alloc_bytes(len);
+        let mut buf = Vec::new();
 
-        let bytes_read = retry_on_interrupt(|| file.read(buf))?;
+        let bytes_read = file.read_to_end(&mut buf)?;
         let src = std::str::from_utf8(&buf[..bytes_read])
             .map_err(|_| Error::new(ErrorKind::InvalidData, "Invalid UTF-8"))?;
         Ok(self.tokenize(src, file_name, bump))
@@ -139,10 +143,11 @@ impl Lexer {
         &self,
         src: &str,
         file_name: &'a str,
-        bump: &'bump GrowableBump<'bump>,
-    ) -> Tokens<'bump>
+        bump: Arc<GrowableAtomicBump<'bump>>,
+    ) -> Tokens<'a, 'bump>
     where
         'a: 'bump,
+        'bump: 'a,
     {
         let bytes = src.as_bytes();
         let len = bytes.len();
@@ -207,6 +212,13 @@ impl Lexer {
                     pos += 1;
                     line += 1;
                     column = 1;
+                }
+
+                ByteClass::SingleQuote => {
+                    pos += 1; // consume opening '
+                    column += 1;
+                    let id = lex_char(src, bytes, &mut pos, &mut line, &mut column, &self.context);
+                    push!(TokenKind::CharLiteral, id, start_line, start_col);
                 }
 
                 ByteClass::Alpha => {
@@ -600,16 +612,74 @@ impl Lexer {
     }
 }
 
-fn retry_on_interrupt<T, F: FnMut() -> io::Result<T>>(mut f: F) -> io::Result<T> {
-    loop {
-        match f() {
-            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {
-                // Interrupt means that some sort of signal interrupted the syscall.
-                // it may be retried for zeta compiler stability reasons
-                continue;
+fn lex_char(
+    _src: &str,
+    bytes: &[u8],
+    pos: &mut usize,
+    line: &mut usize,
+    column: &mut usize,
+    ctx: &Arc<StringPool>,
+) -> StrId {
+    let mut text: SmallVec<u8, 4> = SmallVec::new();
+
+    if *pos < bytes.len() {
+        match bytes[*pos] {
+            b'\\' => {
+                *pos += 1;
+                *column += 1;
+                if *pos < bytes.len() {
+                    let esc = bytes[*pos];
+                    *pos += 1;
+                    *column += 1;
+                    text.push(match esc {
+                        b'n' => b'\n',
+                        b't' => b'\t',
+                        b'r' => b'\r',
+                        b'0' => 0,
+                        b'\\' => b'\\',
+                        b'\'' => b'\'',
+                        b'"' => b'"',
+                        other => other,
+                    });
+                }
             }
-            other => return other,
+            b'\n' => {
+                text.push(b'\n');
+                *pos += 1;
+                *line += 1;
+                *column = 1;
+            }
+            first => {
+                // copy the full UTF-8 sequence, not just one byte, so
+                // non-ASCII char literals like 'é' lex correctly.
+                let len = utf8_len(first).min(bytes.len() - *pos);
+                text.extend_from_slice(&bytes[*pos..*pos + len]);
+                *pos += len;
+                *column += 1;
+            }
         }
+    }
+
+    if *pos < bytes.len() && bytes[*pos] == b'\'' {
+        *pos += 1;
+        *column += 1;
+    }
+
+    StrId(ctx.intern_bytes(&text))
+}
+
+#[inline]
+fn utf8_len(first_byte: u8) -> usize {
+    if first_byte & 0b1000_0000 == 0 {
+        1
+    } else if first_byte & 0b1110_0000 == 0b1100_0000 {
+        2
+    } else if first_byte & 0b1111_0000 == 0b1110_0000 {
+        3
+    } else if first_byte & 0b1111_1000 == 0b1111_0000 {
+        4
+    } else {
+        1
     }
 }
 
@@ -666,7 +736,6 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "effect" => TokenKind::Effect,
         "permits" => TokenKind::Permits,
         "statem" => TokenKind::Statem,
-        "trait" => TokenKind::Trait,
         "where" => TokenKind::Where,
         "func" => TokenKind::Func,
         "catch" => TokenKind::Catch,
@@ -690,8 +759,7 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "isize" => TokenKind::Isize,
         "char" => TokenKind::Char,
         "str" => TokenKind::Str,
-        "boolean" => TokenKind::Boolean,
-        "panic" => TokenKind::Panic,
+        "bool" => TokenKind::Boolean,
         _ => TokenKind::Ident,
     }
 }
@@ -725,6 +793,14 @@ fn lex_number<'a>(
                 consume_suffix(bytes, pos, column);
                 return finish_number(src, start, *pos, TokenKind::Binary, ctx);
             }
+            Some(b'o') | Some(b'O') => {
+                *pos += 2;
+                *column += 2;
+                consume_digits_while(bytes, pos, column, |c| matches!(c, b'0'..=b'7'));
+                consume_suffix(bytes, pos, column);
+                return finish_number(src, start, *pos, TokenKind::Octal, ctx);
+            }
+
             _ => {}
         }
     }
@@ -734,11 +810,10 @@ fn lex_number<'a>(
 
     loop {
         match bytes.get(*pos).copied() {
-            Some(c @ b'0'..=b'9') => {
+            Some(b'0'..=b'9') => {
                 *pos += 1;
                 *column += 1;
                 last_under = false;
-                let _ = c;
             }
             Some(b'_') if !last_under => {
                 *pos += 1;

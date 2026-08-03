@@ -1,16 +1,28 @@
 use crate::parser::descent_parser::DescentParser;
 use ir::ast::{
     Block, DeferAction, DeferStmt, ElseBranch, Expr, ForKind, ForStmt, IfStmt, ImportStmt,
-    InternalExprStmt, LetStmt, MatchArm, MatchStmt, ModuleDecl, PackageStmt, Pattern, ReturnStmt,
-    Stmt, Type, Visibility, WhileStmt,
+    InternalExprStmt, LetStmt, MatchStmt, ModuleDecl, PackageStmt, Pattern, ReturnStmt, Stmt, Type,
+    UnsafeBlock, Visibility, WhileStmt,
 };
 use ir::errors::error::{DiagnosticError, ParseErrorKind};
+use ir::hir::StrId;
 use ir::tokens::TokenKind;
 
 impl<'a, 'bump> DescentParser<'a, 'bump>
 where
     'bump: 'a,
 {
+    pub fn expect_binding_name(
+        &mut self,
+    ) -> Result<(StrId, ir::span::SourceSpan<'a>), DiagnosticError<'a>> {
+        if self.cursor.peek() == TokenKind::Underscore {
+            let tok = self.cursor.bump();
+            Ok((StrId(self.string_pool.intern_bytes(b"_")), tok.span))
+        } else {
+            self.cursor.expect_ident()
+        }
+    }
+
     pub fn parse_let_stmt(&mut self) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         self.parse_let_stmt_inner(false)
     }
@@ -26,7 +38,7 @@ where
         let token = self.cursor.expect(TokenKind::Let)?;
 
         let is_mut = self.cursor.consume(TokenKind::Mut);
-        let (name, _span) = self.cursor.expect_ident()?;
+        let (name, _span) = self.expect_binding_name()?;
 
         let type_annotation = if self.cursor.consume(TokenKind::Colon) {
             self.parse_type()?
@@ -98,7 +110,7 @@ where
 
     pub fn parse_shorthand_let_stmt(&mut self) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         let mutable = self.cursor.consume(TokenKind::Mut);
-        let (name, span) = self.cursor.expect_ident()?;
+        let (name, span) = self.expect_binding_name()?;
         self.cursor.expect(TokenKind::ColonAssign)?;
         let value = self.parse_expr(0)?;
 
@@ -240,7 +252,8 @@ where
         let condition = if self.cursor.peek() == TokenKind::Semicolon {
             None
         } else {
-            Some(self.bump.alloc_value_immutable(self.parse_expr(0)?))
+            let expr = self.parse_expr(0)?;
+            Some(self.bump.alloc_value_immutable(expr))
         };
 
         self.cursor.expect(TokenKind::Semicolon)?;
@@ -248,7 +261,8 @@ where
         let increment = if self.cursor.peek() == TokenKind::RParen {
             None
         } else {
-            Some(self.bump.alloc_value_immutable(self.parse_expr(0)?))
+            let expr = self.parse_expr(0)?;
+            Some(self.bump.alloc_value_immutable(expr))
         };
 
         self.cursor.expect(TokenKind::RParen)?;
@@ -271,7 +285,8 @@ where
     pub fn parse_return_stmt(&mut self) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         let token = self.cursor.expect(TokenKind::Return)?;
         let value = if self.cursor.peek() != TokenKind::Semicolon {
-            Some(self.bump.alloc_value_immutable(self.parse_expr(0)?))
+            let expr = self.parse_expr(0)?;
+            Some(self.bump.alloc_value_immutable(expr))
         } else {
             None
         };
@@ -289,6 +304,18 @@ where
         Ok(Stmt::ExprStmt(self.bump.alloc_value_immutable(
             InternalExprStmt {
                 expr: self.bump.alloc_value_immutable(expr),
+                span: token.span,
+            },
+        )))
+    }
+
+    pub fn parse_unsafe_block_stmt(&mut self) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
+        let token = self.cursor.expect(TokenKind::Unsafe)?;
+        let block = self.parse_block()?;
+        self.cursor.consume(TokenKind::Semicolon);
+        Ok(Stmt::UnsafeBlock(self.bump.alloc_value_immutable(
+            UnsafeBlock {
+                block: self.bump.alloc_value_immutable(block),
                 span: token.span,
             },
         )))
@@ -321,60 +348,18 @@ where
         let expr: Expr<'a, 'bump> = self.parse_expr_inner(0, false)?;
 
         self.cursor.expect(TokenKind::LBrace)?;
-
-        let mut arms = Vec::new_in(self.bump);
-
-        while self.cursor.peek() != TokenKind::RBrace && self.cursor.peek() != TokenKind::EOF {
-            // Each arm: `case pattern [if guard] -> { block } | single_stmt`
-            let case_token = self.cursor.expect(TokenKind::Case)?;
-
-            let pattern = self.parse_pattern()?;
-
-            // Optional guard: `if condition`
-            let guard = if self.cursor.consume(TokenKind::If) {
-                let guard_expr = self.parse_expr(0)?;
-                Some(self.bump.alloc_value_immutable(guard_expr))
-            } else {
-                None
-            };
-
-            self.cursor.expect(TokenKind::Arrow)?;
-
-            // Arm body: block `{ }` or a single statement
-            let block = if self.cursor.peek() == TokenKind::LBrace {
-                self.parse_block()?
-            } else {
-                let span = self.cursor.peek_token().span;
-                let stmt = self.parse_expr_stmt()?;
-                let stmt_ref = self.bump.alloc_value_immutable(stmt);
-                Block {
-                    block: self.bump.alloc_slice_copy(&[*stmt_ref]),
-                    span,
-                }
-            };
-
-            arms.push(MatchArm {
-                pattern,
-                guard,
-                block: self.bump.alloc_value_immutable(block),
-                span: case_token.span,
-            });
-
-            self.cursor.consume(TokenKind::Comma);
-        }
-
-        self.cursor.expect(TokenKind::RBrace)?;
+        let arms = self.parse_match_arms()?;
 
         let match_stmt = MatchStmt {
             expr: self.bump.alloc_value_immutable(expr),
-            arms: self.bump.alloc_slice_copy(&arms),
+            arms,
             span: token.span,
         };
 
         Ok(Stmt::Match(self.bump.alloc_value_immutable(match_stmt)))
     }
 
-    fn parse_pattern(&mut self) -> Result<Pattern<'bump>, DiagnosticError<'a>> {
+    pub fn parse_pattern(&mut self) -> Result<Pattern<'bump>, DiagnosticError<'a>> {
         match self.cursor.peek() {
             TokenKind::Underscore => {
                 self.cursor.advance();
@@ -405,11 +390,21 @@ where
 
             TokenKind::Ident => {
                 let tok = self.cursor.bump();
-                let name = tok.text.unwrap_or_default();
+                let mut name = tok.text.unwrap_or_default();
+
+                let mut qualified = false;
+                while matches!(self.cursor.peek(), TokenKind::Dot | TokenKind::ColonColon)
+                    && matches!(self.cursor.peek_n(1), TokenKind::Ident)
+                {
+                    self.cursor.advance(); // consume '.' or '::'
+                    let (seg, _) = self.cursor.expect_ident()?;
+                    name = seg;
+                    qualified = true;
+                }
 
                 if self.cursor.peek() == TokenKind::LParen {
                     self.cursor.advance(); // consume '('
-                    let mut bindings = Vec::new_in(self.bump);
+                    let mut bindings = Vec::new();
                     while self.cursor.peek() != TokenKind::RParen
                         && self.cursor.peek() != TokenKind::EOF
                     {
@@ -422,7 +417,34 @@ where
                     self.cursor.expect(TokenKind::RParen)?;
                     Ok(Pattern::EnumVariant {
                         name,
-                        bindings: self.bump.alloc_slice_copy(&bindings),
+                        bindings: self.bump.alloc_slice_immutable(&bindings),
+                    })
+                } else if self.cursor.peek() == TokenKind::LBrace {
+                    self.cursor.advance(); // consume '{'
+                    let mut fields = Vec::new();
+                    while self.cursor.peek() != TokenKind::RBrace
+                        && self.cursor.peek() != TokenKind::EOF
+                    {
+                        let (field_name, _span) = self.cursor.expect_ident()?;
+                        let pattern = if self.cursor.consume(TokenKind::Colon) {
+                            self.parse_pattern()?
+                        } else {
+                            Pattern::Ident(field_name) // shorthand: `{ value }` == `{ value: value }`
+                        };
+                        fields.push((field_name, pattern));
+                        if !self.cursor.consume(TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                    self.cursor.expect(TokenKind::RBrace)?;
+                    Ok(Pattern::Struct {
+                        name,
+                        fields: self.bump.alloc_slice_immutable(&fields),
+                    })
+                } else if qualified {
+                    Ok(Pattern::EnumVariant {
+                        name,
+                        bindings: &[],
                     })
                 } else {
                     Ok(Pattern::Ident(name))
@@ -432,7 +454,7 @@ where
             // Tuple pattern: (a, b, c)
             TokenKind::LParen => {
                 self.cursor.advance();
-                let mut pats = Vec::new_in(self.bump);
+                let mut pats = Vec::new();
                 while self.cursor.peek() != TokenKind::RParen
                     && self.cursor.peek() != TokenKind::EOF
                 {
@@ -442,13 +464,13 @@ where
                     }
                 }
                 self.cursor.expect(TokenKind::RParen)?;
-                Ok(Pattern::Tuple(self.bump.alloc_slice_copy(&pats)))
+                Ok(Pattern::Tuple(self.bump.alloc_slice_immutable(&pats)))
             }
 
             // Array pattern: [a, b, c]
             TokenKind::LBracket => {
                 self.cursor.advance();
-                let mut pats = Vec::new_in(self.bump);
+                let mut pats = Vec::new();
                 while self.cursor.peek() != TokenKind::RBracket
                     && self.cursor.peek() != TokenKind::EOF
                 {
@@ -458,7 +480,7 @@ where
                     }
                 }
                 self.cursor.expect(TokenKind::RBracket)?;
-                Ok(Pattern::Array(self.bump.alloc_slice_copy(&pats)))
+                Ok(Pattern::Array(self.bump.alloc_slice_immutable(&pats)))
             }
 
             other => {
@@ -509,7 +531,7 @@ where
 
     /// Parse a dot-separated identifier path: `foo`, `foo::bar`, `foo::bar::Baz`
     fn parse_path(&mut self) -> Result<&'bump ir::ast::Path<'a, 'bump>, DiagnosticError<'a>> {
-        let mut segments = Vec::new_in(self.bump);
+        let mut segments = Vec::new();
 
         let (first, span) = self.cursor.expect_ident()?;
         segments.push(first);
@@ -533,7 +555,7 @@ where
         };
 
         Ok(self.bump.alloc_value_immutable(ir::ast::Path {
-            path: self.bump.alloc_slice_copy(&segments),
+            path: self.bump.alloc_slice_immutable(&segments),
             member,
             span,
         }))
@@ -549,7 +571,7 @@ where
         let (name, span) = self.cursor.expect_ident()?;
         self.cursor.expect(TokenKind::LBrace)?;
 
-        let mut body = Vec::new_in(self.bump);
+        let mut body = Vec::new();
         while self.cursor.peek() != TokenKind::RBrace && self.cursor.peek() != TokenKind::EOF {
             body.push(self.parse_stmt(Visibility::Public)?);
         }
@@ -558,7 +580,7 @@ where
         Ok(Stmt::Module(self.bump.alloc_value_immutable(ModuleDecl {
             name,
             visibility,
-            body: self.bump.alloc_slice_copy(&body),
+            body: self.bump.alloc_slice_immutable(&body),
             span,
         })))
     }
@@ -566,7 +588,7 @@ where
     pub fn parse_block(&mut self) -> Result<Block<'a, 'bump>, DiagnosticError<'a>> {
         let token = self.cursor.expect(TokenKind::LBrace)?;
 
-        let mut stmts = Vec::new_in(self.bump);
+        let mut stmts = Vec::new();
         while self.cursor.peek() != TokenKind::RBrace && self.cursor.peek() != TokenKind::EOF {
             match self.parse_stmt(Visibility::Public) {
                 Ok(s) => stmts.push(s),
@@ -585,7 +607,7 @@ where
         self.cursor.expect(TokenKind::RBrace)?;
 
         Ok(Block {
-            block: self.bump.alloc_slice_copy(&stmts),
+            block: self.bump.alloc_slice_immutable(&stmts),
             span: token.span,
         })
     }

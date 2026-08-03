@@ -1,14 +1,14 @@
 use crate::parser::descent_parser::DescentParser;
 use ir::ast::{
     ElseBranch, ErrorHandlerBranch, ErrorHandlerPattern, FieldInit, IfStmt, LambdaModifier,
-    LambdaParam, Type,
+    LambdaParam, MatchStmt, Type, UnsafeBlock,
 };
+use ir::hir::StrId;
 use ir::tokens::TokenKind;
 use ir::{
     ast::{Expr, Op},
     errors::error::{DiagnosticError, ParseErrorKind},
 };
-use zetaruntime::bump::GrowableBump;
 
 impl<'a, 'bump> DescentParser<'a, 'bump>
 where
@@ -32,7 +32,7 @@ where
                     TokenKind::LParen => {
                         self.cursor.advance();
 
-                        let mut args = Vec::new_in(self.bump);
+                        let mut args = Vec::new();
 
                         if self.cursor.peek() != TokenKind::RParen {
                             loop {
@@ -53,7 +53,7 @@ where
                         lhs = Expr::Call {
                             callee,
                             generic_args: &[],
-                            arguments: self.bump.alloc_slice_copy(&args),
+                            arguments: self.bump.alloc_slice_immutable(&args),
                             span,
                         };
                     }
@@ -108,7 +108,7 @@ where
                     TokenKind::Lt if self.is_generic_argument_list() => {
                         self.cursor.advance();
 
-                        let mut generic_args = Vec::new_in(self.bump);
+                        let mut generic_args = Vec::new_in(self.bump.clone());
 
                         if self.cursor.peek() != TokenKind::Gt {
                             loop {
@@ -128,7 +128,7 @@ where
                         self.cursor.expect(TokenKind::Gt)?;
 
                         let callee = self.bump.alloc_value_immutable(lhs);
-                        let type_args = self.bump.alloc_slice_copy(&generic_args);
+                        let type_args = self.bump.alloc_slice_immutable(&generic_args);
 
                         if self.cursor.peek() == TokenKind::LBrace && allow_struct_init {
                             // `Ident<T> { field: value, .. }`
@@ -137,7 +137,7 @@ where
                             // `Ident<T>(args...)`
                             self.cursor.expect(TokenKind::LParen)?;
 
-                            let mut args = Vec::new_in(self.bump);
+                            let mut args = Vec::new_in(self.bump.clone());
 
                             if self.cursor.peek() != TokenKind::RParen {
                                 loop {
@@ -156,7 +156,7 @@ where
                             lhs = Expr::Call {
                                 callee,
                                 generic_args: type_args,
-                                arguments: self.bump.alloc_slice_copy(&args),
+                                arguments: self.bump.alloc_slice_immutable(&args),
                                 span,
                             };
                         }
@@ -165,7 +165,9 @@ where
                     TokenKind::LBrace => {
                         if allow_struct_init {
                             let (callee, type_args) = match lhs {
-                                Expr::Ident { .. } => {
+                                Expr::Ident { .. }
+                                | Expr::FieldAccess { .. }
+                                | Expr::ModuleAccess { .. } => {
                                     let generic_args: &'bump [Type<'a, 'bump>] = &[];
                                     (self.bump.alloc_value_immutable(lhs), generic_args)
                                 }
@@ -288,7 +290,7 @@ where
     ) -> Result<Expr<'a, 'bump>, DiagnosticError<'a>> {
         self.cursor.advance(); // consume '{'
 
-        let mut args: Vec<FieldInit<'a, 'bump>, &GrowableBump<'bump>> = Vec::new_in(self.bump);
+        let mut args: Vec<FieldInit<'a, 'bump>> = Vec::new();
 
         while self.cursor.peek() != TokenKind::RBrace && self.cursor.peek() != TokenKind::EOF {
             let (field_name, field_span) = self.cursor.expect_ident()?;
@@ -319,7 +321,7 @@ where
         Ok(Expr::StructInit {
             callee,
             type_args,
-            arguments: self.bump.alloc_slice_copy(args.as_slice()),
+            arguments: self.bump.alloc_slice_immutable(args.as_slice()),
             span,
         })
     }
@@ -370,34 +372,27 @@ where
 
     fn is_generic_argument_list(&mut self) -> bool {
         let mut cursor = self.cursor.clone();
-
+        let mut pending: u8 = 0;
         if cursor.peek() != TokenKind::Lt {
             return false;
         }
-
-        cursor.advance(); // consume '<'
-
+        cursor.advance();
         if cursor.peek() != TokenKind::Gt {
             loop {
-                match Self::parse_type_impl(&self.bump, &mut cursor) {
+                match Self::parse_type_impl(self.bump.clone(), &mut cursor, &mut pending) {
                     Ok(arg) => arg,
                     Err(_) => return false,
                 };
-
                 if !cursor.consume(TokenKind::Comma) {
                     break;
                 }
             }
         } else {
-            todo!(
-                "Handle error when trying to call like `hello<>()` because you cannot have an empty generic list"
-            )
+            todo!("Handle error when trying to call like `hello<>()` ...")
         }
-
-        if !cursor.consume(TokenKind::Gt) {
+        if !Self::try_consume_close_angle(&mut cursor, &mut pending) {
             return false;
         }
-
         matches!(
             cursor.peek(),
             TokenKind::LParen | TokenKind::LBrace | TokenKind::Dot | TokenKind::ColonColon
@@ -409,12 +404,51 @@ where
 
         match tok.kind {
             TokenKind::If => self.parse_if_expr(),
+            TokenKind::Match => self.parse_match_expr(),
+            TokenKind::Unsafe => {
+                self.cursor.advance();
+                let block = self.parse_block()?;
+                Ok(Expr::UnsafeBlock(self.bump.alloc_value_immutable(
+                    UnsafeBlock {
+                        block: self.bump.alloc_value_immutable(block),
+                        span: tok.span,
+                    },
+                )))
+            }
+
+            TokenKind::Hexadecimal => {
+                self.cursor.advance();
+                let text = tok.text.unwrap_or_default();
+                let value = Self::parse_radix_literal(text.as_str(), 2, 16);
+                Ok(Expr::Number {
+                    value,
+                    span: tok.span,
+                })
+            }
+            TokenKind::Octal => {
+                self.cursor.advance();
+                let text = tok.text.unwrap_or_default();
+                let value = Self::parse_radix_literal(text.as_str(), 2, 8);
+                Ok(Expr::Number {
+                    value,
+                    span: tok.span,
+                })
+            }
+            TokenKind::Binary => {
+                self.cursor.advance();
+                let text = tok.text.unwrap_or_default();
+                let value = Self::parse_radix_literal(text.as_str(), 2, 2);
+                Ok(Expr::Number {
+                    value,
+                    span: tok.span,
+                })
+            }
 
             TokenKind::Dollar => {
                 self.cursor.advance(); // consume '$'
                 let (name, _name_span) = self.cursor.expect_ident()?;
 
-                let mut generic_args = Vec::new_in(self.bump);
+                let mut generic_args = Vec::new();
                 if self.cursor.consume(TokenKind::Lt) {
                     if self.cursor.peek() != TokenKind::Gt {
                         loop {
@@ -429,7 +463,7 @@ where
                 }
 
                 self.cursor.expect(TokenKind::LParen)?;
-                let mut args = Vec::new_in(self.bump);
+                let mut args = Vec::new();
                 if self.cursor.peek() != TokenKind::RParen {
                     loop {
                         let arg = self.parse_expr_inner(0, true)?;
@@ -444,8 +478,8 @@ where
 
                 Ok(Expr::Intrinsic {
                     name,
-                    generic_args: self.bump.alloc_slice_copy(&generic_args),
-                    arguments: self.bump.alloc_slice_copy(&args),
+                    generic_args: self.bump.alloc_slice_immutable(&generic_args),
+                    arguments: self.bump.alloc_slice_immutable(&args),
                     span: tok.span.merge(end_span),
                 })
             }
@@ -466,7 +500,7 @@ where
             TokenKind::LBracket => {
                 self.cursor.advance();
 
-                let mut elements = Vec::new_in(self.bump);
+                let mut elements = Vec::new();
 
                 if self.cursor.peek() != TokenKind::RBracket {
                     loop {
@@ -483,7 +517,7 @@ where
                 self.cursor.expect(TokenKind::RBracket)?;
 
                 Ok(Expr::ArrayLiteral {
-                    elements: self.bump.alloc_slice_copy(&elements),
+                    elements: self.bump.alloc_slice_immutable(&elements),
                     span: tok.span.merge(end_span),
                 })
             }
@@ -522,7 +556,7 @@ where
                 self.cursor.advance();
                 Ok(Expr::Null { span: tok.span })
             }
-            TokenKind::Char => {
+            TokenKind::CharLiteral => {
                 self.cursor.advance();
                 let text = tok.text.unwrap_or_default();
                 let value = text.as_str().chars().next().unwrap_or('\0');
@@ -532,12 +566,68 @@ where
                 })
             }
 
+            TokenKind::U8
+            | TokenKind::U16
+            | TokenKind::U32
+            | TokenKind::U64
+            | TokenKind::U128
+            | TokenKind::I8
+            | TokenKind::I16
+            | TokenKind::I32
+            | TokenKind::I64
+            | TokenKind::I128
+            | TokenKind::Usize
+            | TokenKind::Isize
+            | TokenKind::F32
+            | TokenKind::F64
+            | TokenKind::Boolean
+            | TokenKind::Str
+            | TokenKind::Void
+            | TokenKind::Never
+            | TokenKind::Char => {
+                self.cursor.advance();
+                let text = match tok.kind {
+                    TokenKind::U8 => "u8",
+                    TokenKind::U16 => "u16",
+                    TokenKind::U32 => "u32",
+                    TokenKind::U64 => "u64",
+                    TokenKind::U128 => "u128",
+                    TokenKind::I8 => "i8",
+                    TokenKind::I16 => "i16",
+                    TokenKind::I32 => "i32",
+                    TokenKind::I64 => "i64",
+                    TokenKind::I128 => "i128",
+                    TokenKind::Usize => "usize",
+                    TokenKind::Isize => "isize",
+                    TokenKind::F32 => "f32",
+                    TokenKind::F64 => "f64",
+                    TokenKind::Boolean => "bool",
+                    TokenKind::Str => "str",
+                    TokenKind::Void => "void",
+                    TokenKind::Never => "never",
+                    TokenKind::Char => "char",
+                    _ => unreachable!(),
+                };
+                let name = StrId(self.string_pool.intern_bytes(text.as_bytes()));
+                Ok(Expr::Ident {
+                    name,
+                    span: tok.span,
+                })
+            }
+
             TokenKind::Ident => {
                 self.cursor.advance();
                 let name = tok.text.unwrap_or_default();
 
+                if name.as_str() == "void" {
+                    return Ok(Expr::ExprList {
+                        expressions: &[],
+                        span: tok.span,
+                    });
+                }
+
                 if self.cursor.peek() == TokenKind::ColonColon {
-                    let mut segments = Vec::new_in(self.bump);
+                    let mut segments = Vec::new();
                     segments.push(name);
 
                     while self.cursor.consume(TokenKind::ColonColon) {
@@ -546,7 +636,7 @@ where
                     }
 
                     return Ok(Expr::ModulePath {
-                        segments: self.bump.alloc_slice_copy(&segments),
+                        segments: self.bump.alloc_slice_immutable(&segments),
                         span: tok.span,
                     });
                 }
@@ -631,6 +721,16 @@ where
         }
     }
 
+    fn parse_radix_literal(text: &str, prefix_len: usize, radix: u32) -> i64 {
+        let digits: String = text
+            .chars()
+            .skip(prefix_len)
+            .take_while(|c| c.is_digit(radix) || *c == '_')
+            .filter(|c| *c != '_')
+            .collect();
+        i64::from_str_radix(&digits, radix).unwrap_or(0)
+    }
+
     fn parse_lambda(&mut self) -> Result<Expr<'a, 'bump>, DiagnosticError<'a>> {
         let start_span = self.cursor.peek_token().span;
 
@@ -654,7 +754,7 @@ where
 
         self.cursor.expect(TokenKind::LParen)?;
 
-        let mut params = Vec::new_in(self.bump);
+        let mut params = Vec::new();
         if self.cursor.peek() != TokenKind::RParen {
             loop {
                 let (name, param_span) = self.cursor.expect_ident()?;
@@ -692,10 +792,26 @@ where
 
         Ok(Expr::Lambda {
             modifiers,
-            params: self.bump.alloc_slice_copy(&params),
+            params: self.bump.alloc_slice_immutable(&params),
             return_type,
             body,
             span,
+        })
+    }
+
+    pub fn parse_match_expr(&mut self) -> Result<Expr<'a, 'bump>, DiagnosticError<'a>> {
+        let token = self.cursor.expect(TokenKind::Match)?;
+        let scrutinee = self.parse_expr_inner(0, false)?;
+        self.cursor.expect(TokenKind::LBrace)?;
+        let arms = self.parse_match_arms()?;
+
+        Ok(Expr::Match {
+            match_stmt: self.bump.alloc_value_immutable(MatchStmt {
+                expr: self.bump.alloc_value_immutable(scrutinee),
+                arms,
+                span: token.span,
+            }),
+            span: token.span,
         })
     }
 
@@ -742,7 +858,7 @@ where
     ) -> Result<ErrorHandlerPattern<'a, 'bump>, DiagnosticError<'a>> {
         self.cursor.expect(TokenKind::LBrace)?;
 
-        let mut branches = Vec::new_in(self.bump);
+        let mut branches = Vec::new();
 
         while self.cursor.peek() != TokenKind::RBrace && self.cursor.peek() != TokenKind::EOF {
             let branch_span = self.cursor.peek_token().span;
@@ -773,7 +889,7 @@ where
         self.cursor.expect(TokenKind::RBrace)?;
 
         Ok(ErrorHandlerPattern::Multiple {
-            branches: self.bump.alloc_slice_copy(&branches),
+            branches: self.bump.alloc_slice_immutable(&branches),
         })
     }
 }

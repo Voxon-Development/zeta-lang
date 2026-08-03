@@ -1,10 +1,8 @@
 use ir::ast::{Stmt, Visibility};
 use ir::diagnostics_context::{DiagnosticWarning, ParserDiagnosticsContext};
 use ir::errors::error::DiagnosticError;
-use ir::hir::StrId;
 use std::sync::Arc;
 use zetaruntime::arena::GrowableAtomicBump;
-use zetaruntime::bump::GrowableBump;
 use zetaruntime::string_pool::StringPool;
 
 use crate::tokenizer::lexer::Lexer;
@@ -14,10 +12,11 @@ pub struct DescentParser<'a, 'bump>
 where
     'bump: 'a,
 {
-    pub(crate) cursor: Cursor<'a>,
-    pub(crate) bump: &'bump GrowableBump<'bump>,
+    pub(crate) cursor: Cursor<'a, 'bump>,
+    pub(crate) bump: Arc<GrowableAtomicBump<'bump>>,
     pub(crate) string_pool: Arc<StringPool>,
-    pub(crate) diag: ParserDiagnosticsContext<'a>,
+    pub(crate) diag: ParserDiagnosticsContext<'a, 'bump>,
+    pub(crate) pending_close_angle: u8, // To prevent mismatches when closing generics between `>` and `>>` and `>>>`, etc
 }
 
 impl<'a, 'bump> DescentParser<'a, 'bump>
@@ -26,14 +25,15 @@ where
 {
     pub fn parse(
         string_pool: Arc<StringPool>,
-        bump: &'bump GrowableBump<'bump>,
-        tokens: &'a Tokens<'a>,
-    ) -> Result<Vec<Stmt<'a, 'bump>, &'bump GrowableBump<'bump>>, DiagnosticError<'a>> {
+        bump: Arc<GrowableAtomicBump<'bump>>,
+        tokens: &'bump Tokens<'a, 'bump>,
+    ) -> Result<Vec<Stmt<'a, 'bump>, Arc<GrowableAtomicBump<'bump>>>, DiagnosticError<'a>> {
         let mut parser = DescentParser {
             cursor: Cursor::new(tokens, 0),
             string_pool,
             bump,
             diag: ParserDiagnosticsContext::new(true),
+            pending_close_angle: 0,
         };
 
         parser.parse_toplevel()
@@ -41,8 +41,8 @@ where
 
     fn parse_toplevel(
         &mut self,
-    ) -> Result<Vec<Stmt<'a, 'bump>, &'bump GrowableBump<'bump>>, DiagnosticError<'a>> {
-        let mut stmts = Vec::new_in(self.bump);
+    ) -> Result<Vec<Stmt<'a, 'bump>, Arc<GrowableAtomicBump<'bump>>>, DiagnosticError<'a>> {
+        let mut stmts = Vec::new_in(self.bump.clone());
 
         while self.cursor.peek() != TokenKind::EOF {
             match self.parse_stmt(Visibility::Public) {
@@ -66,18 +66,10 @@ where
     ) -> Result<Stmt<'a, 'bump>, DiagnosticError<'a>> {
         let kind = self.cursor.peek();
         match kind {
-            TokenKind::Panic => {
-                let tok = self.cursor.expect(TokenKind::Panic)?;
-                let message = self.parse_expr(0)?;
-                self.cursor.expect(TokenKind::Semicolon)?;
-                Ok(Stmt::Panic {
-                    message,
-                    span: tok.span,
-                })
-            }
             TokenKind::Let => self.parse_let_stmt(),
             TokenKind::Import => self.parse_import(),
             TokenKind::Package => self.parse_package(),
+            TokenKind::Const => self.parse_const_stmt(),
             TokenKind::Match => self.parse_match_stmt(),
             TokenKind::Defer => self.parse_defer_stmt(),
             TokenKind::Static => {
@@ -120,10 +112,19 @@ where
                 self.parse_stmt(Visibility::Internal)
             }
 
-            TokenKind::Inline | TokenKind::Noinline | TokenKind::Unsafe | TokenKind::Extern => {
-                self.parse_function_with_visibility(visibility)
+            TokenKind::Unsafe => {
+                // `unsafe { ... }` is a statement-level unsafe block.
+                // `unsafe func` / `unsafe extern` are function modifiers.
+                if self.cursor.peek_n(1) == TokenKind::LBrace {
+                    self.parse_unsafe_block_stmt()
+                } else {
+                    self.parse_function_with_visibility(visibility)
+                }
             }
 
+            TokenKind::Inline | TokenKind::Noinline | TokenKind::Extern => {
+                self.parse_function_with_visibility(visibility)
+            }
             TokenKind::Struct => self.parse_struct_decl(visibility),
             TokenKind::Enum => self.parse_enum_decl(visibility),
             TokenKind::Impl => self.parse_impl_decl(visibility),
@@ -137,6 +138,17 @@ where
             TokenKind::Ident => {
                 // Check for shorthand let (ident := expr)
                 if self.cursor.peek_n(1) == TokenKind::ColonAssign {
+                    self.parse_shorthand_let_stmt()
+                } else {
+                    self.parse_expr_stmt()
+                }
+            }
+
+            TokenKind::Mut => {
+                // Check for shorthand let (ident := expr)
+                if self.cursor.peek_n(1) == TokenKind::Ident
+                    && self.cursor.peek_n(2) == TokenKind::ColonAssign
+                {
                     self.parse_shorthand_let_stmt()
                 } else {
                     self.parse_expr_stmt()
@@ -159,36 +171,34 @@ pub fn token_to_visibility(token_kind: TokenKind) -> Visibility {
 
 #[derive(Debug)]
 pub struct ParseResult<'a, 'bump> {
-    pub statements: Vec<Stmt<'a, 'bump>, &'bump GrowableBump<'bump>>,
+    pub statements: Vec<Stmt<'a, 'bump>, Arc<GrowableAtomicBump<'bump>>>,
     pub diagnostics: ParserDiagnostics<'a>,
 }
 
 pub fn parse_program<'a, 'bump>(
-    src: StrId,
+    src: &str,
     file_name: &'bump str,
     context: Arc<StringPool>,
     bump: Arc<GrowableAtomicBump<'bump>>,
 ) -> ParseResult<'a, 'bump> {
-    let parser_bump = Box::new(GrowableBump::new(4096, 8));
-    let parser_bump_ref: &'bump GrowableBump<'bump> = Box::leak(parser_bump);
-
     let lexer: Lexer = Lexer::new(context.clone());
-    let tokens: Tokens<'a> = lexer.tokenize(src.as_str(), file_name, parser_bump_ref);
+    let tokens: Tokens<'a, 'bump> = lexer.tokenize(src, file_name, bump.clone());
 
     let tokenized_source = bump.alloc_value(tokens);
 
     let mut parser = DescentParser {
         cursor: Cursor::new(tokenized_source, 0),
         string_pool: context,
-        bump: parser_bump_ref,
+        bump: bump.clone(),
         diag: ParserDiagnosticsContext::new(false),
+        pending_close_angle: 0,
     };
 
-    let stmts: Vec<Stmt<'_, '_>, &GrowableBump<'_>> = match parser.parse_toplevel() {
+    let stmts: Vec<Stmt<'_, '_>, Arc<GrowableAtomicBump<'_>>> = match parser.parse_toplevel() {
         Ok(s) => s,
         Err(e) => {
             parser.diag.record(e);
-            Vec::new_in(parser_bump_ref)
+            Vec::new_in(bump.clone())
         }
     };
 
