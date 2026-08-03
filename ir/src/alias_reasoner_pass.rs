@@ -138,7 +138,7 @@ impl AliasReasoner {
 
     /// Given two ancestor chains (each ordered [place, parent, grandparent,
     /// ..., root]), find their lowest common ancestor and return the pair of
-    /// children -- one from each chain -- that sit immediately below it. These
+    /// children, one from each chain that sit immediately below it. These
     /// are the two projections that actually need comparing (both Field or
     /// both Index) to determine disjointness. Returns None if the chains
     /// share no common ancestor, or if one chain is a prefix of the other
